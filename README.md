@@ -120,11 +120,19 @@ Platform Events must be enabled in your org (enabled by default in most orgs).
 
 ### Deploy the Package
 
+#### Option 1: Install via URL (Recommended)
+
+Click the link below or paste it into your browser:
+
+**[Install CursorBatch Framework v0.1.0](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY)**
+
+#### Option 2: Install via Salesforce CLI
+
 ```bash
-sf package install --package YOUR_PACKAGE_VERSION_ID --target-org your-org
+sf package install --package 04tg500000014RNAAY --target-org your-org --wait 10
 ```
 
-Or deploy from source:
+#### Option 3: Deploy from Source
 
 ```bash
 # Deploy cache partition first
@@ -619,7 +627,7 @@ MIT License — see LICENSE file for details.
 
 ### v0.1.0
 
-- Initial bet release
+- Initial beta release
 - Coordinator/Worker pattern with Platform Event fanout
 - Platform Cache cursor storage
 - Automatic completion tracking with Queueable Finalizers
