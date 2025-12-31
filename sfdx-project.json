@@ -1,0 +1,20 @@
+{
+  "packageDirectories": [
+    {
+      "versionName": "ver 0.1",
+      "versionNumber": "0.1.0.NEXT",
+      "path": "force-app",
+      "default": true,
+      "package": "CursorBatchFramework",
+      "versionDescription": "High-performance parallel batch processing framework using Database.Cursor, Platform Cache, Platform Events, and Queueables to overcome governor limits and achieve massive parallelization"
+    }
+  ],
+  "name": "cursor-batch-framework",
+  "namespace": "",
+  "sfdcLoginUrl": "https://login.salesforce.com",
+  "sourceApiVersion": "64.0",
+  "packageAliases": {
+    "CursorBatchFramework": "0Hog500000007BBCAY",
+    "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY"
+  }
+}
