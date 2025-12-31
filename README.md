@@ -132,24 +132,6 @@ Click the link below or paste it into your browser:
 sf package install --package 04tg500000014RNAAY --target-org your-org --wait 10
 ```
 
-#### Option 3: Deploy from Source
-
-```bash
-# Deploy cache partition first
-sf project deploy start --source-dir force-app/main/default/cachePartitions/CursorBatch.cachePartition-meta.xml
-
-# Deploy framework classes
-sf project deploy start --source-dir force-app/main/default/classes/CursorBatchFramework
-
-# Deploy custom objects and metadata
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Config__mdt
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Job__c
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Worker__e
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_WorkerComplete__e
-
-# Deploy triggers
-sf project deploy start --source-dir force-app/main/default/triggers
-```
 
 ## Quick Start
 
