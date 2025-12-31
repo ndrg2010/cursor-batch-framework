@@ -122,9 +122,12 @@ Platform Events must be enabled in your org (enabled by default in most orgs).
 
 #### Option 1: Install via URL (Recommended)
 
-Click the link below or paste it into your browser:
+Click the appropriate link below:
 
-**[Install CursorBatch Framework v0.1.0](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY)**
+| Environment | Install Link |
+|-------------|--------------|
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY) |
 
 #### Option 2: Install via Salesforce CLI
 
