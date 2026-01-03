@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.1",
-      "versionNumber": "0.1.0.NEXT",
+      "versionName": "ver 0.4",
+      "versionNumber": "0.4.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "High-performance parallel batch processing framework using Database.Cursor, Platform Events, and Queueables to overcome governor limits and achieve massive parallelization"
+      "versionDescription": "Major release: Worker page retry with exponential backoff, coordinator retry for cursor timeouts, Platform Cache removal, CursorBatchRetryException for caller-controlled retry"
     }
   ],
   "name": "cursor-batch-framework",
@@ -15,6 +15,7 @@
   "sourceApiVersion": "64.0",
   "packageAliases": {
     "CursorBatchFramework": "0Hog500000007BBCAY",
-    "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY"
+    "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY",
+    "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ"
   }
 }

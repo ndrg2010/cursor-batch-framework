@@ -263,13 +263,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000014RNAAY) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tg500000014RNAAY --target-org your-org --wait 10
+sf package install --package 04tg500000015dZAAQ --target-org your-org --wait 10
 ```
 
 #### Option 3: Deploy from Source
