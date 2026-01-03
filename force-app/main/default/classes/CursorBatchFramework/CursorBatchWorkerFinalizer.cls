@@ -1,36 +1,34 @@
 /**
- * @description Finalizer for CursorBatchWorker that publishes completion events. Executes even
- *              on worker failure, ensuring accurate completion tracking for callbacks.
+ * @description Finalizer for CursorBatchWorker that handles retry logic and publishes completion 
+ *              events. Executes even on worker failure (including uncaught exceptions and CPU limits),
+ *              enabling retry with exponential backoff before final failure reporting.
  * @group CursorBatchFramework
  * @see CursorBatchWorker
  * @see CursorBatchCompletionHandler
  */
-public inherited sharing class CursorBatchWorkerFinalizer implements System.Finalizer {
+public without sharing class CursorBatchWorkerFinalizer implements System.Finalizer {
     
-    private Id jobRecordId;
-    private Integer workerNum;
+    private CursorBatchContext ctx;
     private ICursorBatchLogger logger;
     
     /**
-     * @description Constructs a finalizer with worker context for completion tracking.
-     * @param jobRecordId ID of the CursorBatch_Job__c tracking record
-     * @param workerNum Worker number for logging
+     * @description Constructs a finalizer with full worker context for retry and completion tracking.
+     * @param ctx Full CursorBatchContext containing all worker parameters including retry state
      * @param logger Logger instance for error reporting
      */
-    public CursorBatchWorkerFinalizer(Id jobRecordId, Integer workerNum, ICursorBatchLogger logger) {
-        this.jobRecordId = jobRecordId;
-        this.workerNum = workerNum;
+    public CursorBatchWorkerFinalizer(CursorBatchContext ctx, ICursorBatchLogger logger) {
+        this.ctx = ctx;
         this.logger = logger;
     }
     
     /**
-     * @description Called by Salesforce when the queueable completes. Publishes a completion
-     *              event for CursorBatchCompletionHandler to process.
-     * @param ctx Finalizer context containing job result and any exception
+     * @description Called by Salesforce when the queueable completes. Handles retry logic for
+     *              failures and publishes completion events.
+     * @param finalizerCtx Finalizer context containing job result and any exception
      */
-    public void execute(System.FinalizerContext ctx) {
-        Boolean success = ctx.getResult() == System.ParentJobResult.SUCCESS;
-        Exception ex = !success ? ctx.getException() : null;
+    public void execute(System.FinalizerContext finalizerCtx) {
+        Boolean success = finalizerCtx.getResult() == System.ParentJobResult.SUCCESS;
+        Exception ex = !success ? finalizerCtx.getException() : null;
         executeInternal(success, ex);
     }
     
@@ -42,15 +40,69 @@ public inherited sharing class CursorBatchWorkerFinalizer implements System.Fina
      */
     @TestVisible
     private void executeInternal(Boolean success, Exception ex) {
-        String errorMessage = null;
-        
-        if (!success) {
-            errorMessage = ex != null ? ex.getMessage() + '\n' + ex.getStackTraceString() : 'Unknown error';
-            logger.logError('CursorBatchWorkerFinalizer: Worker #' + workerNum + ' failed: ' + errorMessage);
+        if (success) {
+            publishCompletionEvent(true, null);
+            return;
         }
         
+        String errorMessage = CursorBatchLogger.formatExceptionMessage(ex);
+        logger.logError('CursorBatchWorkerFinalizer: Worker #' + ctx.workerNum + ' failed at position ' + 
+            ctx.startPosition + ': ' + errorMessage);
+        
+        // Check if we can retry
+        Integer maxRetries = CursorBatchCoordinator.getWorkerMaxRetries(ctx.jobName);
+        if (ctx.retryCount < maxRetries) {
+            retryWorker(maxRetries, errorMessage);
+        } else {
+            // Max retries exhausted - publish failure event
+            logger.logError('CursorBatchWorkerFinalizer: Worker #' + ctx.workerNum + 
+                ' max retries (' + maxRetries + ') exhausted at position ' + ctx.startPosition);
+            publishCompletionEvent(false, errorMessage);
+        }
+    }
+    
+    /**
+     * @description Reconstructs cursor and re-enqueues worker with delay for retry.
+     * @param maxRetries Maximum retry attempts (passed to avoid redundant config lookup)
+     * @param errorMessage Error from the failed attempt (for logging)
+     */
+    private void retryWorker(Integer maxRetries, String errorMessage) {
+        Integer newRetryCount = ctx.retryCount + 1;
+        Integer delay = CursorBatchCoordinator.calculateRetryDelay(ctx.jobName, ctx.retryCount, null);
+        
+        logger.logInfo('CursorBatchWorkerFinalizer: Scheduling retry ' + newRetryCount + ' of ' + maxRetries + 
+            ' for worker #' + ctx.workerNum + ' in ' + delay + ' min at position ' + ctx.startPosition);
+        
+        try {
+            // Reconstruct cursor from queryId
+            Database.Cursor cursor = CursorBatchContext.reconstructCursor(ctx.cursorQueryId);
+            if (cursor == null) {
+                logger.logError('CursorBatchWorkerFinalizer: Failed to reconstruct cursor for queryId: ' + ctx.cursorQueryId);
+                publishCompletionEvent(false, 'Failed to reconstruct cursor for retry: ' + errorMessage);
+                return;
+            }
+            
+            // Create retry context with new cursor and incremented retry count
+            CursorBatchContext retryCtx = ctx.withCursor(cursor).withRetry(newRetryCount);
+            
+            // Instantiate and enqueue worker
+            CursorBatchWorker worker = CursorBatchContext.createWorkerInstance(ctx.workerClassName, retryCtx);
+            System.enqueueJob(worker, delay);
+            
+        } catch (Exception e) {
+            logger.logException('CursorBatchWorkerFinalizer: Failed to schedule retry for worker #' + ctx.workerNum, e);
+            publishCompletionEvent(false, 'Failed to schedule retry: ' + e.getMessage() + '. Original error: ' + errorMessage);
+        }
+    }
+    
+    /**
+     * @description Publishes a worker completion event for CursorBatchCompletionHandler.
+     * @param success True if worker succeeded; false if failed
+     * @param errorMessage Error details if failed; null if successful
+     */
+    private void publishCompletionEvent(Boolean success, String errorMessage) {
         CursorBatch_WorkerComplete__e evt = new CursorBatch_WorkerComplete__e(
-            Job_Id__c = jobRecordId,
+            Job_Id__c = ctx.jobRecordId,
             Success__c = success,
             Error_Message__c = errorMessage
         );
@@ -63,4 +115,3 @@ public inherited sharing class CursorBatchWorkerFinalizer implements System.Fina
         }
     }
 }
-

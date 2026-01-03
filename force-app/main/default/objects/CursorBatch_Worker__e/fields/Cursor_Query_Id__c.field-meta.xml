@@ -1,12 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
-    <fullName>Cache_Key__c</fullName>
-    <description>Platform Cache key for retrieving the shared Database.Cursor instance.</description>
+    <fullName>Cursor_Query_Id__c</fullName>
+    <description>The queryId from the serialized Database.Cursor, used to reconstruct the cursor in workers.</description>
     <externalId>false</externalId>
     <isFilteringDisabled>false</isFilteringDisabled>
     <isNameField>false</isNameField>
     <isSortingDisabled>false</isSortingDisabled>
-    <label>Cache Key</label>
+    <label>Cursor Query Id</label>
     <length>255</length>
     <required>true</required>
     <type>Text</type>

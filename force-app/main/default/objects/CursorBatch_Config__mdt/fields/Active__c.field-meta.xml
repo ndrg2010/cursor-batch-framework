@@ -5,6 +5,7 @@
     <description>Indicates whether this configuration is active and should be used for job execution.</description>
     <externalId>false</externalId>
     <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>When checked, this configuration will be used when running batch jobs. Uncheck to disable a configuration without deleting it.</inlineHelpText>
     <label>Active</label>
     <type>Checkbox</type>
 </CustomField>

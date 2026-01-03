@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Status__c</fullName>
-    <description>Current status of the batch job</description>
+    <description>Current status of the batch job.</description>
     <externalId>false</externalId>
+    <inlineHelpText>Current state: Preparing (initializing), Processing (workers running), Complete (all workers succeeded), or Failed (one or more workers failed).</inlineHelpText>
     <label>Status</label>
     <required>true</required>
     <type>Picklist</type>
@@ -11,9 +12,14 @@
         <valueSetDefinition>
             <sorted>false</sorted>
             <value>
-                <fullName>Running</fullName>
+                <fullName>Preparing</fullName>
                 <default>true</default>
-                <label>Running</label>
+                <label>Preparing</label>
+            </value>
+            <value>
+                <fullName>Processing</fullName>
+                <default>false</default>
+                <label>Processing</label>
             </value>
             <value>
                 <fullName>Complete</fullName>

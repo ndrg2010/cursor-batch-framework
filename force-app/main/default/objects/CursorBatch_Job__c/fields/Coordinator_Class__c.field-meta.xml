@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Coordinator_Class__c</fullName>
-    <description>Fully qualified class name of the coordinator for completion callback</description>
+    <description>Fully qualified class name of the coordinator for completion callback.</description>
     <externalId>false</externalId>
+    <inlineHelpText>The Apex class that coordinates this batch job. Used to call the onComplete() method when all workers finish.</inlineHelpText>
     <label>Coordinator Class</label>
     <length>255</length>
     <required>true</required>

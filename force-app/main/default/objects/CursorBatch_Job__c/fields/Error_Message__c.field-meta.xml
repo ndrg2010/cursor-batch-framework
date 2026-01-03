@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Error_Message__c</fullName>
-    <description>First error encountered by any worker (similar to AsyncApexJob.ExtendedStatus)</description>
+    <description>First error encountered by any worker (similar to AsyncApexJob.ExtendedStatus).</description>
     <externalId>false</externalId>
+    <inlineHelpText>Details of the first error that caused a worker to fail. Check this field when the job status is Failed to diagnose issues.</inlineHelpText>
     <label>Error Message</label>
     <length>32768</length>
     <required>false</required>

@@ -5,7 +5,7 @@
  * @group CursorBatchFramework
  * @see ICursorBatchLogger
  */
-public inherited sharing class CursorBatchLogger implements ICursorBatchLogger {
+public without sharing class CursorBatchLogger implements ICursorBatchLogger {
     
     private static final String LOG_PREFIX = '[CursorBatch] ';
     
@@ -42,5 +42,13 @@ public inherited sharing class CursorBatchLogger implements ICursorBatchLogger {
         System.debug(LoggingLevel.ERROR, LOG_PREFIX + message + ': ' + e.getMessage());
         System.debug(LoggingLevel.ERROR, e.getStackTraceString());
     }
+    
+    /**
+     * @description Formats an exception into a single error message string with stack trace.
+     * @param e Exception to format, or null
+     * @return Formatted error message with stack trace, or 'Unknown error' if null
+     */
+    public static String formatExceptionMessage(Exception e) {
+        return e != null ? e.getMessage() + '\n' + e.getStackTraceString() : 'Unknown error';
+    }
 }
-

@@ -4,6 +4,7 @@
     <description>Number of parallel queueable workers to spawn for processing the cursor results.</description>
     <externalId>false</externalId>
     <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>How many worker jobs run simultaneously. Higher values process faster but consume more async job limits. Recommended: 1-10 depending on org limits.</inlineHelpText>
     <label>Parallel Count</label>
     <precision>18</precision>
     <required>false</required>

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Query__c</fullName>
+    <description>The SOQL query used to create the Database.Cursor for this job.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>The SOQL query that was executed to create the cursor. Useful for debugging and auditing what data was processed.</inlineHelpText>
+    <label>Query</label>
+    <length>131072</length>
+    <trackTrending>false</trackTrending>
+    <type>LongTextArea</type>
+    <visibleLines>5</visibleLines>
+</CustomField>

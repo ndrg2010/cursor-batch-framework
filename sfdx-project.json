@@ -6,7 +6,7 @@
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "High-performance parallel batch processing framework using Database.Cursor, Platform Cache, Platform Events, and Queueables to overcome governor limits and achieve massive parallelization"
+      "versionDescription": "High-performance parallel batch processing framework using Database.Cursor, Platform Events, and Queueables to overcome governor limits and achieve massive parallelization"
     }
   ],
   "name": "cursor-batch-framework",

@@ -5,26 +5,15 @@
  * @see CursorBatchWorkerFinalizer
  * @see CursorBatchCoordinator
  */
-public inherited sharing class CursorBatchCompletionHandler {
+public without sharing class CursorBatchCompletionHandler {
     
     private ICursorBatchLogger logger;
-    private ICursorBatchCacheService cacheService;
     
     /**
-     * @description Default constructor initializing the default logger and cache service.
+     * @description Default constructor initializing the default logger.
      */
     public CursorBatchCompletionHandler() {
         this.logger = CursorBatchLogger.getDefault();
-        this.cacheService = new CursorBatchCacheServiceImpl();
-    }
-    
-    /**
-     * @description Sets a custom cache service implementation for testing.
-     * @param cacheService Custom ICursorBatchCacheService implementation
-     */
-    @TestVisible
-    private void setCacheService(ICursorBatchCacheService cacheService) {
-        this.cacheService = cacheService;
     }
     
     /**
@@ -48,13 +37,7 @@ public inherited sharing class CursorBatchCompletionHandler {
         }
         
         // Query job records
-        Map<Id, CursorBatch_Job__c> jobsMap = new Map<Id, CursorBatch_Job__c>([
-            SELECT Id, Job_Name__c, Total_Workers__c, Completed_Workers__c, Failed_Workers__c,
-                   Status__c, Coordinator_Class__c, Error_Message__c, Cache_Key__c
-            FROM CursorBatch_Job__c
-            WHERE Id IN :eventsByJob.keySet()
-            FOR UPDATE
-        ]);
+        Map<Id, CursorBatch_Job__c> jobsMap = CursorBatchSelector.getJobsByIds(eventsByJob.keySet());
         
         List<CursorBatch_Job__c> jobsToUpdate = new List<CursorBatch_Job__c>();
         List<CursorBatch_Job__c> completedJobs = new List<CursorBatch_Job__c>();
@@ -104,53 +87,9 @@ public inherited sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
-        // Invoke callbacks and clean up cache for completed jobs
+        // Invoke callbacks for completed jobs
         for (CursorBatch_Job__c job : completedJobs) {
-            cleanupCache(job);
-            invokeCallback(job);
-        }
-    }
-    
-    /**
-     * @description Removes the cached cursor for a completed job to free Platform Cache capacity.
-     * @param job Job record containing the cache key
-     */
-    private void cleanupCache(CursorBatch_Job__c job) {
-        if (String.isNotBlank(job.Cache_Key__c)) {
-            cacheService.removeCursor(job.Cache_Key__c);
-        }
-    }
-    
-    /**
-     * @description Invokes the coordinator's finish() callback method via reflection.
-     * @param job Job record containing coordinator class name and completion details
-     */
-    private void invokeCallback(CursorBatch_Job__c job) {
-        String coordinatorClass = job.Coordinator_Class__c;
-        if (String.isBlank(coordinatorClass)) {
-            return;
-        }
-        
-        try {
-            Type coordType = Type.forName(coordinatorClass);
-            if (coordType == null) {
-                logger.logError('CursorBatchCompletionHandler: Coordinator class not found: ' + coordinatorClass);
-                return;
-            }
-            
-            Object instance = coordType.newInstance();
-            if (!(instance instanceof CursorBatchCoordinator)) {
-                logger.logError('CursorBatchCompletionHandler: Class ' + coordinatorClass + ' must extend CursorBatchCoordinator');
-                return;
-            }
-            
-            CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
-            coordinator.initializeJobName(job.Job_Name__c);
-            coordinator.finish(job);
-            
-        } catch (Exception e) {
-            logger.logException('CursorBatchCompletionHandler: Error invoking callback for ' + coordinatorClass, e);
+            CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
         }
     }
 }
-

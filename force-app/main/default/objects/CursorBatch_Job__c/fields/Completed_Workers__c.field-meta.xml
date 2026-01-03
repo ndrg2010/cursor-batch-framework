@@ -2,8 +2,9 @@
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Completed_Workers__c</fullName>
     <defaultValue>0</defaultValue>
-    <description>Number of workers that have completed successfully</description>
+    <description>Number of workers that have completed successfully.</description>
     <externalId>false</externalId>
+    <inlineHelpText>Count of worker jobs that finished successfully. Compare with Total Workers to track progress.</inlineHelpText>
     <label>Completed Workers</label>
     <precision>18</precision>
     <required>false</required>

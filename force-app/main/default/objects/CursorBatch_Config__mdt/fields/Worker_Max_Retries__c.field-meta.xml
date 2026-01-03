@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Worker_Max_Retries__c</fullName>
+    <defaultValue>3</defaultValue>
+    <description>Maximum number of retry attempts for failed worker page processing.</description>
+    <externalId>false</externalId>
+    <fieldManageability>SubscriberControlled</fieldManageability>
+    <inlineHelpText>How many times a worker should retry after a failure before giving up. Uses exponential backoff between attempts. Default is 3.</inlineHelpText>
+    <label>Worker Max Retries</label>
+    <precision>2</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

@@ -6,4 +6,3 @@
 trigger CursorBatchWorkerTrigger on CursorBatch_Worker__e (after insert) {
     new CursorBatchWorkerTriggerHandler().handle(Trigger.new);
 }
-

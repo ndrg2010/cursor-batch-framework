@@ -1,32 +1,22 @@
 /**
  * @description Handles CursorBatch_Worker__e Platform Events. Spawns cursor batch workers
- *              using dynamic instantiation. Uses instance methods for testability.
+ *              using dynamic instantiation. Reconstructs Database.Cursor from the queryId
+ *              passed in each event. Uses instance methods for testability.
  * @group CursorBatchFramework
  * @see CursorBatchWorker
  * @see CursorBatchCoordinator
  */
-public virtual inherited sharing class CursorBatchWorkerTriggerHandler {
+public virtual without sharing class CursorBatchWorkerTriggerHandler {
     
-    private Map<String, Database.Cursor> cursorsByKey;
+    private Map<String, Database.Cursor> cursorsByQueryId;
     private ICursorBatchLogger logger;
-    private ICursorBatchCacheService cacheService;
     
     /**
-     * @description Default constructor initializing the cursor cache map, logger, and cache service.
+     * @description Default constructor initializing the cursor map and logger.
      */
     public CursorBatchWorkerTriggerHandler() {
-        this.cursorsByKey = new Map<String, Database.Cursor>();
+        this.cursorsByQueryId = new Map<String, Database.Cursor>();
         this.logger = CursorBatchLogger.getDefault();
-        this.cacheService = new CursorBatchCacheServiceImpl();
-    }
-    
-    /**
-     * @description Sets a custom cache service implementation for testing.
-     * @param cacheService Custom ICursorBatchCacheService implementation
-     */
-    @TestVisible
-    private void setCacheService(ICursorBatchCacheService cacheService) {
-        this.cacheService = cacheService;
     }
     
     /**
@@ -44,21 +34,22 @@ public virtual inherited sharing class CursorBatchWorkerTriggerHandler {
     }
     
     /**
-     * @description Processes a single event by retrieving the cursor and enqueueing a worker.
+     * @description Processes a single event by reconstructing the cursor and enqueueing a worker.
      * @param evt CursorBatch_Worker__e event containing worker parameters
      */
     private void processEvent(CursorBatch_Worker__e evt) {
         try {
-            String cacheKey = evt.Cache_Key__c;
-            Database.Cursor cursor = cursorsByKey.get(cacheKey);
+            String queryId = evt.Cursor_Query_Id__c;
+            Database.Cursor cursor = cursorsByQueryId.get(queryId);
             
             if (cursor == null) {
-                cursor = cacheService.getCursor(cacheKey);
+                cursor = CursorBatchContext.reconstructCursor(queryId);
                 if (cursor == null) {
-                    logger.logError('CursorBatchWorkerTriggerHandler: Cursor not found in cache for key "' + cacheKey + '"');
+                    logger.logError('CursorBatchWorkerTriggerHandler: Failed to reconstruct cursor for queryId "' + queryId + '"');
                     return;
                 }
-                cursorsByKey.put(cacheKey, cursor);
+                logger.logInfo('CursorBatchWorkerTriggerHandler: Reconstructed cursor for queryId "' + queryId + '"');
+                cursorsByQueryId.put(queryId, cursor);
             }
             
             CursorBatchContext ctx = CursorBatchContext.fromEvent(evt, cursor);
@@ -81,47 +72,12 @@ public virtual inherited sharing class CursorBatchWorkerTriggerHandler {
             throw new CursorBatchCoordinator.CursorBatchException('Worker class name not specified for job: ' + ctx.jobName);
         }
         
-        CursorBatchWorker worker = createWorkerInstance(workerClassName, ctx);
+        CursorBatchWorker worker = CursorBatchContext.createWorkerInstance(workerClassName, ctx);
         
         if (!Test.isRunningTest()) {
             System.enqueueJob(worker);
             logger.logInfo('CursorBatchWorkerTriggerHandler: Enqueued ' + workerClassName + ' #' + ctx.workerNum + 
                 ' (positions ' + ctx.startPosition + '-' + ctx.endPosition + ')');
-        }
-    }
-    
-    /**
-     * @description Creates a worker instance using reflection-based instantiation.
-     * @param className Fully qualified API name of the worker class
-     * @param ctx CursorBatchContext to initialize the worker with
-     * @return Initialized CursorBatchWorker instance ready for enqueueing
-     * @throws CursorBatchException When class not found, not a CursorBatchWorker, or lacks no-arg constructor
-     */
-    @TestVisible
-    private CursorBatchWorker createWorkerInstance(String className, CursorBatchContext ctx) {
-        Type workerType = Type.forName(className);
-        
-        if (workerType == null) {
-            throw new CursorBatchCoordinator.CursorBatchException('Worker class not found: ' + className);
-        }
-        
-        try {
-            Object instance = workerType.newInstance();
-            
-            if (!(instance instanceof CursorBatchWorker)) {
-                throw new CursorBatchCoordinator.CursorBatchException(
-                    'Worker class "' + className + '" must extend CursorBatchWorker'
-                );
-            }
-            
-            CursorBatchWorker worker = (CursorBatchWorker) instance;
-            worker.initialize(ctx);
-            return worker;
-            
-        } catch (System.TypeException te) {
-            throw new CursorBatchCoordinator.CursorBatchException(
-                'Worker class "' + className + '" must have a no-arg constructor: ' + te.getMessage()
-            );
         }
     }
     

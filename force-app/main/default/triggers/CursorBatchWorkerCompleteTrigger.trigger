@@ -5,4 +5,3 @@
 trigger CursorBatchWorkerCompleteTrigger on CursorBatch_WorkerComplete__e (after insert) {
     new CursorBatchCompletionHandler().handle(Trigger.new);
 }
-

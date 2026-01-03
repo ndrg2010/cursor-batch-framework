@@ -1,22 +1,32 @@
 /**
  * @description Abstract base class for cursor-based batch coordinators. Executes a query,
- *              creates a Database.Cursor, caches it in Platform Cache, and publishes
- *              Platform Events to fan out parallel workers. Platform Events are used
- *              because queueable-to-queueable chaining is limited to one job.
+ *              creates a Database.Cursor, extracts its queryId for cross-transaction access,
+ *              and publishes Platform Events to fan out parallel workers. Platform Events
+ *              are used because queueable-to-queueable chaining is limited to one job.
  * @group CursorBatchFramework
  * @see CursorBatchWorker
  * @see CursorBatchWorkerTriggerHandler
  */
-public abstract inherited sharing class CursorBatchCoordinator implements Queueable, Database.AllowsCallouts {
+public abstract without sharing class CursorBatchCoordinator implements Queueable, Database.AllowsCallouts {
     
     private static final Integer DEFAULT_WORKER_COUNT = 50;
     private static final Integer DEFAULT_PAGE_SIZE = 20;
-    private static final Integer DEFAULT_TTL_HOURS = 8;
     private static final Integer PE_BATCH_SIZE = 200;
+    
+    // Shared constants for retry logic
+    public static final Integer DEFAULT_COORDINATOR_MAX_RETRIES = 3;
+    public static final Integer DEFAULT_WORKER_MAX_RETRIES = 3;
+    public static final Integer DEFAULT_WORKER_RETRY_DELAY = 1;
+    public static final Integer MAX_DELAY_MINUTES = 10;
     
     protected String jobName;
     protected ICursorBatchLogger logger;
-    protected ICursorBatchCacheService cacheService;
+    
+    /**
+     * @description Existing job record ID for retry scenarios. When set, the coordinator
+     *              will reuse this job record instead of creating a new one.
+     */
+    private Id existingJobId;
     
     /**
      * @description Protected no-arg constructor for reflection-based instantiation. When using
@@ -24,7 +34,6 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
      */
     protected CursorBatchCoordinator() {
         this.logger = CursorBatchLogger.getDefault();
-        this.cacheService = new CursorBatchCacheServiceImpl();
     }
     
     /**
@@ -47,6 +56,15 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
     }
     
     /**
+     * @description Sets an existing job record ID for retry scenarios. When set, the coordinator
+     *              will fetch and update this job record instead of creating a new one.
+     * @param jobId ID of existing CursorBatch_Job__c record to reuse
+     */
+    public void setExistingJobId(Id jobId) {
+        this.existingJobId = jobId;
+    }
+    
+    /**
      * @description Sets a custom logger implementation. Call from subclass constructor to
      *              integrate with Nebula Logger, Pharos, or other logging frameworks.
      * @param logger Custom ICursorBatchLogger implementation
@@ -54,15 +72,6 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
     @TestVisible
     protected void setLogger(ICursorBatchLogger logger) {
         this.logger = logger;
-    }
-    
-    /**
-     * @description Sets a custom cache service implementation for testing.
-     * @param cacheService Custom ICursorBatchCacheService implementation
-     */
-    @TestVisible
-    protected void setCacheService(ICursorBatchCacheService cacheService) {
-        this.cacheService = cacheService;
     }
     
     /**
@@ -77,8 +86,8 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
     }
     
     /**
-     * @description Executes the coordinator: runs query, creates cursor, caches it, and fans
-     *              out workers via Platform Events.
+     * @description Executes the coordinator: runs query, creates cursor, extracts queryId, and
+     *              fans out workers via Platform Events.
      * @param ctx Queueable context (unused; required by Queueable interface)
      * @throws CursorBatchException When no active config is found for the job name
      */
@@ -89,26 +98,29 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
                 throw new CursorBatchException('No active config found for job: ' + jobName);
             }
             
-            Integer workerCount = config.Parallel_Count__c != null 
-                ? Integer.valueOf(config.Parallel_Count__c) 
-                : DEFAULT_WORKER_COUNT;
-            Integer pageSize = config.Page_Size__c != null 
-                ? Integer.valueOf(config.Page_Size__c) 
-                : DEFAULT_PAGE_SIZE;
-            Integer ttlHours = config.Cache_TTL_Hours__c != null 
-                ? Integer.valueOf(config.Cache_TTL_Hours__c) 
-                : DEFAULT_TTL_HOURS;
-            Integer ttlSeconds = ttlHours * 3600;
+            Integer workerCount = getConfigIntOrDefault(config.Parallel_Count__c, DEFAULT_WORKER_COUNT);
+            Integer pageSize = getConfigIntOrDefault(config.Page_Size__c, DEFAULT_PAGE_SIZE);
             
             String query = buildQuery();
             logger.logInfo('CursorBatchCoordinator query for ' + jobName + ': ' + query);
             
+            // Create or fetch job record BEFORE cursor query (with Preparing status)
+            CursorBatch_Job__c jobRecord = getOrCreateJobRecord(query);
+            
+            // Attach finalizer BEFORE the cursor query so it can handle timeouts
+            attachFinalizer(jobRecord.Id);
+            
+            Long queryStartTime = System.currentTimeMillis();
             Database.Cursor dbCursor = Database.getCursor(query);
             Integer totalRecords = dbCursor.getNumRecords();
-            logger.logInfo('CursorBatchCoordinator totalRecords: ' + totalRecords);
+            Long queryDurationMs = System.currentTimeMillis() - queryStartTime;
+            logger.logInfo('CursorBatchCoordinator cursor query took ' + queryDurationMs + 'ms, totalRecords: ' + totalRecords);
             
             if (totalRecords == 0) {
                 logger.logInfo('No records to process for ' + jobName + ', exiting.');
+                jobRecord.Status__c = 'Complete';
+                jobRecord.Completed_At__c = System.now();
+                update jobRecord;
                 onComplete();
                 return;
             }
@@ -118,7 +130,14 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
             
             logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers via Platform Events');
             
-            fanOutWithPlatformEvents(dbCursor, actualWorkerCount, recordsPerWorker, totalRecords, pageSize, ttlSeconds);
+            // Extract queryId from cursor for cross-transaction access
+            String cursorQueryId = extractCursorQueryId(dbCursor);
+            logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
+            
+            // Update job record with cursor details and Processing status
+            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, query, queryDurationMs);
+            
+            fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
             
             onComplete();
             
@@ -129,45 +148,139 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
     }
     
     /**
-     * @description Creates Platform Events to fan out parallel workers with cursor positions.
-     * @param dbCursor Database cursor for record access
+     * @description Gets or creates the job record. If existingJobId is set, fetches that record.
+     *              Otherwise creates a new record with Preparing status.
+     * @param query The SOQL query (stored on new records)
+     * @return CursorBatch_Job__c record
+     */
+    private CursorBatch_Job__c getOrCreateJobRecord(String query) {
+        if (existingJobId != null) {
+            // Fetch existing job record (retry scenario)
+            CursorBatch_Job__c existingJob = CursorBatchSelector.getJobById(existingJobId);
+            if (existingJob != null) {
+                logger.logInfo('CursorBatchCoordinator reusing existing job record: ' + existingJobId);
+                return existingJob;
+            }
+            logger.logError('CursorBatchCoordinator: Existing job record not found: ' + existingJobId + ', creating new one');
+        }
+        
+        // Create new job record with Preparing status
+        CursorBatch_Job__c jobRecord = new CursorBatch_Job__c(
+            Job_Name__c = jobName,
+            Status__c = 'Preparing',
+            Coordinator_Class__c = CursorBatchContext.getClassName(this),
+            Query__c = query,
+            Started_At__c = System.now(),
+            Retry_Count__c = 0,
+            Total_Workers__c = 0,
+            Completed_Workers__c = 0,
+            Failed_Workers__c = 0
+        );
+        insert jobRecord;
+        logger.logInfo('CursorBatchCoordinator created job record with Preparing status: ' + jobRecord.Id);
+        return jobRecord;
+    }
+    
+    /**
+     * @description Attaches the coordinator finalizer to handle cursor query failures.
+     *              Handles the case where System.attachFinalizer() is not allowed outside
+     *              a valid Queueable execution context (e.g., direct test calls).
+     * @param jobRecordId ID of the job record for the finalizer
+     */
+    private void attachFinalizer(Id jobRecordId) {
+        CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
+            jobRecordId,
+            jobName,
+            CursorBatchContext.getClassName(this),
+            logger
+        );
+        try {
+            System.attachFinalizer(finalizer);
+            logger.logInfo('CursorBatchCoordinator attached finalizer for job: ' + jobRecordId);
+        } catch (System.HandledException e) {
+            // System.attachFinalizer is not allowed outside a Queueable context
+            // This can happen in tests that call execute() directly instead of via submit()
+            logger.logInfo('CursorBatchCoordinator: Finalizer not attached (not in Queueable context)');
+        }
+    }
+    
+    /**
+     * @description Updates the job record after successful cursor creation.
+     * @param jobRecord Job record to update
+     * @param workerCount Total number of workers for this job
+     * @param cursorQueryId The queryId for cursor reconstruction
+     * @param totalRecords Total number of records in the cursor query result set
+     * @param query The SOQL query used to create the cursor
+     * @param queryDurationMs Time in milliseconds to execute the cursor query
+     */
+    private void updateJobRecordAfterCursor(
+        CursorBatch_Job__c jobRecord, 
+        Integer workerCount, 
+        String cursorQueryId, 
+        Integer totalRecords, 
+        String query, 
+        Long queryDurationMs
+    ) {
+        jobRecord.Total_Workers__c = workerCount;
+        jobRecord.Total_Records__c = totalRecords;
+        jobRecord.Cursor_Query_Id__c = cursorQueryId;
+        jobRecord.Query__c = query;
+        jobRecord.Query_Duration_Ms__c = queryDurationMs;
+        jobRecord.Status__c = 'Processing';
+        update jobRecord;
+        logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
+    }
+    
+    /**
+     * @description Extracts the queryId from a Database.Cursor for cross-transaction storage.
+     *              The queryId can be used to reconstruct the cursor via JSON deserialization.
+     * @param cursor The Database.Cursor to extract the queryId from
+     * @return The queryId string that uniquely identifies this cursor
+     */
+    private String extractCursorQueryId(Database.Cursor cursor) {
+        String cursorJson = JSON.serialize(cursor);
+        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
+        return (String) cursorMap.get('queryId');
+    }
+    
+    /**
+     * @description Creates and publishes Platform Events to fan out parallel workers.
+     * @param cursorQueryId The queryId for cursor reconstruction
+     * @param jobRecordId Job tracking record Id
      * @param workerCount Number of parallel workers to create
      * @param recordsPerWorker Number of records assigned to each worker
      * @param totalRecords Total number of records in the cursor
      * @param pageSize Number of records to fetch per page
-     * @param ttlSeconds Cache TTL in seconds for the cursor
      */
     private void fanOutWithPlatformEvents(
-        Database.Cursor dbCursor,
+        String cursorQueryId,
+        Id jobRecordId,
         Integer workerCount,
         Integer recordsPerWorker,
         Integer totalRecords,
-        Integer pageSize,
-        Integer ttlSeconds
+        Integer pageSize
     ) {
-        String cacheKey = cacheService.generateCacheKey(jobName);
-        cacheService.cacheCursor(cacheKey, dbCursor);
-        
-        logger.logInfo('CursorBatchCoordinator cached cursor with key: ' + cacheKey);
-        
-        // Create job tracking record for completion callbacks
-        CursorBatch_Job__c jobRecord = createJobRecord(workerCount, cacheKey);
-        
         List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>();
+        
+        // Diagnostic: Log sharding calculation
+        logger.logInfo('Sharding calc: totalRecords=' + totalRecords + ', workerCount=' + workerCount + ', recordsPerWorker=' + recordsPerWorker + ', pageSize=' + pageSize);
         
         for (Integer i = 0; i < workerCount; i++) {
             Integer startPos = i * recordsPerWorker;
             Integer endPos = Math.min(startPos + recordsPerWorker, totalRecords);
             Integer workerNum = i + 1;
             
+            // Diagnostic: Log each worker's assigned range
+            logger.logInfo('PE Worker #' + workerNum + ': range [' + startPos + ', ' + endPos + '), pageSize=' + pageSize);
+            
             events.add(new CursorBatch_Worker__e(
                 Job_Name__c = jobName,
-                Cache_Key__c = cacheKey,
+                Cursor_Query_Id__c = cursorQueryId,
                 Start_Position__c = startPos,
                 End_Position__c = endPos,
                 Page_Size__c = pageSize,
                 Worker_Number__c = workerNum,
-                Job_Record_Id__c = jobRecord.Id,
+                Job_Record_Id__c = jobRecordId,
                 Worker_Class__c = getWorkerClassName()
             ));
         }
@@ -175,28 +288,6 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
         if (!events.isEmpty()) {
             publishEventBatches(events);
         }
-    }
-    
-    /**
-     * @description Creates a job tracking record for completion callbacks.
-     * @param workerCount Total number of workers for this job
-     * @param cacheKey Cache key used to store the cursor
-     * @return Inserted CursorBatch_Job__c record
-     */
-    private CursorBatch_Job__c createJobRecord(Integer workerCount, String cacheKey) {
-        CursorBatch_Job__c jobRecord = new CursorBatch_Job__c(
-            Job_Name__c = jobName,
-            Total_Workers__c = workerCount,
-            Completed_Workers__c = 0,
-            Failed_Workers__c = 0,
-            Status__c = 'Running',
-            Coordinator_Class__c = CursorBatchContext.getClassName(this),
-            Cache_Key__c = cacheKey,
-            Started_At__c = System.now()
-        );
-        insert jobRecord;
-        logger.logInfo('CursorBatchCoordinator created job tracking record: ' + jobRecord.Id);
-        return jobRecord;
     }
     
     /**
@@ -238,14 +329,63 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
         if (Test.isRunningTest() && testConfig != null) {
             return testConfig;
         }
-        List<CursorBatch_Config__mdt> configs = [
-            SELECT MasterLabel, Parallel_Count__c, Page_Size__c, Cache_TTL_Hours__c
-            FROM CursorBatch_Config__mdt
-            WHERE MasterLabel = :jobName
-            AND Active__c = true
-            LIMIT 1
-        ];
-        return configs.isEmpty() ? null : configs[0];
+        return CursorBatchSelector.getConfigByJobName(jobName);
+    }
+    
+    /**
+     * @description Gets the maximum worker retries from config or returns default.
+     * @param jobName Job name to look up configuration
+     * @return Maximum number of retry attempts for worker pages
+     */
+    public static Integer getWorkerMaxRetries(String jobName) {
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        return getConfigIntOrDefault(config?.Worker_Max_Retries__c, DEFAULT_WORKER_MAX_RETRIES);
+    }
+    
+    /**
+     * @description Gets the worker retry base delay from config or returns default.
+     * @param jobName Job name to look up configuration
+     * @return Base delay in minutes for exponential backoff
+     */
+    public static Integer getWorkerRetryDelay(String jobName) {
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        return getConfigIntOrDefault(config?.Worker_Retry_Delay__c, DEFAULT_WORKER_RETRY_DELAY);
+    }
+    
+    /**
+     * @description Gets the maximum coordinator retries from config or returns default.
+     * @param jobName Job name to look up configuration
+     * @return Maximum number of retry attempts for the coordinator
+     */
+    public static Integer getCoordinatorMaxRetries(String jobName) {
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        return getConfigIntOrDefault(config?.Coordinator_Max_Retries__c, DEFAULT_COORDINATOR_MAX_RETRIES);
+    }
+    
+    /**
+     * @description Helper to extract integer config value or return default.
+     * @param value Decimal config field value (may be null)
+     * @param defaultVal Default value if null
+     * @return Integer value or default
+     */
+    private static Integer getConfigIntOrDefault(Decimal value, Integer defaultVal) {
+        return value != null ? Integer.valueOf(value) : defaultVal;
+    }
+    
+    /**
+     * @description Calculates the retry delay using exponential backoff or suggested delay.
+     * @param jobName Job name to look up configuration
+     * @param retryCount Current retry attempt count
+     * @param suggestedDelay Caller-suggested delay, or null for exponential backoff
+     * @return Delay in minutes (capped at MAX_DELAY_MINUTES)
+     */
+    public static Integer calculateRetryDelay(String jobName, Integer retryCount, Integer suggestedDelay) {
+        if (suggestedDelay != null) {
+            return Math.min(suggestedDelay, MAX_DELAY_MINUTES);
+        }
+        Integer baseDelay = getWorkerRetryDelay(jobName);
+        Integer exponentialDelay = (Integer)(baseDelay * Math.pow(2, retryCount));
+        return Math.min(exponentialDelay, MAX_DELAY_MINUTES);
     }
     
     /**
@@ -289,13 +429,7 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
      */
     protected virtual Boolean isJobAlreadyRunning(String jobName) {
         // Check custom job tracking record for running jobs with the same name
-        List<CursorBatch_Job__c> runningJobs = [
-            SELECT Id 
-            FROM CursorBatch_Job__c 
-            WHERE Job_Name__c = :jobName 
-            AND Status__c = 'Running'
-            LIMIT 1
-        ];
+        List<CursorBatch_Job__c> runningJobs = CursorBatchSelector.getRunningJobsByName(jobName);
         if (!runningJobs.isEmpty()) {
             logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found CursorBatch_Job__c record)');
             return true;
@@ -303,19 +437,54 @@ public abstract inherited sharing class CursorBatchCoordinator implements Queuea
         
         // Check AsyncApexJob for running queueables of the same coordinator class
         String className = CursorBatchContext.getClassName(this);
-        List<AsyncApexJob> asyncJobs = [
-            SELECT Id 
-            FROM AsyncApexJob 
-            WHERE ApexClass.Name = :className 
-            AND Status IN ('Queued', 'Holding', 'Preparing', 'Processing')
-            LIMIT 1
-        ];
+        List<AsyncApexJob> asyncJobs = CursorBatchSelector.getRunningAsyncJobsByClass(className);
         if (!asyncJobs.isEmpty()) {
             logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found AsyncApexJob for ' + className + ')');
             return true;
         }
         
         return false;
+    }
+    
+    /**
+     * @description Invokes the coordinator's finish() callback method via reflection.
+     *              Used by CursorBatchCompletionHandler and CursorBatchCoordinatorFinalizer
+     *              to notify the coordinator when all workers complete or when the job fails.
+     * @param coordinatorClassName Fully qualified name of the coordinator class
+     * @param jobName Job name for initialization
+     * @param jobRecord Job record containing completion details
+     * @param logger Logger instance for error reporting
+     */
+    public static void invokeFinishCallback(
+        String coordinatorClassName, 
+        String jobName, 
+        CursorBatch_Job__c jobRecord, 
+        ICursorBatchLogger logger
+    ) {
+        if (String.isBlank(coordinatorClassName)) {
+            return;
+        }
+        
+        try {
+            Type coordType = Type.forName(coordinatorClassName);
+            if (coordType == null) {
+                logger.logError('CursorBatchCoordinator: Coordinator class not found: ' + coordinatorClassName);
+                return;
+            }
+            
+            Object instance = coordType.newInstance();
+            if (!(instance instanceof CursorBatchCoordinator)) {
+                logger.logError('CursorBatchCoordinator: Class ' + coordinatorClassName + ' must extend CursorBatchCoordinator');
+                return;
+            }
+            
+            CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
+            coordinator.initializeJobName(jobName);
+            coordinator.finish(jobRecord);
+            
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinator: Error invoking finish() for ' + coordinatorClassName, e);
+        }
     }
     
     /**

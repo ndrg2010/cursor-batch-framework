@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Completed_At__c</fullName>
-    <description>When the job finished (all workers completed)</description>
+    <description>When the job finished (all workers completed).</description>
     <externalId>false</externalId>
+    <inlineHelpText>The date and time when this batch job finished processing. Set automatically when all workers complete.</inlineHelpText>
     <label>Completed At</label>
     <required>false</required>
     <type>DateTime</type>

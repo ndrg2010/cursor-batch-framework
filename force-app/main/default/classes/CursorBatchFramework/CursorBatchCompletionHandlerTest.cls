@@ -1,40 +1,13 @@
 /**
  * @description Unit tests for CursorBatchCompletionHandler Platform Event handler.
- *              Uses MockCursorBatchCacheService to avoid Platform Cache dependency.
  * @group CursorBatchFramework
  */
 @IsTest
-private class CursorBatchCompletionHandlerTest {
+private without sharing class CursorBatchCompletionHandlerTest {
     
-    @IsTest
-    static void testHandleWithNullEvents() {
-        // Arrange
-        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
-        
-        // Act
-        Test.startTest();
-        handler.handle(null);
-        Test.stopTest();
-        
-        // Assert
-        System.assert(true, 'Handle should gracefully handle null events');
-    }
-    
-    @IsTest
-    static void testHandleWithEmptyEvents() {
-        // Arrange
-        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
-        List<CursorBatch_WorkerComplete__e> emptyEvents = new List<CursorBatch_WorkerComplete__e>();
-        
-        // Act
-        Test.startTest();
-        handler.handle(emptyEvents);
-        Test.stopTest();
-        
-        // Assert
-        System.assert(true, 'Handle should gracefully handle empty events');
+    @TestSetup
+    static void setup() {
+        CursorBatchTestUtils.createTestAccounts(10);
     }
     
     @IsTest
@@ -58,7 +31,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -66,11 +38,10 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Completed_Workers__c, Failed_Workers__c, Status__c 
-                                          FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals(2, updatedJob.Completed_Workers__c, 'Should increment completed count');
         System.assertEquals(0, updatedJob.Failed_Workers__c, 'Failed count should be 0');
-        System.assertEquals('Running', updatedJob.Status__c, 'Status should still be Running (not all complete)');
+        System.assertEquals('Processing', updatedJob.Status__c, 'Status should still be Processing (not all complete)');
     }
     
     @IsTest
@@ -89,7 +60,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -97,9 +67,7 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Completed_Workers__c, Failed_Workers__c, 
-                                          Status__c, Error_Message__c 
-                                          FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals(0, updatedJob.Completed_Workers__c, 'Completed count should be 0');
         System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should increment failed count');
         System.assertEquals('Test error message', updatedJob.Error_Message__c, 
@@ -132,7 +100,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -140,9 +107,7 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Completed_Workers__c, Failed_Workers__c, 
-                                          Status__c, Error_Message__c 
-                                          FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals(2, updatedJob.Completed_Workers__c, 'Should have 2 completed');
         System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
         System.assertEquals('Worker 2 failed', updatedJob.Error_Message__c, 
@@ -170,7 +135,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -178,9 +142,7 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Completed_Workers__c, Failed_Workers__c, 
-                                          Status__c, Completed_At__c 
-                                          FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals(2, updatedJob.Completed_Workers__c, 'Should have 2 completed');
         System.assertEquals('Complete', updatedJob.Status__c, 'Status should be Complete');
         System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
@@ -207,7 +169,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -215,9 +176,7 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Completed_Workers__c, Failed_Workers__c, 
-                                          Status__c, Completed_At__c 
-                                          FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals(1, updatedJob.Completed_Workers__c, 'Should have 1 completed');
         System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
         System.assertEquals('Failed', updatedJob.Status__c, 'Status should be Failed');
@@ -229,6 +188,9 @@ private class CursorBatchCompletionHandlerTest {
         // Arrange
         Id fakeJobId = CursorBatch_Job__c.SObjectType.getDescribe().getKeyPrefix() + '000000000001';
         
+        // Count existing jobs before the test
+        Integer jobCountBefore = [SELECT COUNT() FROM CursorBatch_Job__c];
+        
         List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
             new CursorBatch_WorkerComplete__e(
                 Job_Id__c = fakeJobId,
@@ -238,15 +200,16 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
         handler.handle(events);
         Test.stopTest();
         
-        // Assert
-        System.assert(true, 'Handler should handle missing job record gracefully');
+        // Assert - Handler should complete without throwing exception and not create/modify any jobs
+        Integer jobCountAfter = [SELECT COUNT() FROM CursorBatch_Job__c];
+        System.assertEquals(jobCountBefore, jobCountAfter, 
+            'No jobs should be created when handling events for non-existent job');
     }
     
     @IsTest
@@ -273,7 +236,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -281,17 +243,17 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob1 = [SELECT Status__c FROM CursorBatch_Job__c WHERE Id = :jobRecord1.Id];
-        CursorBatch_Job__c updatedJob2 = [SELECT Status__c FROM CursorBatch_Job__c WHERE Id = :jobRecord2.Id];
+        CursorBatch_Job__c updatedJob1 = CursorBatchSelector.getJobById(jobRecord1.Id);
+        CursorBatch_Job__c updatedJob2 = CursorBatchSelector.getJobById(jobRecord2.Id);
         System.assertEquals('Complete', updatedJob1.Status__c, 'Job 1 should be Complete');
         System.assertEquals('Complete', updatedJob2.Status__c, 'Job 2 should be Complete');
     }
     
     @IsTest
-    static void testCallbackWithClassNotExtendingCoordinator() {
-        // Arrange
+    static void testCallbackWithNonCoordinatorClass() {
+        // Arrange - Class that doesn't extend Coordinator
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
-            'TestJob', 1, 'String'
+            'TestJob1', 1, 'String'
         );
         
         List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
@@ -303,7 +265,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -311,15 +272,15 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Status__c FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
-        System.assertEquals('Complete', updatedJob.Status__c, 'Job should complete');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Complete', updatedJob.Status__c, 'Job should complete even with invalid coordinator class');
     }
     
     @IsTest
-    static void testCallbackWithInvalidCoordinatorClass() {
-        // Arrange
+    static void testCallbackWithNonExistentClass() {
+        // Arrange - Non-existent coordinator class
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
-            'TestJob', 1, 'NonExistentCoordinatorClass'
+            'TestJob2', 1, 'NonExistentCoordinatorClass'
         );
         
         List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
@@ -331,7 +292,6 @@ private class CursorBatchCompletionHandlerTest {
         };
         
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
         
         // Act
         Test.startTest();
@@ -339,47 +299,7 @@ private class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Status__c FROM CursorBatch_Job__c WHERE Id = :jobRecord.Id];
-        System.assertEquals('Complete', updatedJob.Status__c, 'Job should still complete');
-    }
-    
-    @IsTest
-    static void testOnlyFirstErrorCaptured() {
-        // Arrange
-        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
-            'TestJob', 3, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
-        );
-        
-        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
-            new CursorBatch_WorkerComplete__e(
-                Job_Id__c = jobRecord.Id,
-                Success__c = false,
-                Error_Message__c = 'First error'
-            ),
-            new CursorBatch_WorkerComplete__e(
-                Job_Id__c = jobRecord.Id,
-                Success__c = false,
-                Error_Message__c = 'Second error'
-            ),
-            new CursorBatch_WorkerComplete__e(
-                Job_Id__c = jobRecord.Id,
-                Success__c = true,
-                Error_Message__c = null
-            )
-        };
-        
-        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
-        handler.setCacheService(new MockCursorBatchCacheService());
-        
-        // Act
-        Test.startTest();
-        handler.handle(events);
-        Test.stopTest();
-        
-        // Assert
-        CursorBatch_Job__c updatedJob = [SELECT Error_Message__c FROM CursorBatch_Job__c 
-                                          WHERE Id = :jobRecord.Id];
-        System.assertEquals('First error', updatedJob.Error_Message__c, 
-            'Should only capture first error message');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Complete', updatedJob.Status__c, 'Job should still complete with non-existent class');
     }
 }

@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Total_Workers__c</fullName>
-    <description>Total number of workers launched for this job</description>
+    <description>Total number of workers launched for this job.</description>
     <externalId>false</externalId>
+    <inlineHelpText>How many parallel worker jobs were spawned. Completed Workers + Failed Workers should equal this value when the job finishes.</inlineHelpText>
     <label>Total Workers</label>
     <precision>18</precision>
     <required>true</required>

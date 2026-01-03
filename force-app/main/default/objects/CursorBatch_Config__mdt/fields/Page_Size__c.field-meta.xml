@@ -4,6 +4,7 @@
     <description>Number of records to fetch per page when processing cursor results.</description>
     <externalId>false</externalId>
     <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>The number of records each worker fetches per iteration. Smaller values reduce memory usage; larger values improve throughput. Typical range: 200-2000.</inlineHelpText>
     <label>Page Size</label>
     <precision>18</precision>
     <required>false</required>

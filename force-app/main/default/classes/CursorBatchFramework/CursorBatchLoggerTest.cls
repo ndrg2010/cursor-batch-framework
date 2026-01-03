@@ -3,7 +3,7 @@
  * @group CursorBatchFramework
  */
 @IsTest
-private class CursorBatchLoggerTest {
+private without sharing class CursorBatchLoggerTest {
     
     @IsTest
     static void testGetDefault() {
@@ -18,41 +18,9 @@ private class CursorBatchLoggerTest {
     }
     
     @IsTest
-    static void testLogInfo() {
-        // Arrange
+    static void testLoggingMethodsDoNotThrowExceptions() {
+        // Arrange - Test all logging methods in one test
         CursorBatchLogger logger = new CursorBatchLogger();
-        String testMessage = 'Test info message';
-        
-        // Act - No exception should be thrown
-        Test.startTest();
-        logger.logInfo(testMessage);
-        Test.stopTest();
-        
-        // Assert - We can't easily verify System.debug output, 
-        // but we can verify no exception was thrown
-        System.assert(true, 'logInfo should complete without exception');
-    }
-    
-    @IsTest
-    static void testLogError() {
-        // Arrange
-        CursorBatchLogger logger = new CursorBatchLogger();
-        String testMessage = 'Test error message';
-        
-        // Act
-        Test.startTest();
-        logger.logError(testMessage);
-        Test.stopTest();
-        
-        // Assert
-        System.assert(true, 'logError should complete without exception');
-    }
-    
-    @IsTest
-    static void testLogException() {
-        // Arrange
-        CursorBatchLogger logger = new CursorBatchLogger();
-        String testMessage = 'Test exception context';
         Exception testException;
         
         try {
@@ -61,43 +29,16 @@ private class CursorBatchLoggerTest {
             testException = e;
         }
         
-        // Act
+        // Act - Verify all logging methods can be called without exceptions
         Test.startTest();
-        logger.logException(testMessage, testException);
+        logger.logInfo('Test info message');
+        logger.logError('Test error message');
+        logger.logException('Test exception context', testException);
+        logger.logException(null, new System.MathException('Test'));
         Test.stopTest();
         
-        // Assert
-        System.assert(true, 'logException should complete without exception');
-    }
-    
-    @IsTest
-    static void testLogExceptionWithNullMessage() {
-        // Arrange
-        CursorBatchLogger logger = new CursorBatchLogger();
-        Exception testException = new System.MathException('Test');
-        
-        // Act
-        Test.startTest();
-        logger.logException(null, testException);
-        Test.stopTest();
-        
-        // Assert
-        System.assert(true, 'logException should handle null message');
-    }
-    
-    @IsTest
-    static void testInterfaceImplementation() {
-        // Arrange
-        ICursorBatchLogger logger = CursorBatchLogger.getDefault();
-        
-        // Act & Assert - Verify interface methods are callable
-        Test.startTest();
-        logger.logInfo('Info via interface');
-        logger.logError('Error via interface');
-        logger.logException('Exception via interface', new System.MathException('Test'));
-        Test.stopTest();
-        
-        System.assert(true, 'All interface methods should be callable');
+        // Assert - We can't easily verify System.debug output, 
+        // but we can verify no exception was thrown
+        System.assert(true, 'All logging methods should complete without exception');
     }
 }
-

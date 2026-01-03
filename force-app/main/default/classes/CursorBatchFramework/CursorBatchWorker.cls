@@ -1,13 +1,14 @@
 /**
  * @description Abstract base class for cursor-based parallel batch workers. Workers process
  *              assigned cursor position ranges, fetching pages and delegating to the abstract
- *              process() method. Uses Platform Events for parallel execution with cursors
- *              cached in Platform Cache.
+ *              process() method. Uses Platform Events for parallel execution. Supports retry
+ *              for failed pages via CursorBatchRetryException or automatic finalizer retry.
  * @group CursorBatchFramework
  * @see CursorBatchCoordinator
  * @see CursorBatchContext
+ * @see CursorBatchRetryException
  */
-public abstract inherited sharing class CursorBatchWorker implements Queueable, Database.AllowsCallouts {
+public abstract without sharing class CursorBatchWorker implements Queueable, Database.AllowsCallouts {
     
     protected CursorBatchContext ctx;
     protected ICursorBatchLogger logger;
@@ -40,7 +41,8 @@ public abstract inherited sharing class CursorBatchWorker implements Queueable, 
     
     /**
      * @description Executes the worker: fetches a page of records, processes them, and
-     *              re-enqueues for the next page if more records remain.
+     *              re-enqueues for the next page if more records remain. Handles retries
+     *              for CursorBatchRetryException (self-retry) and other exceptions (finalizer retry).
      * @param queueableCtx Queueable context (unused; required by Queueable interface)
      */
     public void execute(QueueableContext queueableCtx) {
@@ -52,14 +54,26 @@ public abstract inherited sharing class CursorBatchWorker implements Queueable, 
                 return;
             }
             
-            List<SObject> scope = ctx.cursor.fetch(ctx.startPosition, ctx.pageSize);
+            // Calculate safe fetch count to avoid "Fetch beyond bound" errors
+            Integer remainingInRange = ctx.endPosition - ctx.startPosition;
+            Integer remainingInCursor = ctx.cursor.getNumRecords() - ctx.startPosition;
+            Integer fetchCount = Math.min(ctx.pageSize, Math.min(remainingInRange, remainingInCursor));
+            
+            if (fetchCount <= 0) {
+                attachFinalizerAndComplete();
+                return;
+            }
+            
+            List<SObject> scope = ctx.cursor.fetch(ctx.startPosition, fetchCount);
             
             if (scope.isEmpty()) {
                 attachFinalizerAndComplete();
                 return;
             }
             
-            logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + scope.size() + ' records at position ' + ctx.startPosition);
+            String retryInfo = ctx.retryCount > 0 ? ' (retry ' + ctx.retryCount + ')' : '';
+            logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + 
+                scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
             
             process(scope);
             
@@ -67,14 +81,18 @@ public abstract inherited sharing class CursorBatchWorker implements Queueable, 
             
             if (newPosition < ctx.endPosition && newPosition < ctx.cursor.getNumRecords()) {
                 if (!Test.isRunningTest()) {
-                    System.enqueueJob(createNextWorkerInstance(ctx.withNextPosition(newPosition)));
+                    CursorBatchContext nextCtx = ctx.withNextPosition(newPosition);
+                    System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
                 }
             } else {
                 attachFinalizerAndComplete();
             }
             
+        } catch (CursorBatchRetryException retryEx) {
+            // Caller explicitly requested retry - handle with self-retry
+            handleRetry(retryEx, retryEx.suggestedDelayMinutes);
         } catch (Exception e) {
-            // Attach finalizer before re-throwing so failure is tracked
+            // Framework or unexpected exception - attach finalizer and let it handle retry
             attachFinalizer();
             logger.logException('CursorBatchWorker error for ' + ctx.jobName + ' at position ' + ctx.startPosition, e);
             throw e;
@@ -82,11 +100,44 @@ public abstract inherited sharing class CursorBatchWorker implements Queueable, 
     }
     
     /**
+     * @description Handles retry logic for CursorBatchRetryException. Self-enqueues with delay
+     *              if retries remain, otherwise attaches finalizer and throws.
+     * @param e The exception that triggered the retry
+     * @param suggestedDelay Caller-suggested delay in minutes, or null for exponential backoff
+     */
+    private void handleRetry(Exception e, Integer suggestedDelay) {
+        Integer maxRetries = CursorBatchCoordinator.getWorkerMaxRetries(ctx.jobName);
+        
+        if (ctx.retryCount < maxRetries) {
+            Integer delay = CursorBatchCoordinator.calculateRetryDelay(ctx.jobName, ctx.retryCount, suggestedDelay);
+            Integer newRetryCount = ctx.retryCount + 1;
+            
+            logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
+                ') scheduling retry ' + newRetryCount + ' of ' + maxRetries + 
+                ' in ' + delay + ' min at position ' + ctx.startPosition + 
+                '. Reason: ' + e.getMessage());
+            
+            CursorBatchContext retryCtx = ctx.withRetry(newRetryCount);
+            
+            if (!Test.isRunningTest()) {
+                System.enqueueJob(CursorBatchContext.createWorkerInstance(retryCtx.workerClassName, retryCtx), delay);
+            }
+        } else {
+            // Max retries exhausted - fail via finalizer
+            logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
+                ') max retries (' + maxRetries + ') exhausted at position ' + ctx.startPosition);
+            attachFinalizer();
+            throw e;
+        }
+    }
+    
+    /**
      * @description Attaches a finalizer to track worker completion via Platform Events.
+     *              Passes full context to support retry from finalizer.
      */
     private void attachFinalizer() {
         if (ctx.jobRecordId != null && !Test.isRunningTest()) {
-            System.attachFinalizer(new CursorBatchWorkerFinalizer(ctx.jobRecordId, ctx.workerNum, logger));
+            System.attachFinalizer(new CursorBatchWorkerFinalizer(ctx, logger));
         }
     }
     
@@ -100,24 +151,12 @@ public abstract inherited sharing class CursorBatchWorker implements Queueable, 
     
     /**
      * @description Processes a batch of records fetched from the cursor. Override to implement
-     *              business logic.
+     *              business logic. Throw CursorBatchRetryException to request retry of the
+     *              current page.
      * @param records SObjects to process
+     * @throws CursorBatchRetryException When the caller wants to retry this page
      */
     public abstract void process(List<SObject> records);
-    
-    /**
-     * @description Creates the next worker instance for pagination using the worker class name
-     *              from context. Ensures fully qualified names work correctly for inner classes.
-     * @param nextCtx Context with updated position for the next page
-     * @return Initialized CursorBatchWorker instance ready for enqueueing
-     */
-    private CursorBatchWorker createNextWorkerInstance(CursorBatchContext nextCtx) {
-        String className = nextCtx.workerClassName;
-        Type workerType = Type.forName(className);
-        CursorBatchWorker worker = (CursorBatchWorker) workerType.newInstance();
-        worker.initialize(nextCtx);
-        return worker;
-    }
     
     /**
      * @description Called when all pages have been processed. Override for cleanup or chaining.

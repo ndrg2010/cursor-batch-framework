@@ -4,7 +4,7 @@
  * @group CursorBatchFramework
  */
 @IsTest
-public class CursorBatchTestUtils {
+public without sharing class CursorBatchTestUtils {
     
     /**
      * @description Creates test Account records for cursor batch testing.
@@ -24,6 +24,19 @@ public class CursorBatchTestUtils {
     }
     
     /**
+     * @description Queries Account records for testing. Common pattern for tests that need
+     *              to retrieve existing accounts created in @TestSetup.
+     * @param limitCount Maximum number of accounts to return (optional, defaults to all)
+     * @return List of Account records
+     */
+    public static List<Account> queryTestAccounts(Integer limitCount) {
+        if (limitCount != null && limitCount > 0) {
+            return [SELECT Id, Name FROM Account LIMIT :limitCount];
+        }
+        return [SELECT Id, Name FROM Account];
+    }
+    
+    /**
      * @description Creates a test configuration for cursor batch jobs.
      * @param jobName Job name/label
      * @param workerCount Number of workers
@@ -35,28 +48,51 @@ public class CursorBatchTestUtils {
         Integer workerCount, 
         Integer pageSize
     ) {
-        return createTestConfig(jobName, workerCount, pageSize, null);
+        return createTestConfig(jobName, workerCount, pageSize, 3);
     }
     
     /**
-     * @description Creates a test configuration for cursor batch jobs with TTL.
+     * @description Creates a test configuration for cursor batch jobs with coordinator max retries.
      * @param jobName Job name/label
      * @param workerCount Number of workers
      * @param pageSize Page size for cursor fetching
-     * @param cacheTtlHours Cache TTL in hours (null for default)
+     * @param coordinatorMaxRetries Maximum retry attempts for coordinator cursor timeouts
      * @return CursorBatch_Config__mdt instance (not inserted - custom metadata)
      */
     public static CursorBatch_Config__mdt createTestConfig(
         String jobName, 
         Integer workerCount, 
         Integer pageSize,
-        Integer cacheTtlHours
+        Integer coordinatorMaxRetries
+    ) {
+        return createTestConfig(jobName, workerCount, pageSize, coordinatorMaxRetries, 3, 1);
+    }
+    
+    /**
+     * @description Creates a test configuration for cursor batch jobs with full retry settings.
+     * @param jobName Job name/label
+     * @param workerCount Number of workers
+     * @param pageSize Page size for cursor fetching
+     * @param coordinatorMaxRetries Maximum retry attempts for coordinator cursor timeouts
+     * @param workerMaxRetries Maximum retry attempts for worker page failures
+     * @param workerRetryDelay Base delay in minutes for worker retry exponential backoff
+     * @return CursorBatch_Config__mdt instance (not inserted - custom metadata)
+     */
+    public static CursorBatch_Config__mdt createTestConfig(
+        String jobName, 
+        Integer workerCount, 
+        Integer pageSize,
+        Integer coordinatorMaxRetries,
+        Integer workerMaxRetries,
+        Integer workerRetryDelay
     ) {
         CursorBatch_Config__mdt config = new CursorBatch_Config__mdt(
             MasterLabel = jobName,
             Parallel_Count__c = workerCount,
             Page_Size__c = pageSize,
-            Cache_TTL_Hours__c = cacheTtlHours,
+            Coordinator_Max_Retries__c = coordinatorMaxRetries,
+            Worker_Max_Retries__c = workerMaxRetries,
+            Worker_Retry_Delay__c = workerRetryDelay,
             Active__c = true
         );
         return config;
@@ -74,18 +110,221 @@ public class CursorBatchTestUtils {
         Integer totalWorkers, 
         String coordinatorClass
     ) {
+        return createTestJobRecord(jobName, totalWorkers, coordinatorClass, null);
+    }
+    
+    /**
+     * @description Creates a CursorBatch_Job__c record for testing with record count.
+     * @param jobName Job name
+     * @param totalWorkers Total number of workers
+     * @param coordinatorClass Coordinator class name
+     * @param totalRecords Total number of records in the cursor (optional)
+     * @return Inserted CursorBatch_Job__c record
+     */
+    public static CursorBatch_Job__c createTestJobRecord(
+        String jobName, 
+        Integer totalWorkers, 
+        String coordinatorClass,
+        Integer totalRecords
+    ) {
         CursorBatch_Job__c job = new CursorBatch_Job__c(
             Job_Name__c = jobName,
             Total_Workers__c = totalWorkers,
+            Total_Records__c = totalRecords,
             Completed_Workers__c = 0,
             Failed_Workers__c = 0,
-            Status__c = 'Running',
+            Status__c = 'Processing',
             Coordinator_Class__c = coordinatorClass,
-            Cache_Key__c = 'TestCacheKey' + System.currentTimeMillis(),
-            Started_At__c = System.now()
+            Cursor_Query_Id__c = 'TestQueryId' + System.currentTimeMillis(),
+            Started_At__c = System.now(),
+            Retry_Count__c = 0
         );
         insert job;
         return job;
+    }
+    
+    /**
+     * @description Creates a CursorBatch_Job__c record in 'Preparing' status for finalizer tests.
+     *              This simulates a job that the coordinator has started but not yet dispatched workers.
+     * @param jobName Job name
+     * @param coordinatorClass Coordinator class name
+     * @param retryCount Current retry count
+     * @return Inserted CursorBatch_Job__c record in Preparing status
+     */
+    public static CursorBatch_Job__c createPreparingJobRecord(
+        String jobName, 
+        String coordinatorClass,
+        Integer retryCount
+    ) {
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
+            Job_Name__c = jobName,
+            Status__c = 'Preparing',
+            Coordinator_Class__c = coordinatorClass,
+            Started_At__c = System.now(),
+            Retry_Count__c = retryCount != null ? retryCount : 0,
+            Total_Workers__c = 0,
+            Completed_Workers__c = 0,
+            Failed_Workers__c = 0
+        );
+        insert job;
+        return job;
+    }
+    
+    // ============================================
+    // Test Context Helper Methods
+    // ============================================
+    
+    /**
+     * @description Creates a CursorBatchContext for testing with sensible defaults.
+     *              Uses the default test cursor and worker class.
+     * @param jobRecordId The job record ID to associate with the context
+     * @param retryCount Current retry count
+     * @return CursorBatchContext with default test values
+     */
+    public static CursorBatchContext createTestContext(Id jobRecordId, Integer retryCount) {
+        Database.Cursor cursor = createTestCursor();
+        String cursorQueryId = extractQueryId(cursor);
+        
+        return new CursorBatchContext(
+            cursor,
+            0,                                          // startPosition
+            10,                                         // endPosition
+            5,                                          // pageSize
+            'TestJob',                                  // jobName
+            1,                                          // workerNum
+            jobRecordId,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            cursorQueryId,
+            retryCount != null ? retryCount : 0
+        );
+    }
+    
+    /**
+     * @description Creates a CursorBatchContext for testing with custom parameters.
+     * @param jobRecordId The job record ID to associate with the context
+     * @param startPosition Start position in cursor
+     * @param endPosition End position in cursor
+     * @param pageSize Page size for fetching
+     * @param retryCount Current retry count
+     * @return CursorBatchContext with specified values
+     */
+    public static CursorBatchContext createTestContext(
+        Id jobRecordId, 
+        Integer startPosition,
+        Integer endPosition,
+        Integer pageSize,
+        Integer retryCount
+    ) {
+        Database.Cursor cursor = createTestCursor();
+        String cursorQueryId = extractQueryId(cursor);
+        
+        return new CursorBatchContext(
+            cursor,
+            startPosition,
+            endPosition,
+            pageSize,
+            'TestJob',
+            1,
+            jobRecordId,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            cursorQueryId,
+            retryCount != null ? retryCount : 0
+        );
+    }
+    
+    /**
+     * @description Creates a CursorBatchContext with a null cursorQueryId for testing
+     *              cursor reconstruction failure scenarios.
+     * @param jobRecordId The job record ID to associate with the context
+     * @param retryCount Current retry count
+     * @return CursorBatchContext with null cursorQueryId
+     */
+    public static CursorBatchContext createTestContextWithNullQueryId(Id jobRecordId, Integer retryCount) {
+        Database.Cursor cursor = createTestCursor();
+        
+        return new CursorBatchContext(
+            cursor,
+            0,
+            10,
+            5,
+            'TestJob',
+            1,
+            jobRecordId,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            null,  // cursorQueryId is null
+            retryCount != null ? retryCount : 0
+        );
+    }
+    
+    /**
+     * @description Creates a CursorBatchContext with a custom worker class name for testing
+     *              invalid worker class scenarios.
+     * @param jobRecordId The job record ID to associate with the context
+     * @param workerClassName Custom worker class name
+     * @param retryCount Current retry count
+     * @return CursorBatchContext with specified worker class
+     */
+    public static CursorBatchContext createTestContextWithWorkerClass(
+        Id jobRecordId, 
+        String workerClassName,
+        Integer retryCount
+    ) {
+        Database.Cursor cursor = createTestCursor();
+        String cursorQueryId = extractQueryId(cursor);
+        
+        return new CursorBatchContext(
+            cursor,
+            0,
+            10,
+            5,
+            'TestJob',
+            1,
+            jobRecordId,
+            workerClassName,
+            cursorQueryId,
+            retryCount != null ? retryCount : 0
+        );
+    }
+    
+    // ============================================
+    // Test Cursor Helper Methods
+    // ============================================
+    
+    /**
+     * @description Default test query string for Account records.
+     *              Used by test coordinators and cursor creation helpers.
+     */
+    public static final String DEFAULT_TEST_QUERY = 'SELECT Id, Name FROM Account ORDER BY Name';
+    
+    /**
+     * @description Extracts the queryId from a Database.Cursor for testing.
+     *              Used by trigger handler and finalizer tests for cursor reconstruction.
+     * @param cursor The Database.Cursor to extract queryId from
+     * @return The queryId string
+     */
+    public static String extractQueryId(Database.Cursor cursor) {
+        String cursorJson = JSON.serialize(cursor);
+        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
+        return (String) cursorMap.get('queryId');
+    }
+    
+    /**
+     * @description Creates a Database.Cursor for testing using the default Account query.
+     *              This is the standard pattern used across all tests.
+     * @return Database.Cursor instance
+     */
+    public static Database.Cursor createTestCursor() {
+        return Database.getCursor(DEFAULT_TEST_QUERY);
+    }
+    
+    /**
+     * @description Creates a Database.Cursor for testing with a LIMIT clause.
+     *              Useful for testing pagination and boundary conditions.
+     * @param limitCount Number of records to limit
+     * @return Database.Cursor instance
+     */
+    public static Database.Cursor createTestCursor(Integer limitCount) {
+        return Database.getCursor(DEFAULT_TEST_QUERY + ' LIMIT ' + limitCount);
     }
     
     /**
@@ -102,7 +341,7 @@ public class CursorBatchTestUtils {
         public TestCursorBatchCoordinator(String jobName) {
             super(jobName);
             // Default query for Account
-            this.testQuery = 'SELECT Id, Name FROM Account ORDER BY Name';
+            this.testQuery = DEFAULT_TEST_QUERY;
         }
         
         public TestCursorBatchCoordinator(String jobName, String query) {
@@ -148,7 +387,7 @@ public class CursorBatchTestUtils {
         }
         
         public override String buildQuery() {
-            return 'SELECT Id, Name FROM Account ORDER BY Name';
+            return DEFAULT_TEST_QUERY;
         }
         
         public override String getWorkerClassName() {
@@ -185,12 +424,17 @@ public class CursorBatchTestUtils {
     public class TestCursorBatchWorker extends CursorBatchWorker {
         
         public Boolean shouldThrowException = false;
+        public Boolean shouldThrowRetryException = false;
+        public Integer retryExceptionDelay = null;
         
         public TestCursorBatchWorker() {
             super();
         }
         
         public override void process(List<SObject> records) {
+            if (shouldThrowRetryException) {
+                throw CursorBatchRetryException.create('Test retry exception', retryExceptionDelay);
+            }
             if (shouldThrowException) {
                 throw new CursorBatchCoordinator.CursorBatchException('Test exception');
             }
@@ -255,5 +499,58 @@ public class CursorBatchTestUtils {
             return false;
         }
     }
+    
+    /**
+     * @description Mock implementation of System.FinalizerContext for testing.
+     *              Used by both CursorBatchCoordinatorFinalizerTest and CursorBatchWorkerFinalizerTest.
+     */
+    public class MockFinalizerContext implements System.FinalizerContext {
+        private System.ParentJobResult result;
+        private Exception ex;
+        
+        /**
+         * @description Constructs a mock finalizer context with the specified result.
+         * @param result The parent job result (SUCCESS or failure type)
+         */
+        public MockFinalizerContext(System.ParentJobResult result) {
+            this.result = result;
+            if (result != System.ParentJobResult.SUCCESS) {
+                // Use QueryException for coordinator failures, AsyncException for worker failures
+                // Default to QueryException, but can be overridden via setException()
+                this.ex = new System.QueryException('Mock cursor timeout');
+            }
+        }
+        
+        /**
+         * @description Sets a custom exception for testing.
+         * @param e The exception to set
+         */
+        public void setException(Exception e) {
+            this.ex = e;
+        }
+        
+        /**
+         * @description Sets the exception to null for testing null exception scenarios.
+         */
+        public void setExceptionToNull() {
+            this.ex = null;
+        }
+        
+        public Id getAsyncApexJobId() {
+            String prefix = AsyncApexJob.SObjectType.getDescribe().getKeyPrefix();
+            return Id.valueOf(prefix + '000000000001');
+        }
+        
+        public Exception getException() {
+            return this.ex;
+        }
+        
+        public String getRequestId() {
+            return 'testRequestId';
+        }
+        
+        public System.ParentJobResult getResult() {
+            return this.result;
+        }
+    }
 }
-
