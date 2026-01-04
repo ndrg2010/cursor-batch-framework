@@ -23,10 +23,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     protected ICursorBatchLogger logger;
     
     /**
-     * @description Existing job record ID for retry scenarios. When set, the coordinator
-     *              will reuse this job record instead of creating a new one.
+     * @description Job record ID for this coordinator instance. Set by submit() for fresh jobs
+     *              or by setJobRecordId() for retry scenarios (called by finalizer).
      */
-    private Id existingJobId;
+    private Id jobRecordId;
     
     /**
      * @description Protected no-arg constructor for reflection-based instantiation. When using
@@ -56,12 +56,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Sets an existing job record ID for retry scenarios. When set, the coordinator
-     *              will fetch and update this job record instead of creating a new one.
+     * @description Sets the job record ID for retry scenarios. Called by the finalizer when
+     *              re-enqueueing a coordinator after a failure.
      * @param jobId ID of existing CursorBatch_Job__c record to reuse
      */
-    public void setExistingJobId(Id jobId) {
-        this.existingJobId = jobId;
+    public void setJobRecordId(Id jobId) {
+        this.jobRecordId = jobId;
     }
     
     /**
@@ -75,12 +75,14 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Submits the coordinator job. By default, checks both CursorBatch_Job__c records
-     *              and AsyncApexJob to prevent duplicate jobs. Override isJobAlreadyRunning() to
-     *              customize duplicate detection logic.
+     * @description Submits the coordinator job. Creates the job record before enqueueing to ensure
+     *              it survives any transaction rollback in execute(). By default, checks both 
+     *              CursorBatch_Job__c records and AsyncApexJob to prevent duplicate jobs. 
+     *              Override isJobAlreadyRunning() to customize duplicate detection logic.
      */
     public void submit() {
         if (!isJobAlreadyRunning(jobName)) {
+            createJobRecord();
             System.enqueueJob(this);
         }
     }
@@ -89,10 +91,16 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Executes the coordinator: runs query, creates cursor, extracts queryId, and
      *              fans out workers via Platform Events.
      * @param ctx Queueable context (unused; required by Queueable interface)
-     * @throws CursorBatchException When no active config is found for the job name
+     * @throws CursorBatchException When no active config is found or job record is missing
      */
     public void execute(QueueableContext ctx) {
         try {
+            // Fetch the job record created by submit() or set by finalizer
+            CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobRecordId);
+            if (jobRecord == null) {
+                throw new CursorBatchException('Job record not found: ' + jobRecordId);
+            }
+            
             CursorBatch_Config__mdt config = getConfig(jobName);
             if (config == null) {
                 throw new CursorBatchException('No active config found for job: ' + jobName);
@@ -104,11 +112,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             String query = buildQuery();
             logger.logInfo('CursorBatchCoordinator query for ' + jobName + ': ' + query);
             
-            // Create or fetch job record BEFORE cursor query (with Preparing status)
-            CursorBatch_Job__c jobRecord = getOrCreateJobRecord(query);
-            
             // Attach finalizer BEFORE the cursor query so it can handle timeouts
-            attachFinalizer(jobRecord.Id);
+            // Pass query so it's available in failure logs (DML would rollback on uncatchable exception)
+            attachFinalizer(jobRecord.Id, query);
             
             Long queryStartTime = System.currentTimeMillis();
             Database.Cursor dbCursor = Database.getCursor(query);
@@ -118,24 +124,38 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             
             if (totalRecords == 0) {
                 logger.logInfo('No records to process for ' + jobName + ', exiting.');
-                jobRecord.Status__c = 'Complete';
+                jobRecord.Status__c = 'Completed';
                 jobRecord.Completed_At__c = System.now();
+                jobRecord.Total_Records__c = 0;
+                jobRecord.Query_Duration_Ms__c = queryDurationMs;
                 update jobRecord;
                 onComplete();
                 return;
             }
             
-            Integer actualWorkerCount = Math.min(workerCount, totalRecords);
-            Integer recordsPerWorker = (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
+            // Calculate workers needed based on pageSize - each worker handles one page worth of records
+            // e.g., 50 records / 15 pageSize = 4 workers (3 process 15 each, last gets 5)
+            Integer minWorkersNeeded = (Integer) Math.ceil((Decimal) totalRecords / pageSize);
+            Integer actualWorkerCount = Math.min(minWorkersNeeded, workerCount);
             
-            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers via Platform Events');
+            // When not constrained by config, use pageSize per worker for optimal batching
+            // When constrained, distribute evenly across available workers
+            Integer recordsPerWorker = (actualWorkerCount >= minWorkersNeeded) 
+                ? pageSize 
+                : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
+            
+            // Calculate total batches: each worker processes ceil(recordsPerWorker/pageSize) pages
+            Integer pagesPerWorker = (Integer) Math.ceil((Decimal) recordsPerWorker / pageSize);
+            Integer totalBatches = pagesPerWorker * actualWorkerCount;
+            
+            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers (' + totalBatches + ' batches) via Platform Events');
             
             // Extract queryId from cursor for cross-transaction access
             String cursorQueryId = extractCursorQueryId(dbCursor);
             logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
             
             // Update job record with cursor details and Processing status
-            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, query, queryDurationMs);
+            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, queryDurationMs, totalBatches);
             
             fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
             
@@ -148,37 +168,28 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Gets or creates the job record. If existingJobId is set, fetches that record.
-     *              Otherwise creates a new record with Preparing status.
-     * @param query The SOQL query (stored on new records)
-     * @return CursorBatch_Job__c record
+     * @description Creates the job record with Preparing status. Called from submit() to ensure
+     *              the record is committed before the queueable executes, surviving any rollback.
+     *              Writes the query immediately so it's visible before the cursor returns.
      */
-    private CursorBatch_Job__c getOrCreateJobRecord(String query) {
-        if (existingJobId != null) {
-            // Fetch existing job record (retry scenario)
-            CursorBatch_Job__c existingJob = CursorBatchSelector.getJobById(existingJobId);
-            if (existingJob != null) {
-                logger.logInfo('CursorBatchCoordinator reusing existing job record: ' + existingJobId);
-                return existingJob;
-            }
-            logger.logError('CursorBatchCoordinator: Existing job record not found: ' + existingJobId + ', creating new one');
-        }
-        
-        // Create new job record with Preparing status
-        CursorBatch_Job__c jobRecord = new CursorBatch_Job__c(
+    private void createJobRecord() {
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
             Job_Name__c = jobName,
             Status__c = 'Preparing',
             Coordinator_Class__c = CursorBatchContext.getClassName(this),
-            Query__c = query,
             Started_At__c = System.now(),
-            Retry_Count__c = 0,
+            Query__c = buildQuery(),
+            Total_Cursor_Retries__c = 0,
             Total_Workers__c = 0,
-            Completed_Workers__c = 0,
-            Failed_Workers__c = 0
+            Total_Batches__c = 0,
+            Completed_Batches__c = 0,
+            Workers_Finished__c = 0,
+            Failed_Workers__c = 0,
+            Total_Worker_Retries__c = 0
         );
-        insert jobRecord;
-        logger.logInfo('CursorBatchCoordinator created job record with Preparing status: ' + jobRecord.Id);
-        return jobRecord;
+        insert job;
+        this.jobRecordId = job.Id;
+        logger.logInfo('CursorBatchCoordinator created job record in submit: ' + job.Id);
     }
     
     /**
@@ -186,13 +197,15 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              Handles the case where System.attachFinalizer() is not allowed outside
      *              a valid Queueable execution context (e.g., direct test calls).
      * @param jobRecordId ID of the job record for the finalizer
+     * @param query The SOQL query string for logging in failure scenarios
      */
-    private void attachFinalizer(Id jobRecordId) {
+    private void attachFinalizer(Id jobRecordId, String query) {
         CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
             jobRecordId,
             jobName,
             CursorBatchContext.getClassName(this),
-            logger
+            logger,
+            query
         );
         try {
             System.attachFinalizer(finalizer);
@@ -210,22 +223,22 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @param workerCount Total number of workers for this job
      * @param cursorQueryId The queryId for cursor reconstruction
      * @param totalRecords Total number of records in the cursor query result set
-     * @param query The SOQL query used to create the cursor
      * @param queryDurationMs Time in milliseconds to execute the cursor query
+     * @param totalBatches Expected total number of batch/page executions
      */
     private void updateJobRecordAfterCursor(
         CursorBatch_Job__c jobRecord, 
         Integer workerCount, 
         String cursorQueryId, 
-        Integer totalRecords, 
-        String query, 
-        Long queryDurationMs
+        Integer totalRecords,
+        Long queryDurationMs,
+        Integer totalBatches
     ) {
         jobRecord.Total_Workers__c = workerCount;
         jobRecord.Total_Records__c = totalRecords;
         jobRecord.Cursor_Query_Id__c = cursorQueryId;
-        jobRecord.Query__c = query;
         jobRecord.Query_Duration_Ms__c = queryDurationMs;
+        jobRecord.Total_Batches__c = totalBatches;
         jobRecord.Status__c = 'Processing';
         update jobRecord;
         logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
@@ -267,6 +280,11 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         
         for (Integer i = 0; i < workerCount; i++) {
             Integer startPos = i * recordsPerWorker;
+            // Skip workers that would start beyond the dataset - this can happen when
+            // ceil(totalRecords/workerCount) * workerCount > totalRecords
+            if (startPos >= totalRecords) {
+                break;
+            }
             Integer endPos = Math.min(startPos + recordsPerWorker, totalRecords);
             Integer workerNum = i + 1;
             
@@ -416,7 +434,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      */
     public virtual void finish(CursorBatch_Job__c jobRecord) {
         logger.logInfo('CursorBatchCoordinator (' + jobName + ') all workers completed. ' +
-            'Status: ' + jobRecord.Status__c + ', Completed: ' + jobRecord.Completed_Workers__c + 
+            'Status: ' + jobRecord.Status__c + ', Workers Finished: ' + jobRecord.Workers_Finished__c + 
             ', Failed: ' + jobRecord.Failed_Workers__c);
     }
     

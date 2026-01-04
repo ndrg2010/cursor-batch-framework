@@ -131,13 +131,16 @@ public without sharing class CursorBatchTestUtils {
             Job_Name__c = jobName,
             Total_Workers__c = totalWorkers,
             Total_Records__c = totalRecords,
-            Completed_Workers__c = 0,
+            Total_Batches__c = totalWorkers,  // Default to 1 batch per worker for tests
+            Completed_Batches__c = 0,
+            Workers_Finished__c = 0,
             Failed_Workers__c = 0,
             Status__c = 'Processing',
             Coordinator_Class__c = coordinatorClass,
             Cursor_Query_Id__c = 'TestQueryId' + System.currentTimeMillis(),
             Started_At__c = System.now(),
-            Retry_Count__c = 0
+            Total_Cursor_Retries__c = 0,
+            Total_Worker_Retries__c = 0
         );
         insert job;
         return job;
@@ -161,13 +164,29 @@ public without sharing class CursorBatchTestUtils {
             Status__c = 'Preparing',
             Coordinator_Class__c = coordinatorClass,
             Started_At__c = System.now(),
-            Retry_Count__c = retryCount != null ? retryCount : 0,
+            Total_Cursor_Retries__c = retryCount != null ? retryCount : 0,
             Total_Workers__c = 0,
-            Completed_Workers__c = 0,
-            Failed_Workers__c = 0
+            Total_Batches__c = 0,
+            Completed_Batches__c = 0,
+            Workers_Finished__c = 0,
+            Failed_Workers__c = 0,
+            Total_Worker_Retries__c = 0
         );
         insert job;
         return job;
+    }
+    
+    /**
+     * @description Convenience method that sets test config and creates a preparing job record.
+     *              Use this for tests that call execute() directly on a coordinator.
+     * @param jobName Job name
+     * @param workerCount Number of workers
+     * @param pageSize Page size for cursor fetching
+     * @return Inserted CursorBatch_Job__c record in Preparing status
+     */
+    public static CursorBatch_Job__c setupTestJob(String jobName, Integer workerCount, Integer pageSize) {
+        CursorBatchCoordinator.testConfig = createTestConfig(jobName, workerCount, pageSize);
+        return createPreparingJobRecord(jobName, 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0);
     }
     
     // ============================================

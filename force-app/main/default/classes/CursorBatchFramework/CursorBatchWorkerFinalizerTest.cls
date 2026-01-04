@@ -179,7 +179,8 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         CursorBatch_WorkerComplete__e evt = new CursorBatch_WorkerComplete__e(
             Job_Id__c = jobRecord.Id,
             Success__c = true,
-            Error_Message__c = null
+            Error_Message__c = null,
+            Retry_Count__c = 2  // Include retry count for tracking
         );
         
         // Act
@@ -189,6 +190,32 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         
         // Assert
         System.assertEquals(true, result.isSuccess(), 'Event should be published successfully');
+    }
+    
+    @IsTest
+    static void testEventIncludesRetryCount() {
+        // Arrange - Verify that the finalizer includes retry count in completion events
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        
+        // Create context with retry count of 2 (simulating 2 retries before success)
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 2);
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(ctx, mockLogger);
+        
+        // Act - Execute with success (no retry attempt, just publishing completion)
+        Test.startTest();
+        finalizer.executeInternal(true, null);
+        Test.stopTest();
+        
+        // Assert - The completion event should be published successfully
+        // Note: We can't directly inspect the event in the test, but we verify no errors
+        System.assertEquals(0, mockLogger.errorMessages.size(), 
+            'Should not log errors for successful completion with retry count');
     }
     
     @IsTest

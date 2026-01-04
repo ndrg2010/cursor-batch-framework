@@ -35,8 +35,9 @@ public without sharing class CursorBatchSelector {
         }
         
         List<CursorBatch_Job__c> jobs = [
-            SELECT Id, Job_Name__c, Total_Workers__c, Completed_Workers__c, Failed_Workers__c,
-                   Status__c, Coordinator_Class__c, Error_Message__c
+            SELECT Id, Job_Name__c, Total_Workers__c, Completed_Batches__c, Workers_Finished__c, 
+                   Failed_Workers__c, Status__c, Coordinator_Class__c, Error_Message__c, 
+                   Total_Worker_Retries__c
             FROM CursorBatch_Job__c
             WHERE Id IN :jobIds
         ];
@@ -113,10 +114,11 @@ public without sharing class CursorBatchSelector {
      * @return List of CursorBatch_Job__c records
      */
     private static List<CursorBatch_Job__c> getJobsWithAllFields(String whereClause, Map<String, Object> bindVars, Integer queryLimit) {
-        String query = 'SELECT Id, Job_Name__c, Retry_Count__c, Status__c, Query__c, ' +
-                       'Total_Workers__c, Total_Records__c, Completed_Workers__c, ' +
+        String query = 'SELECT Id, Job_Name__c, Total_Cursor_Retries__c, Status__c, Query__c, ' +
+                       'Total_Workers__c, Total_Batches__c, Total_Records__c, Completed_Batches__c, Workers_Finished__c, ' +
                        'Failed_Workers__c, Started_At__c, Coordinator_Class__c, ' +
-                       'Cursor_Query_Id__c, Query_Duration_Ms__c, Completed_At__c, Error_Message__c ' +
+                       'Cursor_Query_Id__c, Query_Duration_Ms__c, Completed_At__c, Error_Message__c, ' +
+                       'Total_Worker_Retries__c ' +
                        'FROM CursorBatch_Job__c ' +
                        'WHERE ' + whereClause;
         

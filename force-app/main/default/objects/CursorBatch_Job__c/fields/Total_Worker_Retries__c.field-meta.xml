@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Total_Worker_Retries__c</fullName>
+    <defaultValue>0</defaultValue>
+    <description>Total number of retry attempts across all workers in this job. High values may indicate transient failures or system issues.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Sum of all retry attempts across workers. A value greater than 0 indicates some workers needed to retry due to failures.</inlineHelpText>
+    <label>Total Worker Retries</label>
+    <precision>5</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

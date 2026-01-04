@@ -15,6 +15,7 @@ public without sharing class CursorBatchContext {
     public String workerClassName { get; private set; }
     public String cursorQueryId { get; private set; }
     public Integer retryCount { get; private set; }
+    public Boolean isFinal { get; set; }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -51,6 +52,7 @@ public without sharing class CursorBatchContext {
         this.workerClassName = workerClassName;
         this.cursorQueryId = cursorQueryId;
         this.retryCount = retryCount != null ? retryCount : 0;
+        this.isFinal = false;
     }
     
     /**
@@ -58,11 +60,13 @@ public without sharing class CursorBatchContext {
      * @return New CursorBatchContext with identical field values
      */
     private CursorBatchContext copy() {
-        return new CursorBatchContext(
+        CursorBatchContext ctx = new CursorBatchContext(
             this.cursor, this.startPosition, this.endPosition, this.pageSize,
             this.jobName, this.workerNum, this.jobRecordId, this.workerClassName,
             this.cursorQueryId, this.retryCount
         );
+        ctx.isFinal = this.isFinal;
+        return ctx;
     }
     
     /**

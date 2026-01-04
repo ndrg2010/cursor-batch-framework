@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Percent_Complete__c</fullName>
+    <description>Percentage of batches/pages that have been completed across all workers.</description>
+    <externalId>false</externalId>
+    <formula>IF(
+    Total_Batches__c > 0,
+    Completed_Batches__c / Total_Batches__c,
+    0
+)</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <inlineHelpText>Percentage of batch/page executions completed. 100% means all batches have finished processing.</inlineHelpText>
+    <label>% Complete</label>
+    <precision>18</precision>
+    <required>false</required>
+    <scale>1</scale>
+    <type>Percent</type>
+</CustomField>

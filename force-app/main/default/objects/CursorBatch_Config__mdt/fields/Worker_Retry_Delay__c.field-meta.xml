@@ -5,7 +5,7 @@
     <description>Base delay in minutes for worker retry exponential backoff. Actual delay = min(base * 2^retryCount, 10).</description>
     <externalId>false</externalId>
     <fieldManageability>SubscriberControlled</fieldManageability>
-    <inlineHelpText>Base wait time (in minutes) before retrying a failed worker. Delay doubles with each retry up to a maximum of 10 minutes. Default is 1 minute.</inlineHelpText>
+    <inlineHelpText>Base wait time (in minutes) before retrying a failed worker. Delay doubles with each retry up to a maximum of 10 minutes. Warning: Higher values slow down the worker from continuing to process; 0-1 is recommended.</inlineHelpText>
     <label>Worker Retry Delay (min)</label>
     <precision>2</precision>
     <required>false</required>

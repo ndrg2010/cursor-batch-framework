@@ -50,12 +50,23 @@ public without sharing class CursorBatchCompletionHandler {
             }
             
             List<CursorBatch_WorkerComplete__e> jobEvents = eventsByJob.get(jobId);
-            Integer successCount = 0;
+            Integer batchSuccessCount = 0;  // Tracks page/batch completions
+            Integer workersFinishedCount = 0;  // Tracks distinct workers that finished all pages
             Integer failCount = 0;
+            Integer totalRetries = 0;
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
+                // Aggregate worker retry counts
+                if (evt.Retry_Count__c != null && evt.Retry_Count__c > 0) {
+                    totalRetries += Integer.valueOf(evt.Retry_Count__c);
+                }
+                
                 if (evt.Success__c) {
-                    successCount++;
+                    batchSuccessCount++;
+                    // Only count toward Workers_Finished if this is the final page
+                    if (evt.Is_Final__c == true) {
+                        workersFinishedCount++;
+                    }
                 } else {
                     failCount++;
                     // Capture first error only (similar to AsyncApexJob.ExtendedStatus)
@@ -67,17 +78,38 @@ public without sharing class CursorBatchCompletionHandler {
                 }
             }
             
-            job.Completed_Workers__c += successCount;
+            // Initialize fields if null
+            if (job.Completed_Batches__c == null) {
+                job.Completed_Batches__c = 0;
+            }
+            if (job.Workers_Finished__c == null) {
+                job.Workers_Finished__c = 0;
+            }
+            
+            job.Completed_Batches__c += batchSuccessCount;
+            job.Workers_Finished__c += workersFinishedCount;
             job.Failed_Workers__c += failCount;
             
-            // Check if all workers are done
-            Decimal totalDone = job.Completed_Workers__c + job.Failed_Workers__c;
+            // Track total worker retries across the job
+            if (job.Total_Worker_Retries__c == null) {
+                job.Total_Worker_Retries__c = 0;
+            }
+            job.Total_Worker_Retries__c += totalRetries;
+            
+            // Check if all workers are done (using Workers_Finished + Failed, not batch count)
+            Decimal totalDone = job.Workers_Finished__c + job.Failed_Workers__c;
             if (totalDone >= job.Total_Workers__c) {
-                job.Status__c = job.Failed_Workers__c > 0 ? 'Failed' : 'Complete';
+                if (job.Failed_Workers__c == 0) {
+                    job.Status__c = 'Completed';
+                } else if (job.Workers_Finished__c > 0) {
+                    job.Status__c = 'Completed with Errors';
+                } else {
+                    job.Status__c = 'Failed';
+                }
                 job.Completed_At__c = System.now();
                 completedJobs.add(job);
                 logger.logInfo('CursorBatchCompletionHandler: Job ' + job.Job_Name__c + ' completed. ' +
-                    'Status: ' + job.Status__c + ', Success: ' + job.Completed_Workers__c + ', Failed: ' + job.Failed_Workers__c);
+                    'Status: ' + job.Status__c + ', Workers Finished: ' + job.Workers_Finished__c + ', Failed: ' + job.Failed_Workers__c);
             }
             
             jobsToUpdate.add(job);

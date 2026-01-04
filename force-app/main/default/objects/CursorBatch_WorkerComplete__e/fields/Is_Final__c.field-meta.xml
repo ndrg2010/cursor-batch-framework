@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Is_Final__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>Indicates whether this completion event is for the final page of a worker. When true, the worker has finished processing all its assigned records.</description>
+    <externalId>false</externalId>
+    <isFilteringDisabled>false</isFilteringDisabled>
+    <isNameField>false</isNameField>
+    <isSortingDisabled>false</isSortingDisabled>
+    <label>Is Final</label>
+    <type>Checkbox</type>
+</CustomField>

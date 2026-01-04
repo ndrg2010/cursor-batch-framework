@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Worker_Processing_Time_Min__c</fullName>
+    <description>Estimated total processing time for workers in minutes. Calculated as (Completed At - Started At) minus Query Duration.</description>
+    <externalId>false</externalId>
+    <formula>IF(
+    AND(NOT(ISBLANK(Completed_At__c)), NOT(ISBLANK(Started_At__c))),
+    ((Completed_At__c - Started_At__c) * 24 * 60) - (IF(ISBLANK(Query_Duration_Ms__c), 0, Query_Duration_Ms__c) / 60000),
+    NULL
+)</formula>
+    <formulaTreatBlanksAs>BlankAsZero</formulaTreatBlanksAs>
+    <inlineHelpText>Rough estimate of worker processing time in minutes. Includes enqueue time, execution, and other overhead. Calculated as total job duration minus query duration.</inlineHelpText>
+    <label>Worker Processing Time (min)</label>
+    <precision>18</precision>
+    <required>false</required>
+    <scale>2</scale>
+    <type>Number</type>
+</CustomField>

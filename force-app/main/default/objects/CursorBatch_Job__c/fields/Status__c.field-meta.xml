@@ -3,7 +3,7 @@
     <fullName>Status__c</fullName>
     <description>Current status of the batch job.</description>
     <externalId>false</externalId>
-    <inlineHelpText>Current state: Preparing (initializing), Processing (workers running), Complete (all workers succeeded), or Failed (one or more workers failed).</inlineHelpText>
+    <inlineHelpText>Current state: Preparing (initializing), Processing (workers running), Completed (all workers succeeded), Completed with Errors (some workers succeeded, some failed), or Failed (all workers failed).</inlineHelpText>
     <label>Status</label>
     <required>true</required>
     <type>Picklist</type>
@@ -22,9 +22,14 @@
                 <label>Processing</label>
             </value>
             <value>
-                <fullName>Complete</fullName>
+                <fullName>Completed</fullName>
                 <default>false</default>
-                <label>Complete</label>
+                <label>Completed</label>
+            </value>
+            <value>
+                <fullName>Completed with Errors</fullName>
+                <default>false</default>
+                <label>Completed with Errors</label>
             </value>
             <value>
                 <fullName>Failed</fullName>

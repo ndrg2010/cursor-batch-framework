@@ -5,6 +5,8 @@
 @IsTest
 private without sharing class CursorBatchCoordinatorFinalizerTest {
     
+    private static final String TEST_QUERY = 'SELECT Id FROM Account';
+    
     @TestSetup
     static void setup() {
         CursorBatchTestUtils.createTestAccounts(10);
@@ -24,7 +26,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            logger
+            logger,
+            null
         );
         Test.stopTest();
         
@@ -46,7 +49,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            null
         );
         
         // Act
@@ -61,7 +65,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals('Preparing', updatedJob.Status__c, 
             'Status should remain unchanged on success');
-        System.assertEquals(0, updatedJob.Retry_Count__c, 
+        System.assertEquals(0, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should remain 0 on success');
     }
     
@@ -83,7 +87,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            null
         );
         
         Exception testEx = new System.QueryException('Cursor query timeout');
@@ -95,7 +100,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should increment retry count and re-enqueue
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Retry_Count__c, 
+        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented to 1');
         System.assertEquals('Preparing', updatedJob.Status__c, 
             'Status should remain Preparing for retry');
@@ -125,7 +130,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         Exception testEx = new System.QueryException('Cursor query timeout');
@@ -139,7 +145,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         System.assertEquals('Failed', updatedJob.Status__c, 
             'Status should be Failed when max retries exhausted');
-        System.assertEquals(2, updatedJob.Retry_Count__c, 
+        System.assertEquals(2, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should not be incremented past max');
         System.assert(updatedJob.Error_Message__c.contains('Max retries exhausted'), 
             'Error message should indicate max retries exhausted');
@@ -169,7 +175,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            null
         );
         
         // Act - Pass null exception
@@ -179,7 +186,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should handle null exception gracefully
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Retry_Count__c, 
+        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented even with null exception');
         System.assert(updatedJob.Error_Message__c.contains('Unknown error'), 
             'Error message should indicate unknown error');
@@ -198,7 +205,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             Id.valueOf(fakeJobId), 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         Exception testEx = new System.QueryException('Cursor query timeout');
@@ -231,7 +239,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'NonExistentCoordinatorClass',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         Exception testEx = new System.QueryException('Cursor query timeout');
@@ -263,7 +272,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         CursorBatchTestUtils.MockFinalizerContext successCtx = 
@@ -298,7 +308,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'TestJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         CursorBatchTestUtils.MockFinalizerContext failureCtx = 
@@ -311,7 +322,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should retry
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Retry_Count__c, 
+        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented on failure');
     }
     
@@ -331,7 +342,8 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             jobRecord.Id, 
             'UnknownJob', 
             'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            mockLogger
+            mockLogger,
+            TEST_QUERY
         );
         
         Exception testEx = new System.QueryException('Cursor query timeout');
@@ -343,7 +355,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should retry (default max is 3, current is 2)
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(3, updatedJob.Retry_Count__c, 
+        System.assertEquals(3, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented using default max retries');
         System.assertEquals('Preparing', updatedJob.Status__c, 
             'Status should remain Preparing (not Failed yet)');

@@ -51,12 +51,11 @@ private without sharing class CursorBatchCoordinatorTest {
     @IsTest
     static void testExecuteWithRecords() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 5, 20
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 5, 20);
         
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -67,23 +66,21 @@ private without sharing class CursorBatchCoordinatorTest {
         System.assertEquals(true, coordinator.onCompleteCalled, 
             'onComplete should be called after execution');
         
-        // Verify job record was created
-        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestJob');
-        System.assertEquals(1, jobs.size(), 'Should create one job record');
-        System.assertEquals('Processing', jobs[0].Status__c, 'Job should be in Processing status');
-        System.assert(jobs[0].Total_Workers__c > 0, 'Should have workers assigned');
+        // Verify job record was updated
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Processing', updatedJob.Status__c, 'Job should be in Processing status');
+        System.assert(updatedJob.Total_Workers__c > 0, 'Should have workers assigned');
     }
     
     @IsTest
     static void testExecuteWithZeroRecords() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 5, 20
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 5, 20);
         
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob', 
                 'SELECT Id FROM Account WHERE Name = \'NonExistentAccount12345\'');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act & Assert - Database.getCursor throws FatalCursorException for zero records
         // This is expected behavior - coordinators should ensure their query returns records
@@ -107,8 +104,14 @@ private without sharing class CursorBatchCoordinatorTest {
         // Arrange
         CursorBatchCoordinator.testConfig = null;
         
+        // Create job record externally
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'NonExistentJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('NonExistentJob');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act & Assert
         Test.startTest();
@@ -125,9 +128,7 @@ private without sharing class CursorBatchCoordinatorTest {
     @IsTest
     static void testExecuteWithCustomLogger() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 2, 10
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 2, 10);
         
         CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
             new CursorBatchTestUtils.MockCursorBatchLogger();
@@ -135,6 +136,7 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob');
         coordinator.setLogger(mockLogger);
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -158,8 +160,14 @@ private without sharing class CursorBatchCoordinatorTest {
         );
         CursorBatchCoordinator.testConfig = config;
         
+        // Create job record externally
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -199,8 +207,8 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 5, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
-        jobRecord.Status__c = 'Complete';
-        jobRecord.Completed_Workers__c = 5;
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Workers_Finished__c = 5;
         
         // Act
         Test.startTest();
@@ -232,12 +240,11 @@ private without sharing class CursorBatchCoordinatorTest {
     @IsTest
     static void testWorkerDistribution() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 3, 10
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 3, 10);
         
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -245,17 +252,14 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestJob');
-        System.assertEquals(1, jobs.size(), 'Should have one job');
-        System.assert(jobs[0].Total_Workers__c <= 3, 'Should not exceed requested worker count');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assert(updatedJob.Total_Workers__c <= 3, 'Should not exceed requested worker count');
     }
     
     @IsTest
     static void testExceptionHandling() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 2, 10
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 2, 10);
         
         CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
             new CursorBatchTestUtils.MockCursorBatchLogger();
@@ -264,6 +268,7 @@ private without sharing class CursorBatchCoordinatorTest {
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob', 
                 'SELECT InvalidField FROM Account');
         coordinator.setLogger(mockLogger);
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -284,12 +289,11 @@ private without sharing class CursorBatchCoordinatorTest {
     @IsTest
     static void testCursorQueryIdExtraction() {
         // Arrange
-        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
-            'TestJob', 5, 20
-        );
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 5, 20);
         
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob');
+        coordinator.setJobRecordId(jobRecord.Id);
         
         // Act
         Test.startTest();
@@ -297,10 +301,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - Verify job record has cursor query ID
-        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestJob');
-        System.assertEquals(1, jobs.size(), 'Should create job record');
-        System.assertNotEquals(null, jobs[0].Cursor_Query_Id__c, 'Should have cursor query ID');
-        System.assert(jobs[0].Cursor_Query_Id__c.length() > 0, 'Cursor query ID should not be empty');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertNotEquals(null, updatedJob.Cursor_Query_Id__c, 'Should have cursor query ID');
+        System.assert(updatedJob.Cursor_Query_Id__c.length() > 0, 'Cursor query ID should not be empty');
     }
     
     @IsTest
@@ -336,7 +339,7 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatch_Job__c completedJob = CursorBatchTestUtils.createTestJobRecord(
             'CompletedTestJob', 5, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
-        completedJob.Status__c = 'Complete';
+        completedJob.Status__c = 'Completed';
         update completedJob;
         
         CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
@@ -379,28 +382,20 @@ private without sharing class CursorBatchCoordinatorTest {
     }
     
     @IsTest
-    static void testSetExistingJobId() {
+    static void testSetJobRecordId() {
         // Arrange
         CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
             'RetryTestJob', 5, 20
         );
         
-        // Create an existing job in Preparing status
-        CursorBatch_Job__c existingJob = new CursorBatch_Job__c(
-            Job_Name__c = 'RetryTestJob',
-            Status__c = 'Preparing',
-            Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
-            Started_At__c = System.now(),
-            Retry_Count__c = 1,
-            Total_Workers__c = 0,
-            Completed_Workers__c = 0,
-            Failed_Workers__c = 0
+        // Create an existing job in Preparing status (simulates retry scenario)
+        CursorBatch_Job__c existingJob = CursorBatchTestUtils.createPreparingJobRecord(
+            'RetryTestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 1
         );
-        insert existingJob;
         
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
             new CursorBatchTestUtils.TestCursorBatchCoordinator('RetryTestJob');
-        coordinator.setExistingJobId(existingJob.Id);
+        coordinator.setJobRecordId(existingJob.Id);
         
         // Act
         Test.startTest();
@@ -408,10 +403,8 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - Should reuse existing job record
-        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('RetryTestJob');
-        System.assertEquals(1, jobs.size(), 'Should reuse existing job record, not create new');
-        System.assertEquals(existingJob.Id, jobs[0].Id, 'Should be same job record');
-        System.assertEquals('Processing', jobs[0].Status__c, 'Job should be in Processing status');
-        System.assertEquals(1, jobs[0].Retry_Count__c, 'Retry count should be preserved');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(existingJob.Id);
+        System.assertEquals('Processing', updatedJob.Status__c, 'Job should be in Processing status');
+        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 'Retry count should be preserved');
     }
 }

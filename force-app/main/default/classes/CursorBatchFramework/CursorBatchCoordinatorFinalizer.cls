@@ -12,6 +12,7 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
     private String jobName;
     private String coordinatorClassName;
     private ICursorBatchLogger logger;
+    private String query;
     
     /**
      * @description Constructs a finalizer with coordinator context for retry handling.
@@ -19,17 +20,20 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
      * @param jobName Job name for configuration lookup
      * @param coordinatorClassName Fully qualified name of the coordinator class to re-enqueue
      * @param logger Logger instance for error reporting
+     * @param query The SOQL query string for logging in failure scenarios (null-safe)
      */
     public CursorBatchCoordinatorFinalizer(
         Id jobRecordId, 
         String jobName, 
         String coordinatorClassName,
-        ICursorBatchLogger logger
+        ICursorBatchLogger logger,
+        String query
     ) {
         this.jobRecordId = jobRecordId;
         this.jobName = jobName;
         this.coordinatorClassName = coordinatorClassName;
         this.logger = logger;
+        this.query = query;
     }
     
     /**
@@ -67,8 +71,8 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
         }
         
         Integer maxRetries = CursorBatchCoordinator.getCoordinatorMaxRetries(jobName);
-        Integer currentRetryCount = jobRecord.Retry_Count__c != null 
-            ? Integer.valueOf(jobRecord.Retry_Count__c) 
+        Integer currentRetryCount = jobRecord.Total_Cursor_Retries__c != null 
+            ? Integer.valueOf(jobRecord.Total_Cursor_Retries__c) 
             : 0;
         
         if (currentRetryCount < maxRetries) {
@@ -95,7 +99,7 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
             '. Scheduling retry ' + newRetryCount + ' of ' + maxRetries + '. Error: ' + errorMessage);
         
         // Update job record with new retry count
-        jobRecord.Retry_Count__c = newRetryCount;
+        jobRecord.Total_Cursor_Retries__c = newRetryCount;
         jobRecord.Error_Message__c = 'Retry ' + newRetryCount + ': ' + errorMessage;
         update jobRecord;
         
@@ -110,7 +114,7 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
         try {
             CursorBatchCoordinator coordinator = (CursorBatchCoordinator) coordinatorType.newInstance();
             coordinator.initializeJobName(jobName);
-            coordinator.setExistingJobId(jobRecordId);
+            coordinator.setJobRecordId(jobRecordId);
             
             System.enqueueJob(coordinator);
             logger.logInfo('CursorBatchCoordinatorFinalizer: Re-enqueued coordinator for retry');
@@ -130,14 +134,16 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
      */
     private void markJobFailed(CursorBatch_Job__c jobRecord, String errorMessage) {
         logger.logError('CursorBatchCoordinatorFinalizer: Max retries exhausted for ' + jobName + 
-            '. Marking job as Failed.');
+            '. Marking job as Failed. Query: ' + query);
         
         jobRecord.Status__c = 'Failed';
+        jobRecord.Query__c = query;
         jobRecord.Error_Message__c = 'Max retries exhausted. Last error: ' + errorMessage;
         jobRecord.Completed_At__c = System.now();
         // Ensure worker counts are set for failed coordinator scenarios
         jobRecord.Total_Workers__c = jobRecord.Total_Workers__c ?? 0;
-        jobRecord.Completed_Workers__c = jobRecord.Completed_Workers__c ?? 0;
+        jobRecord.Completed_Batches__c = jobRecord.Completed_Batches__c ?? 0;
+        jobRecord.Workers_Finished__c = jobRecord.Workers_Finished__c ?? 0;
         jobRecord.Failed_Workers__c = jobRecord.Failed_Workers__c ?? 0;
         update jobRecord;
         

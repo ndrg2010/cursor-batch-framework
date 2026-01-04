@@ -41,7 +41,9 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
     @TestVisible
     private void executeInternal(Boolean success, Exception ex) {
         if (success) {
-            publishCompletionEvent(true, null);
+            // Publish completion event for EVERY successful page
+            // Is_Final indicates if this worker has finished all its pages
+            publishCompletionEvent(true, null, ctx.isFinal);
             return;
         }
         
@@ -54,10 +56,10 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
         if (ctx.retryCount < maxRetries) {
             retryWorker(maxRetries, errorMessage);
         } else {
-            // Max retries exhausted - publish failure event
+            // Max retries exhausted - publish failure event (worker is done, so isFinal = true)
             logger.logError('CursorBatchWorkerFinalizer: Worker #' + ctx.workerNum + 
                 ' max retries (' + maxRetries + ') exhausted at position ' + ctx.startPosition);
-            publishCompletionEvent(false, errorMessage);
+            publishCompletionEvent(false, errorMessage, true);
         }
     }
     
@@ -78,7 +80,7 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             Database.Cursor cursor = CursorBatchContext.reconstructCursor(ctx.cursorQueryId);
             if (cursor == null) {
                 logger.logError('CursorBatchWorkerFinalizer: Failed to reconstruct cursor for queryId: ' + ctx.cursorQueryId);
-                publishCompletionEvent(false, 'Failed to reconstruct cursor for retry: ' + errorMessage);
+                publishCompletionEvent(false, 'Failed to reconstruct cursor for retry: ' + errorMessage, true);
                 return;
             }
             
@@ -91,7 +93,7 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             
         } catch (Exception e) {
             logger.logException('CursorBatchWorkerFinalizer: Failed to schedule retry for worker #' + ctx.workerNum, e);
-            publishCompletionEvent(false, 'Failed to schedule retry: ' + e.getMessage() + '. Original error: ' + errorMessage);
+            publishCompletionEvent(false, 'Failed to schedule retry: ' + e.getMessage() + '. Original error: ' + errorMessage, true);
         }
     }
     
@@ -99,12 +101,15 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
      * @description Publishes a worker completion event for CursorBatchCompletionHandler.
      * @param success True if worker succeeded; false if failed
      * @param errorMessage Error details if failed; null if successful
+     * @param isFinal True if this worker has finished all its pages (success or exhausted retries)
      */
-    private void publishCompletionEvent(Boolean success, String errorMessage) {
+    private void publishCompletionEvent(Boolean success, String errorMessage, Boolean isFinal) {
         CursorBatch_WorkerComplete__e evt = new CursorBatch_WorkerComplete__e(
             Job_Id__c = ctx.jobRecordId,
             Success__c = success,
-            Error_Message__c = errorMessage
+            Error_Message__c = errorMessage,
+            Retry_Count__c = ctx.retryCount,
+            Is_Final__c = isFinal
         );
         
         Database.SaveResult result = EventBus.publish(evt);

@@ -46,11 +46,14 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      * @param queueableCtx Queueable context (unused; required by Queueable interface)
      */
     public void execute(QueueableContext queueableCtx) {
+        // Attach finalizer FIRST to catch uncatchable exceptions (permissions, limits, etc.)
+        attachFinalizer();
+        
         try {
             if (ctx.cursor == null) {
                 logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
                     ') has no cursor available');
-                attachFinalizerAndComplete();
+                onComplete();
                 return;
             }
             
@@ -60,14 +63,16 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             Integer fetchCount = Math.min(ctx.pageSize, Math.min(remainingInRange, remainingInCursor));
             
             if (fetchCount <= 0) {
-                attachFinalizerAndComplete();
+                ctx.isFinal = true;
+                onComplete();
                 return;
             }
             
             List<SObject> scope = ctx.cursor.fetch(ctx.startPosition, fetchCount);
             
             if (scope.isEmpty()) {
-                attachFinalizerAndComplete();
+                ctx.isFinal = true;
+                onComplete();
                 return;
             }
             
@@ -80,20 +85,22 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             Integer newPosition = ctx.startPosition + scope.size();
             
             if (newPosition < ctx.endPosition && newPosition < ctx.cursor.getNumRecords()) {
+                // More pages to process - not final
                 if (!Test.isRunningTest()) {
                     CursorBatchContext nextCtx = ctx.withNextPosition(newPosition);
                     System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
                 }
             } else {
-                attachFinalizerAndComplete();
+                // Final page - mark as complete
+                ctx.isFinal = true;
+                onComplete();
             }
             
         } catch (CursorBatchRetryException retryEx) {
             // Caller explicitly requested retry - handle with self-retry
             handleRetry(retryEx, retryEx.suggestedDelayMinutes);
         } catch (Exception e) {
-            // Framework or unexpected exception - attach finalizer and let it handle retry
-            attachFinalizer();
+            // Finalizer already attached at start - it will handle retry
             logger.logException('CursorBatchWorker error for ' + ctx.jobName + ' at position ' + ctx.startPosition, e);
             throw e;
         }
@@ -101,7 +108,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     
     /**
      * @description Handles retry logic for CursorBatchRetryException. Self-enqueues with delay
-     *              if retries remain, otherwise attaches finalizer and throws.
+     *              if retries remain, otherwise throws (finalizer handles failure reporting).
      * @param e The exception that triggered the retry
      * @param suggestedDelay Caller-suggested delay in minutes, or null for exponential backoff
      */
@@ -123,30 +130,22 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
                 System.enqueueJob(CursorBatchContext.createWorkerInstance(retryCtx.workerClassName, retryCtx), delay);
             }
         } else {
-            // Max retries exhausted - fail via finalizer
+            // Max retries exhausted - finalizer already attached will handle failure
             logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
                 ') max retries (' + maxRetries + ') exhausted at position ' + ctx.startPosition);
-            attachFinalizer();
             throw e;
         }
     }
     
     /**
      * @description Attaches a finalizer to track worker completion via Platform Events.
-     *              Passes full context to support retry from finalizer.
+     *              Passes full context to support retry from finalizer. Called at the start
+     *              of execute() to ensure uncatchable exceptions are still tracked.
      */
     private void attachFinalizer() {
         if (ctx.jobRecordId != null && !Test.isRunningTest()) {
             System.attachFinalizer(new CursorBatchWorkerFinalizer(ctx, logger));
         }
-    }
-    
-    /**
-     * @description Attaches finalizer and calls onComplete() hook.
-     */
-    private void attachFinalizerAndComplete() {
-        attachFinalizer();
-        onComplete();
     }
     
     /**

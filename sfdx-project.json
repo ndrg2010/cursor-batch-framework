@@ -6,16 +6,42 @@
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Major release: Worker page retry with exponential backoff, coordinator retry for cursor timeouts, Platform Cache removal, CursorBatchRetryException for caller-controlled retry"
+      "versionDescription": "Major release: Worker page retry with exponential backoff, coordinator retry for cursor timeouts, CursorBatchRetryException for caller-controlled retry",
+      "definitionFile": "config/project-scratch-def.json"
     }
   ],
   "name": "cursor-batch-framework",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "64.0",
+  "sourceApiVersion": "65.0",
   "packageAliases": {
     "CursorBatchFramework": "0Hog500000007BBCAY",
     "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY",
     "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ"
-  }
+  },
+  "protectedComponents": [
+    "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
+    "classes/CursorBatchFramework/CursorBatchCompletionHandlerTest.cls",
+    "classes/CursorBatchFramework/CursorBatchContext.cls",
+    "classes/CursorBatchFramework/CursorBatchContextTest.cls",
+    "classes/CursorBatchFramework/CursorBatchCoordinator.cls",
+    "classes/CursorBatchFramework/CursorBatchCoordinatorFinalizer.cls",
+    "classes/CursorBatchFramework/CursorBatchCoordinatorFinalizerTest.cls",
+    "classes/CursorBatchFramework/CursorBatchCoordinatorTest.cls",
+    "classes/CursorBatchFramework/CursorBatchLogger.cls",
+    "classes/CursorBatchFramework/CursorBatchLoggerTest.cls",
+    "classes/CursorBatchFramework/CursorBatchRetryException.cls",
+    "classes/CursorBatchFramework/CursorBatchRetryExceptionTest.cls",
+    "classes/CursorBatchFramework/CursorBatchSelector.cls",
+    "classes/CursorBatchFramework/CursorBatchTestUtils.cls",
+    "classes/CursorBatchFramework/CursorBatchWorker.cls",
+    "classes/CursorBatchFramework/CursorBatchWorkerFinalizer.cls",
+    "classes/CursorBatchFramework/CursorBatchWorkerFinalizerTest.cls",
+    "classes/CursorBatchFramework/CursorBatchWorkerTest.cls",
+    "classes/CursorBatchFramework/CursorBatchWorkerTriggerHandler.cls",
+    "classes/CursorBatchFramework/CursorBatchWorkerTriggerHandlerTest.cls",
+    "classes/CursorBatchFramework/ICursorBatchLogger.cls",
+    "triggers/CursorBatchWorkerCompleteTrigger.trigger",
+    "triggers/CursorBatchWorkerTrigger.trigger"
+  ]
 }

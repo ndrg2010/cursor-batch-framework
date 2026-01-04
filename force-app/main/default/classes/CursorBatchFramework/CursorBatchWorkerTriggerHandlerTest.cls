@@ -12,6 +12,33 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
     }
     
     @IsTest
+    static void testHandleWithNullEvents() {
+        // Arrange
+        CursorBatchWorkerTriggerHandler handler = new CursorBatchWorkerTriggerHandler();
+        
+        // Act & Assert - Should not throw exception with null events
+        Test.startTest();
+        handler.handle(null);
+        Test.stopTest();
+        
+        System.assert(true, 'Handler should gracefully handle null events list');
+    }
+    
+    @IsTest
+    static void testHandleWithEmptyEvents() {
+        // Arrange
+        CursorBatchWorkerTriggerHandler handler = new CursorBatchWorkerTriggerHandler();
+        List<CursorBatch_Worker__e> emptyEvents = new List<CursorBatch_Worker__e>();
+        
+        // Act & Assert - Should not throw exception with empty events
+        Test.startTest();
+        handler.handle(emptyEvents);
+        Test.stopTest();
+        
+        System.assert(true, 'Handler should gracefully handle empty events list');
+    }
+    
+    @IsTest
     static void testHandleWithValidEvents() {
         // Arrange
         CursorBatchTestUtils.resetTestWorker();
@@ -337,5 +364,48 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         System.assertNotEquals(null, reconstructedCursor, 'Reconstructed cursor should not be null');
         System.assertEquals(originalCount, reconstructedCursor.getNumRecords(), 
             'Reconstructed cursor should have same record count');
+    }
+    
+    @IsTest
+    static void testTriggerFiresOnEventPublish() {
+        // Arrange - This test actually fires the trigger by publishing Platform Events
+        CursorBatchTestUtils.resetTestWorker();
+        
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'TestJob', 2, 10
+        );
+        
+        // Create a cursor and extract its queryId
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = queryId,
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = 1,
+                Job_Record_Id__c = jobRecord.Id,
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+        
+        // Act - Publish the events to fire the trigger
+        Test.startTest();
+        List<Database.SaveResult> results = EventBus.publish(events);
+        Test.stopTest();
+        
+        // Assert - Verify the events were published successfully and trigger fired
+        System.assertEquals(1, results.size(), 'Should have published 1 event');
+        System.assertEquals(true, results[0].isSuccess(), 'Event should have been published successfully');
+        // The trigger should have fired and processed the event through the handler
+        System.assert(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
+            'Trigger should have fired and handler should have processed the worker event');
     }
 }

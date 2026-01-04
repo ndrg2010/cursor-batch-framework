@@ -3,7 +3,7 @@
     <deploymentStatus>Deployed</deploymentStatus>
     <description>Platform Event for fanning out cursor batch workers. Published by CursorBatchCoordinator to spawn parallel queueable jobs.</description>
     <eventType>StandardVolume</eventType>
-    <label>CursorBatch Worker</label>
-    <pluralLabel>CursorBatch Workers</pluralLabel>
+    <label>Cursor Batch Worker</label>
+    <pluralLabel>Cursor Batch Workers</pluralLabel>
     <publishBehavior>PublishImmediately</publishBehavior>
 </CustomObject>

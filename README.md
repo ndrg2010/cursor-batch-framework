@@ -18,11 +18,232 @@ Traditional Salesforce batch processing has limitations:
 - 🎯 **Cursor-Based Pagination** — Efficient, server-side position tracking
 - 📡 **Platform Event Orchestration** — Bypass Queueable chaining limits (1 child job) to enable parallel fanout
 - 🔄 **Automatic Completion Callbacks** — Chain jobs or send notifications when done
-- 📊 **Built-in Job Tracking** — Monitor progress with custom object records
+- 📊 **Built-in Job Tracking** — Monitor progress with custom object records and real-time percent complete
 - 🧩 **Pluggable Logging** — Integrate with Nebula Logger, Pharos, or custom solutions
 - 🔁 **Built-in Retry Support** — Automatic retry for both coordinator cursor queries AND worker page failures
 - 🎛️ **Caller-Controlled Retry** — Throw `CursorBatchRetryException` to explicitly request page retry
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
+
+## Table of Contents
+
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Architecture](#architecture)
+- [Configuration Reference](#configuration-reference)
+- [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
+- [Advanced Usage](#advanced-usage)
+  - [Monitoring Jobs](#monitoring-jobs)
+  - [Job Chaining](#job-chaining)
+  - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
+  - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
+  - [Pluggable Logging](#pluggable-logging)
+- [Governor Limits & Best Practices](#governor-limits--best-practices)
+- [Troubleshooting](#troubleshooting)
+- [Components](#components)
+
+## Installation
+
+### Prerequisites
+
+#### Platform Events
+
+Platform Events must be enabled in your org (enabled by default in most orgs).
+
+### Deploy the Package
+
+#### Option 1: Install via URL (Recommended)
+
+Click the appropriate link below:
+
+| Environment | Install Link |
+|-------------|--------------|
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
+
+#### Option 2: Install via Salesforce CLI
+
+```bash
+sf package install --package 04tg500000015dZAAQ --target-org your-org --wait 10
+```
+
+### Post-Install Setup
+
+After installing the package, you must deploy the **Platform Event Subscriber Configuration** to specify which user runs the Platform Event triggers.
+
+#### Why This Is Required
+
+Platform Event triggers run as the **Automated Process** user by default. This system user lacks permissions to:
+- Query `CursorBatch_Config__mdt` custom metadata
+- Create/update `CursorBatch_Job__c` records
+- Instantiate worker classes dynamically via `Type.forName()`
+
+The Platform Event Subscriber Config overrides this default, allowing triggers to run as a **permissioned user** with the necessary access.
+
+#### Deploy the Subscriber Config
+
+1. Clone or download the repository to access the `unpackaged/` directory
+2. Deploy the subscriber configuration:
+
+```bash
+sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs --target-org your-org
+```
+
+3. Verify deployment in Setup → Platform Events → `CursorBatch_Worker__e` → Subscriptions
+
+#### Choosing the Run-As User
+
+The included config uses a placeholder user. Update `unpackaged/platformEventSubscriberConfigs/CursorBatch_Worker__e.platformEventSubscriberConfig-meta.xml` before deploying:
+
+```xml
+<user>your-integration-user@example.com</user>
+```
+
+**Requirements for the run-as user:**
+- Must have **Read** access to `CursorBatch_Config__mdt`
+- Must have **Create/Edit** access to `CursorBatch_Job__c`
+- Must have **Apex Class** access to coordinator, worker, and any dependent classes and objects.
+- Recommended: Use a dedicated integration user or system administrator
+
+> **Note:** See [unpackaged/README.md](unpackaged/README.md) for complete details and troubleshooting.
+
+### Permission Sets
+
+| Permission Set | Description |
+|----------------|-------------|
+| **Cursor Batch Job Viewer** | Grants read access and View All Records on `CursorBatch_Job__c` object with tab visibility. Assign to users who need to monitor batch job progress. |
+
+## Quick Start
+
+### 1. Create a Coordinator
+
+The coordinator defines your query and specifies the worker class:
+
+```apex
+public class MyDataProcessingCoordinator extends CursorBatchCoordinator {
+    
+    public MyDataProcessingCoordinator() {
+        super('MyDataProcessingJob'); // Must match CursorBatch_Config__mdt.MasterLabel
+    }
+    
+    public override String buildQuery() {
+        // IMPORTANT: Use inline values, not bind variables (required by Database.Cursor)
+        return 'SELECT Id, Name, Status__c FROM Account WHERE Status__c = \'Pending\'';
+    }
+    
+    public override String getWorkerClassName() {
+        return 'MyDataProcessingWorker';
+    }
+    
+    // Optional: Called when coordinator completes worker fanout
+    public override void onComplete() {
+        super.onComplete();
+        // Custom logic after workers are dispatched
+    }
+    
+    // Optional: Called when ALL workers have completed (success or failure)
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        super.finish(jobRecord);
+        
+        // Chain to another job, send notifications, etc.
+        if (jobRecord.Status__c == 'Completed') {
+            // All workers succeeded
+        } else if (jobRecord.Status__c == 'Completed with Errors') {
+            // Partial success — some workers failed
+            // Check jobRecord.Failed_Workers__c, jobRecord.Total_Worker_Retries__c
+        } else {
+            // All workers failed
+        }
+    }
+}
+```
+
+### 2. Create a Worker
+
+The worker processes batches of records. Both coordinator and worker implement `Database.AllowsCallouts`, so callouts are supported out of the box:
+
+```apex
+public class MyDataProcessingWorker extends CursorBatchWorker {
+    
+    public MyDataProcessingWorker() {
+        super();
+    }
+    
+    public override void process(List<SObject> records) {
+        List<Account> accounts = (List<Account>) records;
+        
+        for (Account acc : accounts) {
+            acc.Status__c = 'Processed';
+        }
+        
+        update accounts;
+    }
+    
+    // Optional: Called when this worker finishes ALL its assigned pages
+    public override void onComplete() {
+        super.onComplete();
+        // Custom cleanup or logging for this worker
+    }
+}
+```
+
+**With retry handling for callouts:**
+
+```apex
+public class MyCalloutWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        HttpResponse response = makeExternalCallout(records);
+        
+        if (response.getStatusCode() == 429) {
+            // Rate limited — retry after 5 minutes
+            throw CursorBatchRetryException.create('Rate limited', 5);
+        }
+        
+        if (response.getStatusCode() >= 500) {
+            // Server error — retry with exponential backoff
+            throw new CursorBatchRetryException('Server error');
+        }
+        
+        // Process successful response...
+    }
+}
+```
+
+**With custom logger (e.g., Nebula Logger):**
+
+```apex
+public class MyLoggingWorker extends CursorBatchWorker {
+    
+    public MyLoggingWorker() {
+        super();
+        setLogger(new NebulaLoggerAdapter()); // See Pluggable Logging section
+    }
+    
+    public override void process(List<SObject> records) {
+        // Processing logic...
+    }
+}
+```
+
+### 3. Configure the Job
+
+Create a `CursorBatch_Config__mdt` record:
+
+| Field | Value | Description |
+|-------|-------|-------------|
+| **MasterLabel** | `MyDataProcessingJob` | Must match coordinator constructor |
+| **Active__c** | `true` | Enable/disable the job |
+| **Parallel_Count__c** | `10` | Number of parallel workers (default: 50) |
+| **Page_Size__c** | `100` | Records per fetch (default: 20) |
+| **Coordinator_Max_Retries__c** | `3` | Max retries for cursor query timeouts |
+| **Worker_Max_Retries__c** | `3` | Max retries for failed pages |
+| **Worker_Retry_Delay__c** | `1` | Base delay (minutes) for retry backoff |
+
+### 4. Execute
+
+```apex
+new MyDataProcessingCoordinator().submit();
+```
 
 ## Architecture
 
@@ -39,8 +260,8 @@ The `Database.getCursor()` call can timeout on large datasets, throwing an uncat
 
 1. **Job record created first** — Before calling `Database.getCursor()`, the coordinator creates a job record with `Preparing` status
 2. **Finalizer attached** — A `CursorBatchCoordinatorFinalizer` is attached to detect failures
-3. **Automatic retry** — If the cursor query fails, the finalizer increments `Retry_Count__c` and re-enqueues the coordinator
-4. **Max retries** — After `Max_Retries__c` attempts (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
+3. **Automatic retry** — If the cursor query fails, the finalizer increments `Total_Cursor_Retries__c` and re-enqueues the coordinator
+4. **Max retries** — After `Coordinator_Max_Retries__c` attempts (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -82,7 +303,7 @@ The `Database.getCursor()` call can timeout on large datasets, throwing an uncat
 
 ### Worker Page Retry
 
-In addition to coordinator-level retry for cursor timeouts, the framework supports **worker-level retry** for failed page processing. This handles both unexpected failures (uncaught exceptions, CPU limits) and explicit retry requests from your code.
+The framework supports **worker-level retry** for failed page processing. This handles both unexpected failures (uncaught exceptions, CPU limits) and explicit retry requests from your code.
 
 #### How It Works
 
@@ -247,211 +468,6 @@ Platform Events are **not** used for the actual work execution—they're purely 
                           └───────────────────────┘
 ```
 
-## Installation
-
-### Prerequisites
-
-#### Platform Events
-
-Platform Events must be enabled in your org (enabled by default in most orgs).
-
-### Deploy the Package
-
-#### Option 1: Install via URL (Recommended)
-
-Click the appropriate link below:
-
-| Environment | Install Link |
-|-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
-
-#### Option 2: Install via Salesforce CLI
-
-```bash
-sf package install --package 04tg500000015dZAAQ --target-org your-org --wait 10
-```
-
-#### Option 3: Deploy from Source
-
-```bash
-# Deploy framework classes
-sf project deploy start --source-dir force-app/main/default/classes/CursorBatchFramework
-
-# Deploy custom objects and metadata
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Config__mdt
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Job__c
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_Worker__e
-sf project deploy start --source-dir force-app/main/default/objects/CursorBatch_WorkerComplete__e
-
-# Deploy triggers
-sf project deploy start --source-dir force-app/main/default/triggers
-```
-
-## Quick Start
-
-### 1. Create a Coordinator
-
-The coordinator defines your query and specifies the worker class:
-
-```apex
-public class MyDataProcessingCoordinator extends CursorBatchCoordinator {
-    
-    public MyDataProcessingCoordinator() {
-        super('MyDataProcessingJob'); // Must match CursorBatch_Config__mdt.MasterLabel
-    }
-    
-    public override String buildQuery() {
-        // IMPORTANT: Use inline values, not bind variables (required by Database.Cursor)
-        return 'SELECT Id, Name, Status__c FROM Account WHERE Status__c = \'Pending\'';
-    }
-    
-    public override String getWorkerClassName() {
-        return 'MyDataProcessingWorker';
-    }
-    
-    // Optional: Called when coordinator completes worker fanout
-    public override void onComplete() {
-        super.onComplete();
-        // Custom logic after workers are dispatched
-    }
-    
-    // Optional: Called when ALL workers have completed (success or failure)
-    public override void finish(CursorBatch_Job__c jobRecord) {
-        super.finish(jobRecord);
-        
-        // Chain to another job, send notifications, etc.
-        if (jobRecord.Status__c == 'Complete') {
-            // All workers succeeded
-        } else {
-            // Some workers failed — check jobRecord.Failed_Workers__c
-        }
-    }
-}
-```
-
-### 2. Create a Worker
-
-The worker processes batches of records. Both coordinator and worker implement `Database.AllowsCallouts`, so callouts are supported out of the box:
-
-```apex
-public class MyDataProcessingWorker extends CursorBatchWorker {
-    
-    public MyDataProcessingWorker() {
-        super();
-    }
-    
-    public override void process(List<SObject> records) {
-        List<Account> accounts = (List<Account>) records;
-        
-        for (Account acc : accounts) {
-            acc.Status__c = 'Processed';
-        }
-        
-        update accounts;
-    }
-    
-    // Optional: Called when this worker finishes ALL its assigned pages
-    public override void onComplete() {
-        super.onComplete();
-        // Custom cleanup or logging for this worker
-    }
-}
-```
-
-**With retry handling for callouts:**
-
-```apex
-public class MyCalloutWorker extends CursorBatchWorker {
-    
-    public override void process(List<SObject> records) {
-        HttpResponse response = makeExternalCallout(records);
-        
-        if (response.getStatusCode() == 429) {
-            // Rate limited — retry after 5 minutes
-            throw CursorBatchRetryException.create('Rate limited', 5);
-        }
-        
-        if (response.getStatusCode() >= 500) {
-            // Server error — retry with exponential backoff
-            throw new CursorBatchRetryException('Server error');
-        }
-        
-        // Process successful response...
-    }
-}
-```
-
-**With custom logger (e.g., Nebula Logger):**
-
-```apex
-public class MyLoggingWorker extends CursorBatchWorker {
-    
-    public MyLoggingWorker() {
-        super();
-        setLogger(new NebulaLoggerAdapter()); // See Pluggable Logging section
-    }
-    
-    public override void process(List<SObject> records) {
-        // Processing logic...
-    }
-}
-```
-
-### 3. Configure the Job
-
-Create a `CursorBatch_Config__mdt` record:
-
-| Field | Value | Description |
-|-------|-------|-------------|
-| **MasterLabel** | `MyDataProcessingJob` | Must match coordinator constructor |
-| **Active__c** | `true` | Enable/disable the job |
-| **Parallel_Count__c** | `10` | Number of parallel workers (default: 50) |
-| **Page_Size__c** | `100` | Records per fetch (default: 20) |
-| **Coordinator_Max_Retries__c** | `3` | Max retries for cursor query timeouts |
-| **Worker_Max_Retries__c** | `3` | Max retries for failed pages |
-| **Worker_Retry_Delay__c** | `1` | Base delay (minutes) for retry backoff |
-
-### 4. Execute
-
-```apex
-new MyDataProcessingCoordinator().submit();
-```
-
-## Components
-
-### Apex Classes
-
-| Class | Description |
-|-------|-------------|
-| `CursorBatchCoordinator` | Abstract base for coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
-| `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
-| `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages |
-| `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
-| `CursorBatchRetryException` | Custom exception to explicitly request page retry with optional delay |
-| `CursorBatchContext` | Value object encapsulating worker execution parameters including retry state |
-| `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks |
-| `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
-| `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework |
-| `CursorBatchLogger` | Default `System.debug` logger implementation |
-| `ICursorBatchLogger` | Interface for custom logging integrations |
-
-### Custom Objects
-
-| Object | Type | Description |
-|--------|------|-------------|
-| `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings) |
-| `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, timing) |
-| `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
-| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks |
-
-### Triggers
-
-| Trigger | Event | Description |
-|---------|-------|-------------|
-| `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
-| `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles completion and callbacks |
-
 ## Configuration Reference
 
 ### CursorBatch_Config__mdt Fields
@@ -470,16 +486,21 @@ new MyDataProcessingCoordinator().submit();
 | Field | Type | Description |
 |-------|------|-------------|
 | `Job_Name__c` | Text | Job identifier matching config MasterLabel |
-| `Status__c` | Picklist | `Preparing` → `Processing` → `Complete`/`Failed` |
+| `Status__c` | Picklist | `Preparing` → `Processing` → `Completed`/`Completed with Errors`/`Failed` |
 | `Total_Workers__c` | Number | Number of parallel workers created |
-| `Completed_Workers__c` | Number | Workers that completed successfully |
-| `Failed_Workers__c` | Number | Workers that failed |
+| `Workers_Finished__c` | Number | Workers that completed all their assigned pages |
+| `Total_Batches__c` | Number | Expected total batch/page executions |
+| `Completed_Batches__c` | Number | Total batch/page executions completed |
+| `Percent_Complete__c` | Formula (%) | Percentage of batches completed (Completed_Batches / Total_Batches × 100) |
+| `Failed_Workers__c` | Number | Workers that failed after exhausting retries |
 | `Total_Records__c` | Number | Total records in cursor result set |
-| `Retry_Count__c` | Number | Number of retry attempts made (default: 0) |
+| `Total_Cursor_Retries__c` | Number | Coordinator retry attempts (cursor query timeouts) |
+| `Total_Worker_Retries__c` | Number | Sum of all worker retry attempts across the job |
 | `Coordinator_Class__c` | Text | Fully qualified coordinator class name |
 | `Cursor_Query_Id__c` | Text | Cursor queryId for cross-transaction access |
 | `Query__c` | Long Text | SOQL query used |
 | `Query_Duration_Ms__c` | Number | Time to execute cursor query (ms) |
+| `Worker_Processing_Time_Min__c` | Formula | Estimated worker processing time in minutes |
 | `Error_Message__c` | Long Text | Error details if failed |
 | `Started_At__c` | DateTime | Job start time |
 | `Completed_At__c` | DateTime | Job completion time |
@@ -490,10 +511,246 @@ new MyDataProcessingCoordinator().submit();
 |--------|-------------|
 | `Preparing` | Job record created, cursor query pending or in progress |
 | `Processing` | Cursor query succeeded, workers are processing records |
-| `Complete` | All workers completed successfully |
-| `Failed` | One or more workers failed, or max retries exhausted |
+| `Completed` | All workers completed successfully |
+| `Completed with Errors` | Some workers succeeded, some failed |
+| `Failed` | All workers failed, or max retries exhausted |
+
+## Important: Cursor Snapshot Behavior
+
+The `Database.Cursor` captures a **snapshot of record IDs** at query time, not a live view. This has significant implications for your worker logic:
+
+| Behavior | Description |
+|----------|-------------|
+| **Record IDs are cached** | Once the cursor is created, the set of record IDs is fixed |
+| **Field values are current** | When `fetch()` is called, field values reflect the current database state |
+| **Modified records still returned** | Records that no longer match the original WHERE clause are still returned |
+| **Deleted records silently excluded** | Deleted record IDs are filtered out — `fetch()` returns fewer records, no exception thrown |
+| **`getNumRecords()` becomes stale** | The count doesn't update after deletions — may report more records than actually exist |
+
+**Example Scenario:**
+
+1. Coordinator runs: `SELECT Id FROM Lead WHERE Status = 'Open'` → Returns 1000 leads
+2. Another process updates 500 of those leads to `Status = 'Closed'`
+3. Workers fetch from the cursor → **All 1000 leads are still returned**, even though 500 no longer have `Status = 'Open'`
+
+### When to Revalidate Entry Conditions
+
+Depending on your use case, you may need to revalidate that records still meet the original query criteria before processing:
+
+```apex
+public class MyWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        List<Lead> leads = (List<Lead>) records;
+        
+        // Option 1: Filter in memory (if you have the field values)
+        List<Lead> stillQualifying = new List<Lead>();
+        for (Lead l : leads) {
+            if (l.Status == 'Open') {
+                stillQualifying.add(l);
+            }
+        }
+        
+        // Option 2: Re-query to get fresh data with entry conditions
+        Set<Id> recordIds = new Map<Id, Lead>(leads).keySet();
+        List<Lead> freshLeads = [
+            SELECT Id, Name, Status 
+            FROM Lead 
+            WHERE Id IN :recordIds 
+            AND Status = 'Open'  // Re-apply entry conditions
+        ];
+        
+        // Process only the records that still qualify
+        processQualifyingRecords(freshLeads);
+    }
+}
+```
+
+**When Revalidation is NOT Needed:**
+
+- The processing logic is idempotent and safe to run regardless of current state
+- You're performing read-only operations (reporting, analysis)
+- The query criteria are immutable (e.g., `CreatedDate`, `Id`, `RecordType`)
+- You have exclusive ownership of the records during processing
+
+**When Revalidation IS Recommended:**
+
+- Records may be modified by users, triggers, or other processes during job execution
+- Processing has side effects that should only apply to records meeting specific criteria
+- Long-running jobs where data staleness is a concern
+- Financial or compliance-sensitive operations requiring current state validation
+
+**Handling Deleted Records:**
+
+Since deleted records are silently excluded from `fetch()` results, your worker may receive fewer records than expected. This is generally safe — just process what you receive. However, be aware that:
+
+- `getNumRecords()` may overstate the actual record count
+- Page sizes may be smaller than configured if records were deleted
+- Progress calculations based on record counts may be inaccurate
 
 ## Advanced Usage
+
+### Monitoring Jobs
+
+Query `CursorBatch_Job__c` for job status:
+
+```apex
+List<CursorBatch_Job__c> jobs = [
+    SELECT Job_Name__c, Status__c, Total_Workers__c, 
+           Workers_Finished__c, Total_Batches__c, Completed_Batches__c, 
+           Percent_Complete__c, Failed_Workers__c,
+           Total_Worker_Retries__c, Worker_Processing_Time_Min__c,
+           Started_At__c, Completed_At__c, Error_Message__c
+    FROM CursorBatch_Job__c
+    WHERE Job_Name__c = 'MyDataProcessingJob'
+    ORDER BY CreatedDate DESC
+    LIMIT 10
+];
+```
+
+**Interpreting Metrics:**
+
+| Field | Healthy Value | Investigate If |
+|-------|---------------|----------------|
+| `Percent_Complete__c` | 100% | Stuck below 100% for extended periods |
+| `Total_Worker_Retries__c` | 0 | > 0 indicates transient failures (timeouts, rate limits) |
+| `Worker_Processing_Time_Min__c` | Varies | Significantly higher than expected |
+| `Status__c` | `Completed` | `Completed with Errors` or `Failed` |
+
+The framework includes two list views for monitoring:
+- **All Jobs** — Shows all job records
+- **Today's Jobs** — Filtered to jobs created today
+
+### Job Chaining
+
+Chain jobs in the `finish()` callback:
+
+```apex
+public override void finish(CursorBatch_Job__c jobRecord) {
+    if (jobRecord.Status__c == 'Completed') {
+        new NextStepCoordinator().submit();
+    }
+}
+```
+
+### Preventing Duplicate Jobs
+
+The framework automatically prevents duplicate jobs by checking:
+
+1. `CursorBatch_Job__c` records with `Status__c IN ('Preparing', 'Processing')`
+2. `AsyncApexJob` for running queueables of the same coordinator class
+
+Override `isJobAlreadyRunning()` for custom logic:
+
+```apex
+protected override Boolean isJobAlreadyRunning(String jobName) {
+    // Custom duplicate detection
+    return false;
+}
+```
+
+### Parent/Child Pattern for Avoiding Record Locks
+
+When processing child records in parallel, you may encounter `UNABLE_TO_LOCK_ROW` errors. The parent/child pattern prevents this.
+
+#### The Problem
+
+When the coordinator queries **child records directly** and distributes them across workers:
+
+```
+Coordinator queries: SELECT Id FROM Opportunity WHERE StageName = 'Prospecting'
+
+Worker 1 receives: Opp A (Account X), Opp C (Account Y)
+Worker 2 receives: Opp B (Account X), Opp D (Account Z)
+                        ↑
+                    PROBLEM: Both workers have Opportunities from Account X
+```
+
+When Worker 1 and Worker 2 simultaneously update Opportunities belonging to the same Account:
+- Master-detail relationships lock the parent during child DML
+- Rollup summary fields trigger parent recalculation
+- **Result:** `UNABLE_TO_LOCK_ROW` errors and failed batches
+
+#### The Solution
+
+Query **parent records** in the coordinator, then have workers query and process **child records** for their assigned parents:
+
+```
+Coordinator queries: SELECT Id FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE StageName = 'Prospecting')
+
+Worker 1 receives: Account X, Account Y
+Worker 2 receives: Account Z, Account W
+
+Worker 1 queries: SELECT Id FROM Opportunity WHERE AccountId IN :accountIds AND StageName = 'Prospecting'
+  → Gets ALL Opportunities for Account X and Y
+  → No other worker touches these Opportunities
+
+Worker 2 queries: SELECT Id FROM Opportunity WHERE AccountId IN :accountIds AND StageName = 'Prospecting'
+  → Gets ALL Opportunities for Account Z and W
+  → No overlap with Worker 1
+```
+
+**Result:** All children of a given parent are processed by the **same worker**. No cross-worker lock contention.
+
+#### When to Use This Pattern
+
+| Scenario | Use Parent/Child Pattern? |
+|----------|---------------------------|
+| Master-detail relationships | **Yes** — child DML locks the master |
+| Rollup summary fields on parent | **Yes** — parent recalculates during child DML |
+| Lookup relationships with triggers | **Maybe** — if triggers update the parent |
+| Independent records (no parent) | **No** — use simple pattern |
+| Parent updates only (no child DML) | **No** — use simple pattern |
+
+#### Implementation Example
+
+**Coordinator**: Query parent records that have qualifying children
+
+```apex
+public class AccountOpportunityCoordinator extends CursorBatchCoordinator {
+    
+    public AccountOpportunityCoordinator() {
+        super('AccountOpportunityJob');
+    }
+    
+    public override String buildQuery() {
+        // Query Accounts that have Opportunities in target stage
+        return 'SELECT Id FROM Account WHERE Id IN (SELECT AccountId FROM Opportunity WHERE StageName = \'Prospecting\')';
+    }
+    
+    public override String getWorkerClassName() {
+        return 'AccountOpportunityWorker';
+    }
+}
+```
+
+**Worker**: Query and process children for the received parents
+
+```apex
+public class AccountOpportunityWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        // Extract parent IDs
+        Set<Id> accountIds = new Map<Id, SObject>(records).keySet();
+        
+        // Query children for these specific parents
+        List<Opportunity> opportunities = [
+            SELECT Id, StageName, AccountId
+            FROM Opportunity
+            WHERE AccountId IN :accountIds
+            AND StageName = 'Prospecting'
+        ];
+        
+        // Process and update children
+        for (Opportunity opp : opportunities) {
+            opp.StageName = 'Qualification';
+        }
+        update opportunities;
+    }
+}
+```
+
+> **Note:** See `unpackaged/classes/SampleAccountOpportunityCoordinator.cls` and `SampleAccountOpportunityWorker.cls` for a complete working example.
 
 ### Pluggable Logging
 
@@ -594,9 +851,9 @@ The framework logs key events at each stage:
 |-------|-------|-----------------|
 | Query execution | INFO | `CursorBatchCoordinator query for MyJob: SELECT Id FROM Account...` |
 | Query timing | INFO | `CursorBatchCoordinator cursor query took 150ms, totalRecords: 50000` |
-| Worker distribution | INFO | `Distributing 50000 records across 50 workers via Platform Events` |
+| Worker distribution | INFO | `Distributing 50000 records across 50 workers (200 batches) via Platform Events` |
 | Cursor queryId | INFO | `CursorBatchCoordinator extracted cursor queryId: 0r8xx50caotWO4i` |
-| Job record creation | INFO | `CursorBatchCoordinator created job record with Preparing status: a0B...` |
+| Job record creation | INFO | `CursorBatchCoordinator created job record in submit: a0B...` |
 | Event publishing | INFO | `CursorBatchCoordinator published 50 worker events for MyJob` |
 | Worker processing | INFO | `CursorBatchWorker (MyJob #1) processing 100 records at position 0` |
 | Worker retry | INFO | `CursorBatchWorker (MyJob #1) processing 100 records at position 0 (retry 1)` |
@@ -604,52 +861,9 @@ The framework logs key events at each stage:
 | Finalizer retry | INFO | `CursorBatchWorkerFinalizer: Scheduling retry 1 of 3 for worker #1 in 1 min` |
 | Max retries exhausted | ERROR | `CursorBatchWorker (MyJob #1) max retries (3) exhausted at position 0` |
 | Worker completion | INFO | `CursorBatchWorker (MyJob) worker #1 completed. Position: 0, EndPosition: 1000` |
+| Job completion | INFO | `CursorBatchCompletionHandler: Job MyJob completed. Status: Completed, Workers Finished: 48, Failed: 2` |
 | Errors | ERROR | `CursorBatchCoordinator error for MyJob: INVALID_QUERY...` |
 | Exceptions | ERROR | Full stack trace included via `logException()` |
-
-### Preventing Duplicate Jobs
-
-The framework automatically prevents duplicate jobs by checking:
-
-1. `CursorBatch_Job__c` records with `Status__c IN ('Preparing', 'Processing')`
-2. `AsyncApexJob` for running queueables of the same coordinator class
-
-Override `isJobAlreadyRunning()` for custom logic:
-
-```apex
-protected override Boolean isJobAlreadyRunning(String jobName) {
-    // Custom duplicate detection
-    return false;
-}
-```
-
-### Job Chaining
-
-Chain jobs in the `finish()` callback:
-
-```apex
-public override void finish(CursorBatch_Job__c jobRecord) {
-    if (jobRecord.Status__c == 'Complete') {
-        new NextStepCoordinator().submit();
-    }
-}
-```
-
-### Monitoring Jobs
-
-Query `CursorBatch_Job__c` for job status:
-
-```apex
-List<CursorBatch_Job__c> jobs = [
-    SELECT Job_Name__c, Status__c, Total_Workers__c, 
-           Completed_Workers__c, Failed_Workers__c,
-           Started_At__c, Completed_At__c, Error_Message__c
-    FROM CursorBatch_Job__c
-    WHERE Job_Name__c = 'MyDataProcessingJob'
-    ORDER BY CreatedDate DESC
-    LIMIT 10
-];
-```
 
 ## Governor Limits & Best Practices
 
@@ -670,81 +884,8 @@ List<CursorBatch_Job__c> jobs = [
 - Workers automatically track failures via finalizers
 - First error is captured in `CursorBatch_Job__c.Error_Message__c`
 - Failed worker count available in `Failed_Workers__c`
-- Job status set to `'Failed'` if any worker exhausts retries
+- Job status set to `'Completed with Errors'` if some workers fail, `'Failed'` if all workers fail
 - `finish()` callback is always invoked, even on failure, allowing cleanup/notifications
-
-### Cursor Snapshot Behavior & Entry Condition Revalidation
-
-**Important:** The `Database.Cursor` captures a **snapshot of record IDs** at query time, not a live view. This has significant implications:
-
-| Behavior | Description |
-|----------|-------------|
-| **Record IDs are cached** | Once the cursor is created, the set of record IDs is fixed |
-| **Field values are current** | When `fetch()` is called, field values reflect the current database state |
-| **Modified records still returned** | Records that no longer match the original WHERE clause are still returned |
-| **Deleted records silently excluded** | Deleted record IDs are filtered out — `fetch()` returns fewer records, no exception thrown |
-| **`getNumRecords()` becomes stale** | The count doesn't update after deletions — may report more records than actually exist |
-
-**Example Scenario:**
-
-1. Coordinator runs: `SELECT Id FROM Lead WHERE Status = 'Open'` → Returns 1000 leads
-2. Another process updates 500 of those leads to `Status = 'Closed'`
-3. Workers fetch from the cursor → **All 1000 leads are still returned**, even though 500 no longer have `Status = 'Open'`
-
-**When to Revalidate Entry Conditions:**
-
-Depending on your use case, you may need to revalidate that records still meet the original query criteria before processing:
-
-```apex
-public class MyWorker extends CursorBatchWorker {
-    
-    public override void process(List<SObject> records) {
-        List<Lead> leads = (List<Lead>) records;
-        
-        // Option 1: Filter in memory (if you have the field values)
-        List<Lead> stillQualifying = new List<Lead>();
-        for (Lead l : leads) {
-            if (l.Status == 'Open') {
-                stillQualifying.add(l);
-            }
-        }
-        
-        // Option 2: Re-query to get fresh data with entry conditions
-        Set<Id> recordIds = new Map<Id, Lead>(leads).keySet();
-        List<Lead> freshLeads = [
-            SELECT Id, Name, Status 
-            FROM Lead 
-            WHERE Id IN :recordIds 
-            AND Status = 'Open'  // Re-apply entry conditions
-        ];
-        
-        // Process only the records that still qualify
-        processQualifyingRecords(freshLeads);
-    }
-}
-```
-
-**When Revalidation is NOT Needed:**
-
-- The processing logic is idempotent and safe to run regardless of current state
-- You're performing read-only operations (reporting, analysis)
-- The query criteria are immutable (e.g., `CreatedDate`, `Id`, `RecordType`)
-- You have exclusive ownership of the records during processing
-
-**When Revalidation IS Recommended:**
-
-- Records may be modified by users, triggers, or other processes during job execution
-- Processing has side effects that should only apply to records meeting specific criteria
-- Long-running jobs where data staleness is a concern
-- Financial or compliance-sensitive operations requiring current state validation
-
-**Handling Deleted Records:**
-
-Since deleted records are silently excluded from `fetch()` results, your worker may receive fewer records than expected. This is generally safe — just process what you receive. However, be aware that:
-
-- `getNumRecords()` may overstate the actual record count
-- Page sizes may be smaller than configured if records were deleted
-- Progress calculations based on record counts may be inaccurate
 
 ## Troubleshooting
 
@@ -759,10 +900,49 @@ Since deleted records are silently excluded from `fetch()` results, your worker 
 - Verify `CursorBatchWorkerTrigger` is active
 - Review debug logs for errors
 
-### Duplicate job prevention not working
+### Job stuck at "Preparing"
 
-- Ensure `CursorBatch_Job__c` records are being created
-- Check that previous job's `Status__c` is properly set
+- Large datasets may require longer cursor query times
+
+### Job shows "Completed with Errors"
+
+- Check `Failed_Workers__c` for count of failed workers
+- Review `Error_Message__c` for the first captured error
+- Check `Total_Worker_Retries__c` to see if retries were attempted
+
+## Components
+
+### Apex Classes
+
+| Class | Description |
+|-------|-------------|
+| `CursorBatchCoordinator` | Abstract base for coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
+| `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
+| `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages |
+| `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
+| `CursorBatchRetryException` | Custom exception to explicitly request page retry with optional delay |
+| `CursorBatchContext` | Value object encapsulating worker execution parameters including retry state and final page tracking |
+| `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks |
+| `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
+| `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework |
+| `CursorBatchLogger` | Default `System.debug` logger implementation |
+| `ICursorBatchLogger` | Interface for custom logging integrations |
+
+### Custom Objects
+
+| Object | Type | Description |
+|--------|------|-------------|
+| `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings) |
+| `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
+| `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
+| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag for final page tracking) |
+
+### Triggers
+
+| Trigger | Event | Description |
+|---------|-------|-------------|
+| `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
+| `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles completion and callbacks |
 
 ## License
 
@@ -774,51 +954,3 @@ MIT License — see LICENSE file for details.
 2. Create a feature branch
 3. Write tests for new functionality
 4. Submit a pull request
-
-## Changelog
-
-### v0.4.0
-
-- **New Feature**: Worker page retry with exponential backoff
-  - Failed pages are automatically retried up to `Worker_Max_Retries__c` times
-  - Uses delayed queueable enqueue: `System.enqueueJob(worker, delayMinutes)`
-  - Exponential backoff: `delay = min(baseDelay × 2^retryCount, 10)` minutes
-- **New Feature**: Caller-controlled retry via `CursorBatchRetryException`
-  - Throw from `process()` to explicitly request page retry
-  - Optional `suggestedDelayMinutes` parameter for custom delay
-- **New Configuration Fields**:
-  - `Worker_Max_Retries__c` — Max retry attempts for worker pages (default: 3)
-  - `Worker_Retry_Delay__c` — Base delay in minutes for exponential backoff (default: 1)
-- **Renamed Field**: `Max_Retries__c` → `Coordinator_Max_Retries__c` for clarity
-- `CursorBatchContext` now includes `retryCount` and `cursorQueryId` for retry state tracking
-- `CursorBatchWorkerFinalizer` now handles retry logic in addition to completion tracking
-- Added `Retry_Count__c` field to `CursorBatch_Worker__e` Platform Event
-
-### v0.3.0
-
-- **New Feature**: Built-in retry support for cursor query timeouts
-- Added `CursorBatchCoordinatorFinalizer` to handle uncatchable `System.QueryException`
-- Added `Coordinator_Max_Retries__c` field to `CursorBatch_Config__mdt` (default: 3)
-- Added `Retry_Count__c` field to `CursorBatch_Job__c`
-- **Breaking Change**: Job status values changed to mirror Batch Apex conventions:
-  - `Running` replaced with `Preparing` (before cursor query) and `Processing` (after workers fanned out)
-  - `finish()` callback now invoked even when job fails due to exhausted retries
-- Coordinator now creates job record before cursor query to enable retry tracking
-
-### v0.2.0
-
-- **Breaking Change**: Removed Platform Cache dependency
-- Cursor queryId is now stored in `Cursor_Query_Id__c` field (renamed from `Cache_Key__c`)
-- Removed `ICursorBatchCacheService` interface and `CursorBatchCacheServiceImpl`
-- Removed `Cache_TTL_Hours__c` configuration field (no longer needed)
-- Simplified installation — no Platform Cache capacity required
-- Works on all Salesforce editions that support Platform Events
-
-### v0.1.0
-
-- Initial beta release
-- Coordinator/Worker pattern with Platform Event fanout
-- Platform Cache cursor storage
-- Automatic completion tracking with Queueable Finalizers
-- Configurable parallelism, page size, and cache TTL
-- Pluggable logging interface
