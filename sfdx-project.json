@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.4",
-      "versionNumber": "0.4.0.NEXT",
+      "versionName": "ver 0.6",
+      "versionNumber": "0.6.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Major release: Worker page retry with exponential backoff, coordinator retry for cursor timeouts, CursorBatchRetryException for caller-controlled retry",
+      "versionDescription": "Fix premature completion detection, granular job status (Completed/Completed with Errors/Failed), retry aggregation, progress tracking with Percent_Complete__c",
       "definitionFile": "config/project-scratch-def.json"
     }
   ],
@@ -17,7 +17,8 @@
   "packageAliases": {
     "CursorBatchFramework": "0Hog500000007BBCAY",
     "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY",
-    "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ"
+    "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ",
+    "CursorBatchFramework@0.6.0-1": "04tg500000015qTAAQ"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
