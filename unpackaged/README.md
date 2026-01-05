@@ -28,17 +28,17 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
 
 #### Option 2: Customize the running user
 
-1. Edit `platformEventSubscriberConfigs/CursorBatchWorkerTrigger.platformEventSubscriberConfig-meta.xml`
+1. Edit `platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
 2. Update the `<user>` element with your desired running user:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <PlatformEventSubscriberConfig xmlns="http://soap.sforce.com/2006/04/metadata">
     <batchSize>50</batchSize>
-    <isProtected>false</isProtected>
-    <masterLabel>CursorBatchWorkerTrigger</masterLabel>
+    <isProtected>true</isProtected>
+    <masterLabel>CursorBatchWorkerTriggerConfig</masterLabel>
     <platformEventConsumer>CursorBatchWorkerTrigger</platformEventConsumer>
-    <user>your-integration-user@yourorg.com</user>
+    <user>testuser@salesforce.com</user>
 </PlatformEventSubscriberConfig>
 ```
 

@@ -57,13 +57,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg500000015dZAAQ) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg5000000161lAAA) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg5000000161lAAA) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tg500000015dZAAQ --target-org your-org --wait 10
+sf package install --package 04tg5000000161lAAA --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -92,7 +92,7 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs -
 
 #### Choosing the Run-As User
 
-The included config uses a placeholder user. Update `unpackaged/platformEventSubscriberConfigs/CursorBatch_Worker__e.platformEventSubscriberConfig-meta.xml` before deploying:
+The included config uses a placeholder user. Update `unpackaged/platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml` before deploying:
 
 ```xml
 <user>your-integration-user@example.com</user>
@@ -105,6 +105,7 @@ The included config uses a placeholder user. Update `unpackaged/platformEventSub
 - Recommended: Use a dedicated integration user or system administrator
 
 > **Note:** See [unpackaged/README.md](unpackaged/README.md) for complete details and troubleshooting.
+> **Note:** Your customizations to the Platform Event Subscriber Config will be preserved during package upgrades.
 
 ### Permission Sets
 

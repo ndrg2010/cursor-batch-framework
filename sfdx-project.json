@@ -6,8 +6,13 @@
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Fix premature completion detection, granular job status (Completed/Completed with Errors/Failed), retry aggregation, progress tracking with Percent_Complete__c",
-      "definitionFile": "config/project-scratch-def.json"
+      "versionDescription": "Scalable batch processing framework using Cursor-Based Pagination with parallel workers, automatic retries, and real-time progress tracking",
+      "definitionFile": "config/project-scratch-def.json",
+      "installBehaviors": {
+        "newOnly": [
+          "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml"
+        ]
+      }
     }
   ],
   "name": "cursor-batch-framework",
@@ -18,7 +23,12 @@
     "CursorBatchFramework": "0Hog500000007BBCAY",
     "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY",
     "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ",
-    "CursorBatchFramework@0.6.0-1": "04tg500000015qTAAQ"
+    "CursorBatchFramework@0.6.0-1": "04tg500000015qTAAQ",
+    "CursorBatchFramework@0.6.0-2": "04tg500000015wvAAA",
+    "CursorBatchFramework@0.6.0-3": "04tg500000015yXAAQ",
+    "CursorBatchFramework@0.6.0-4": "04tg50000001609AAA",
+    "CursorBatchFramework@0.6.0-5": "04tg5000000161lAAA",
+    "CursorBatchFramework@0.6.0-6": "04tg5000000160AAAQ"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
@@ -43,6 +53,7 @@
     "classes/CursorBatchFramework/CursorBatchWorkerTriggerHandlerTest.cls",
     "classes/CursorBatchFramework/ICursorBatchLogger.cls",
     "triggers/CursorBatchWorkerCompleteTrigger.trigger",
-    "triggers/CursorBatchWorkerTrigger.trigger"
+    "triggers/CursorBatchWorkerTrigger.trigger",
+    "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml"
   ]
 }
