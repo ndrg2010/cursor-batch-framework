@@ -130,6 +130,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 jobRecord.Query_Duration_Ms__c = queryDurationMs;
                 update jobRecord;
                 onComplete();
+                finish(jobRecord);
                 return;
             }
             
