@@ -1,8 +1,8 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.3",
-      "versionNumber": "0.3.0.NEXT",
+      "versionName": "ver 0.4",
+      "versionNumber": "0.4.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
@@ -23,7 +23,8 @@
     "CursorBatchFramework": "0Hofj0000000o85CAA",
     "CursorBatchFramework@0.1.0-1": "04tfj000000AC4jAAG",
     "CursorBatchFramework@0.2.0-1": "04tfj000000ACCnAAO",
-    "CursorBatchFramework@0.3.0-1": "04tfj000000C917AAC"
+    "CursorBatchFramework@0.3.0-1": "04tfj000000C917AAC",
+    "CursorBatchFramework@0.4.0-1": "04tfj000000C92jAAC"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
