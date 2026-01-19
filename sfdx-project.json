@@ -1,8 +1,8 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.6",
-      "versionNumber": "0.6.0.NEXT",
+      "versionName": "ver 0.3",
+      "versionNumber": "0.3.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
@@ -20,15 +20,10 @@
   "sfdcLoginUrl": "https://login.salesforce.com",
   "sourceApiVersion": "65.0",
   "packageAliases": {
-    "CursorBatchFramework": "0Hog500000007BBCAY",
-    "CursorBatchFramework@0.1.0-1": "04tg500000014RNAAY",
-    "CursorBatchFramework@0.4.0-1": "04tg500000015dZAAQ",
-    "CursorBatchFramework@0.6.0-1": "04tg500000015qTAAQ",
-    "CursorBatchFramework@0.6.0-2": "04tg500000015wvAAA",
-    "CursorBatchFramework@0.6.0-3": "04tg500000015yXAAQ",
-    "CursorBatchFramework@0.6.0-4": "04tg50000001609AAA",
-    "CursorBatchFramework@0.6.0-5": "04tg5000000161lAAA",
-    "CursorBatchFramework@0.6.0-6": "04tg5000000160AAAQ"
+    "CursorBatchFramework": "0Hofj0000000o85CAA",
+    "CursorBatchFramework@0.1.0-1": "04tfj000000AC4jAAG",
+    "CursorBatchFramework@0.2.0-1": "04tfj000000ACCnAAO",
+    "CursorBatchFramework@0.3.0-1": "04tfj000000C917AAC"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

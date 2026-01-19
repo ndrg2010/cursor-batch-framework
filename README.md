@@ -57,13 +57,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg5000000161lAAA) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg5000000161lAAA) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000C917AAC) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000C917AAC) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tg5000000161lAAA --target-org your-org --wait 10
+sf package install --package 04tfj000000C917AAC --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
