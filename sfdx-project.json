@@ -1,16 +1,17 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.5",
-      "versionNumber": "0.5.0.NEXT",
+      "versionName": "ver 0.6",
+      "versionNumber": "0.6.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Scalable batch processing framework using Cursor-Based Pagination with parallel workers, automatic retries, and real-time progress tracking",
+      "versionDescription": "Adds submitWithDelay() for delayed/self-chaining jobs and WorkerComplete trigger config",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
-          "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml"
+          "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
+          "platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
         ]
       }
     }
@@ -25,7 +26,8 @@
     "CursorBatchFramework@0.2.0-1": "04tfj000000ACCnAAO",
     "CursorBatchFramework@0.3.0-1": "04tfj000000C917AAC",
     "CursorBatchFramework@0.4.0-1": "04tfj000000C92jAAC",
-    "CursorBatchFramework@0.5.0-1": "04tfj000000CLjpAAG"
+    "CursorBatchFramework@0.5.0-1": "04tfj000000CLjpAAG",
+    "CursorBatchFramework@0.6.0-1": "04tfj000000CTW5AAO"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
@@ -51,6 +53,7 @@
     "classes/CursorBatchFramework/ICursorBatchLogger.cls",
     "triggers/CursorBatchWorkerCompleteTrigger.trigger",
     "triggers/CursorBatchWorkerTrigger.trigger",
-    "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml"
+    "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
+    "platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
   ]
 }

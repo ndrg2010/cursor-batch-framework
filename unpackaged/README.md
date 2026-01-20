@@ -12,13 +12,21 @@ This directory contains metadata that is **NOT included in the CursorBatchFramew
 
 ---
 
-## 1. Platform Event Subscriber Config
+## 1. Platform Event Subscriber Configs (Required)
 
-The `PlatformEventSubscriberConfig` configures the trigger that processes worker Platform Events. This **cannot** be included in the package because it requires a running user that must be valid in your specific org.
+The framework uses **two** Platform Event triggers that require subscriber configurations. These are intentionally **NOT included in the package** for two reasons:
+
+1. **Org-specific user**: The configs require a running user that must be valid in your specific org
+2. **Upgrade safety**: By keeping these outside the package, your customizations are preserved during package upgrades
+
+| Config File | Trigger | Platform Event | Purpose |
+|-------------|---------|----------------|---------|
+| `CursorBatchWorkerTriggerConfig` | `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns Queueable workers from coordinator fanout events |
+| `CursorBatchWorkerCompleteTriggerConfig` | `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles worker completion, updates job tracking, invokes `finish()` callback |
 
 ### Post-Install Setup (Required)
 
-After installing the CursorBatchFramework package, deploy the Platform Event Subscriber Config:
+After installing the CursorBatchFramework package, deploy both Platform Event Subscriber Configs:
 
 #### Option 1: Deploy as-is (uses default user)
 
@@ -28,9 +36,13 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
 
 #### Option 2: Customize the running user
 
-1. Edit `platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
-2. Update the `<user>` element with your desired running user:
+1. Edit both config files in `platformEventSubscriberConfigs/`:
+   - `CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
+   - `CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml`
 
+2. Update the `<user>` element in each file with your desired running user:
+
+**CursorBatchWorkerTriggerConfig** (spawns workers):
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
 <PlatformEventSubscriberConfig xmlns="http://soap.sforce.com/2006/04/metadata">
@@ -38,7 +50,19 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
     <isProtected>true</isProtected>
     <masterLabel>CursorBatchWorkerTriggerConfig</masterLabel>
     <platformEventConsumer>CursorBatchWorkerTrigger</platformEventConsumer>
-    <user>testuser@salesforce.com</user>
+    <user>your-integration-user@example.com</user>
+</PlatformEventSubscriberConfig>
+```
+
+**CursorBatchWorkerCompleteTriggerConfig** (handles completion):
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<PlatformEventSubscriberConfig xmlns="http://soap.sforce.com/2006/04/metadata">
+    <batchSize>50</batchSize>
+    <isProtected>true</isProtected>
+    <masterLabel>CursorBatchWorkerCompleteTriggerConfig</masterLabel>
+    <platformEventConsumer>CursorBatchWorkerCompleteTrigger</platformEventConsumer>
+    <user>your-integration-user@example.com</user>
 </PlatformEventSubscriberConfig>
 ```
 
@@ -50,15 +74,25 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
 
 #### Option 3: Configure via Setup UI
 
-1. Go to **Setup → Platform Events → CursorBatch_Worker__e**
-2. Click on **Subscriptions**
-3. Configure the `CursorBatchWorkerTrigger` subscription with your desired running user
+Configure each trigger subscription in Setup:
+
+1. **Worker Trigger**: Setup → Platform Events → `CursorBatch_Worker__e` → Subscriptions
+2. **Completion Trigger**: Setup → Platform Events → `CursorBatch_WorkerComplete__e` → Subscriptions
+
+### Why Both Configs Are Required
+
+| Config | What Happens Without It |
+|--------|------------------------|
+| **WorkerTriggerConfig** | Workers won't spawn — coordinator publishes events but trigger runs as Automated Process user (lacks permissions) |
+| **WorkerCompleteTriggerConfig** | `finish()` callback won't fire — worker completions are tracked but coordinator isn't notified |
 
 ### Important Notes
 
-- This configuration is **your responsibility** to maintain
-- Package upgrades will **not** overwrite your configuration
-- If you don't deploy this, the Platform Event trigger will use default settings
+- These configs are **required** for the framework to function properly
+- Both configurations are **your responsibility** to maintain
+- Package upgrades will **never** overwrite your configurations (they're not in the package)
+- If you don't deploy these, the Platform Event triggers will run as Automated Process user (which lacks permissions)
+- Both triggers should use the **same running user** for consistency
 
 ---
 

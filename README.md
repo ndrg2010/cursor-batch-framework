@@ -57,18 +57,20 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CLjpAAG) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CLjpAAG) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CTW5AAO) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CTW5AAO) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000CLjpAAG --target-org your-org --wait 10
+sf package install --package 04tfj000000CTW5AAO --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
 
-After installing the package, you must deploy the **Platform Event Subscriber Configuration** to specify which user runs the Platform Event triggers.
+After installing the package, you must deploy the **Platform Event Subscriber Configurations** to specify which user runs the Platform Event triggers.
+
+> **Note:** These configs are intentionally **NOT included in the package** so that your customizations (especially the run-as user) are preserved during package upgrades.
 
 #### Why This Is Required
 
@@ -79,20 +81,32 @@ Platform Event triggers run as the **Automated Process** user by default. This s
 
 The Platform Event Subscriber Config overrides this default, allowing triggers to run as a **permissioned user** with the necessary access.
 
-#### Deploy the Subscriber Config
+#### Deploy the Subscriber Configs
+
+The framework uses **two** Platform Event triggers that require subscriber configurations:
+
+| Trigger | Platform Event | Purpose |
+|---------|----------------|---------|
+| `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
+| `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles worker completion and invokes `finish()` callback |
 
 1. Clone or download the repository to access the `unpackaged/` directory
-2. Deploy the subscriber configuration:
+2. Deploy both subscriber configurations:
 
 ```bash
 sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs --target-org your-org
 ```
 
-3. Verify deployment in Setup → Platform Events → `CursorBatch_Worker__e` → Subscriptions
+3. Verify deployment in Setup → Platform Events:
+   - `CursorBatch_Worker__e` → Subscriptions
+   - `CursorBatch_WorkerComplete__e` → Subscriptions
 
 #### Choosing the Run-As User
 
-The included config uses a placeholder user. Update `unpackaged/platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml` before deploying:
+The included configs use a placeholder user. Update both files in `unpackaged/platformEventSubscriberConfigs/` before deploying:
+
+- `CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
+- `CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml`
 
 ```xml
 <user>your-integration-user@example.com</user>
@@ -103,9 +117,10 @@ The included config uses a placeholder user. Update `unpackaged/platformEventSub
 - Must have **Create/Edit** access to `CursorBatch_Job__c`
 - Must have **Apex Class** access to coordinator, worker, and any dependent classes and objects.
 - Recommended: Use a dedicated integration user or system administrator
+- Both triggers should use the **same user** for consistency
 
 > **Note:** See [unpackaged/README.md](unpackaged/README.md) for complete details and troubleshooting.
-> **Note:** Your customizations to the Platform Event Subscriber Config will be preserved during package upgrades.
+> **Note:** Since these configs are not in the package, your customizations are always preserved during upgrades.
 
 ### Permission Sets
 
@@ -142,6 +157,7 @@ public class MyDataProcessingCoordinator extends CursorBatchCoordinator {
     }
     
     // Optional: Called when ALL workers have completed (success or failure)
+    // IMPORTANT: This runs in a SEPARATE TRANSACTION via Platform Event, not in the worker's transaction
     public override void finish(CursorBatch_Job__c jobRecord) {
         super.finish(jobRecord);
         
@@ -402,6 +418,72 @@ The actual delay follows exponential backoff: `delay = min(base × 2^retryCount,
 | 3rd | 4 min |
 | 4th+ | 8-10 min (capped) |
 
+### Completion Callback via Platform Event
+
+When all workers complete, the coordinator's `finish()` method is invoked **via Platform Event in a separate transaction**, not in the same transaction as the final worker. This provides important benefits:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                       finish() Callback Flow                                │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  Worker Transaction                    Platform Event Transaction
+  ───────────────────                   ───────────────────────────
+
+  ┌──────────────┐
+  │   Worker     │
+  │   process()  │
+  └──────────────┘
+         │
+         ▼
+  ┌──────────────┐
+  │   Finalizer  │
+  │   publishes  │──────────┐
+  │   PE event   │          │
+  └──────────────┘          │
+         │                  │   CursorBatch_WorkerComplete__e
+  ┌──────────────┐          │
+  │  Transaction │          │
+  │   COMMITS    │          │
+  └──────────────┘          │
+                            ▼
+                   ┌──────────────────────┐
+                   │ NEW TRANSACTION      │
+                   │ ──────────────────── │
+                   │ CursorBatchCompletion│
+                   │ Handler.handle()     │
+                   └──────────────────────┘
+                            │
+                            ▼
+                   ┌──────────────────────┐
+                   │ All workers done?    │
+                   │ ──────────────────── │
+                   │ Yes → invokeFinish() │
+                   │ No  → update counts  │
+                   └──────────────────────┘
+                            │
+                            ▼
+                   ┌──────────────────────┐
+                   │ Coordinator.finish() │
+                   │ called via reflection│
+                   └──────────────────────┘
+```
+
+**Why this matters:**
+
+| Benefit | Description |
+|---------|-------------|
+| **Transaction isolation** | Worker failures don't roll back completion tracking |
+| **Reliable completion** | Even CPU limit or uncaught exceptions trigger the finalizer, which publishes the event |
+| **Fresh governor limits** | `finish()` runs with its own limits, enabling DML, callouts, or chaining to another job |
+| **Batched completion** | Multiple worker completions can be aggregated in a single trigger execution |
+
+**Implications for your code:**
+
+- `finish()` cannot access in-memory state from workers (they ran in different transactions)
+- Use `CursorBatch_Job__c` fields to pass summary data (status, counts, errors)
+- Any cleanup or notification logic in `finish()` has its own governor limits
+
 ### How Cursor Sharing Works
 
 The `Database.Cursor` is serializable to JSON with a `queryId` property. The coordinator:
@@ -636,6 +718,60 @@ public override void finish(CursorBatch_Job__c jobRecord) {
     }
 }
 ```
+
+#### Delayed Job Submission
+
+Use `submitWithDelay()` to defer job execution by 1-10 minutes. This is useful for rate limiting, scheduled retries, or self-chaining patterns:
+
+```apex
+// Start a job after a 5-minute delay
+new MyCoordinator().submitWithDelay(5);
+```
+
+#### Self-Chaining Pattern
+
+A common pattern is for a job to re-enqueue itself with a delay, enabling continuous processing with built-in throttling:
+
+```apex
+public class RecurringSyncCoordinator extends CursorBatchCoordinator {
+    
+    private static final Integer DELAY_MINUTES = 10;
+    
+    public RecurringSyncCoordinator() {
+        super('RecurringSyncJob');
+    }
+    
+    public override String buildQuery() {
+        return 'SELECT Id FROM Account WHERE Needs_Sync__c = true LIMIT 10000';
+    }
+    
+    public override String getWorkerClassName() {
+        return 'RecurringSyncWorker';
+    }
+    
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        super.finish(jobRecord);
+        
+        // Re-enqueue self with delay for continuous processing
+        // Useful for:
+        // - Rate-limited API integrations
+        // - Continuous data sync that should run periodically
+        // - Processing that should pause between batches
+        if (jobRecord.Status__c == 'Completed' || jobRecord.Status__c == 'Completed with Errors') {
+            new RecurringSyncCoordinator().submitWithDelay(DELAY_MINUTES);
+        }
+    }
+}
+```
+
+**Key considerations for self-chaining:**
+
+| Consideration | Recommendation |
+|---------------|----------------|
+| **Delay range** | 1-10 minutes (platform limit for `System.enqueueJob` delay parameter) |
+| **Stopping condition** | Include logic to stop the chain (e.g., no records, error threshold, time window) |
+| **Duplicate prevention** | The framework's built-in duplicate detection prevents overlapping runs |
+| **Monitoring** | Each cycle creates a new `CursorBatch_Job__c` record for tracking |
 
 ### Preventing Duplicate Jobs
 
@@ -967,7 +1103,14 @@ The framework logs key events at each stage:
 
 - Check Platform Event trigger is deployed
 - Verify `CursorBatchWorkerTrigger` is active
+- Deploy `CursorBatchWorkerTriggerConfig` subscriber config (see [Post-Install Setup](#post-install-setup))
 - Review debug logs for errors
+
+### finish() callback not firing
+
+- Deploy `CursorBatchWorkerCompleteTriggerConfig` subscriber config (see [Post-Install Setup](#post-install-setup))
+- Verify `CursorBatchWorkerCompleteTrigger` is active in Setup → Platform Events → `CursorBatch_WorkerComplete__e` → Subscriptions
+- Check that the run-as user has permissions to instantiate your coordinator class
 
 ### Job stuck at "Preparing"
 

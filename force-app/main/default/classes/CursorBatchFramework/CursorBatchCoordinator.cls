@@ -88,6 +88,19 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
+     * @description Submits the coordinator job with a delay. Creates the job record before enqueueing
+     *              to ensure it survives any transaction rollback in execute(). Uses Queueable's
+     *              built-in delay feature for deferred execution.
+     * @param delayMinutes Number of minutes to delay before execution (1-10 supported by platform)
+     */
+    public void submitWithDelay(Integer delayMinutes) {
+        if (!isJobAlreadyRunning(jobName)) {
+            createJobRecord();
+            System.enqueueJob(this, delayMinutes);
+        }
+    }
+    
+    /**
      * @description Executes the coordinator: runs query, creates cursor, extracts queryId, and
      *              fans out workers via Platform Events.
      * @param ctx Queueable context (unused; required by Queueable interface)
