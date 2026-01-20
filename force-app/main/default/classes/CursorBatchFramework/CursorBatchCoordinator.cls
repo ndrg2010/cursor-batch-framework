@@ -109,7 +109,11 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Integer workerCount = getConfigIntOrDefault(config.Parallel_Count__c, DEFAULT_WORKER_COUNT);
             Integer pageSize = getConfigIntOrDefault(config.Page_Size__c, DEFAULT_PAGE_SIZE);
             
-            String query = buildQuery();
+            // On retry, use stored query from job record (buildQuery() may fail if coordinator
+            // state wasn't reconstructed). Fresh runs have Query__c set by createJobRecord().
+            String query = String.isNotBlank(jobRecord.Query__c) 
+                ? jobRecord.Query__c 
+                : buildQuery();
             logger.logInfo('CursorBatchCoordinator query for ' + jobName + ': ' + query);
             
             // Attach finalizer BEFORE the cursor query so it can handle timeouts

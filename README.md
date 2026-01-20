@@ -57,13 +57,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000C92jAAC) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000C92jAAC) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CLjpAAG) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CLjpAAG) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000C92jAAC --target-org your-org --wait 10
+sf package install --package 04tfj000000CLjpAAG --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -259,10 +259,13 @@ Both the **Coordinator** and **Workers** are implemented as `Queueable` classes:
 
 The `Database.getCursor()` call can timeout on large datasets, throwing an uncatchable `System.QueryException`. The framework handles this automatically:
 
-1. **Job record created first** — Before calling `Database.getCursor()`, the coordinator creates a job record with `Preparing` status
+1. **Job record created first** — Before calling `Database.getCursor()`, the coordinator creates a job record with `Preparing` status and stores the query in `Query__c`
 2. **Finalizer attached** — A `CursorBatchCoordinatorFinalizer` is attached to detect failures
-3. **Automatic retry** — If the cursor query fails, the finalizer increments `Total_Cursor_Retries__c` and re-enqueues the coordinator
-4. **Max retries** — After `Coordinator_Max_Retries__c` attempts (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
+3. **Automatic retry** — If the cursor query fails, the finalizer increments `Total_Cursor_Retries__c` and re-enqueues the coordinator using `Type.newInstance()` (requires no-arg constructor)
+4. **Stored query reused** — On retry, the coordinator uses the query stored in `Query__c` rather than calling `buildQuery()` again, ensuring retries work even for coordinators with multiple query modes
+5. **Max retries** — After `Coordinator_Max_Retries__c` attempts (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
+
+> **Important:** Both coordinator retries and `finish()` callbacks use reflection (`Type.newInstance()`) to instantiate the coordinator. Your coordinator class **must have a no-arg constructor** for these features to work.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -649,6 +652,71 @@ protected override Boolean isJobAlreadyRunning(String jobName) {
     return false;
 }
 ```
+
+### Coordinators with Multiple Query Modes
+
+For coordinators that support different query modes (e.g., different billing types, date ranges, or filter criteria), follow this pattern:
+
+```apex
+public class BillingBatchCoordinator extends CursorBatchCoordinator {
+    
+    public static final String JOB_NAME_DAILY = 'Billing Batch Daily';
+    public static final String JOB_NAME_MONTHLY = 'Billing Batch Monthly';
+    
+    public enum BillingType { DAILY, MONTHLY }
+    
+    private BillingType billingType;
+    
+    // REQUIRED: No-arg constructor for retry/finish callbacks
+    public BillingBatchCoordinator() {
+        super();
+    }
+    
+    // Parameterized constructor for normal execution
+    public BillingBatchCoordinator(BillingType billingType) {
+        super(billingType == BillingType.DAILY ? JOB_NAME_DAILY : JOB_NAME_MONTHLY);
+        this.billingType = billingType;
+    }
+    
+    public override String buildQuery() {
+        if (billingType == BillingType.DAILY) {
+            return 'SELECT Id FROM Invoice__c WHERE Type__c = \'Daily\'';
+        } else {
+            return 'SELECT Id FROM Invoice__c WHERE Type__c = \'Monthly\'';
+        }
+    }
+    
+    public override String getWorkerClassName() {
+        return 'BillingBatchWorker';
+    }
+    
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        // Set logger based on job name (since no-arg constructor was used)
+        setLogger(MyLoggerAdapter.getInstance(jobRecord.Job_Name__c));
+        super.finish(jobRecord);
+        
+        // Chain to next job based on job name
+        if (jobRecord.Job_Name__c == JOB_NAME_DAILY) {
+            // Chain to daily post-processing...
+        }
+    }
+    
+    public static void runDaily() {
+        new BillingBatchCoordinator(BillingType.DAILY).submit();
+    }
+    
+    public static void runMonthly() {
+        new BillingBatchCoordinator(BillingType.MONTHLY).submit();
+    }
+}
+```
+
+**Key points:**
+
+1. **No-arg constructor is required** — The finalizer and completion handler use `Type.newInstance()` which only works with no-arg constructors
+2. **Query is stored on first run** — The framework stores the query in `Query__c` during `submit()`, so retries don't need to reconstruct coordinator state
+3. **Use job name to determine mode** — In `finish()`, check `jobRecord.Job_Name__c` to determine which mode just completed
+4. **Set logger in finish()** — Since the no-arg constructor doesn't know the job name, set the logger at the start of `finish()` if using a custom logger
 
 ### Parent/Child Pattern for Avoiding Record Locks
 
