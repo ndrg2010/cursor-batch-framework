@@ -162,20 +162,17 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 ? pageSize 
                 : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
             
-            // Calculate total batches: each worker processes ceil(recordsPerWorker/pageSize) pages
-            Integer pagesPerWorker = (Integer) Math.ceil((Decimal) recordsPerWorker / pageSize);
-            Integer totalBatches = pagesPerWorker * actualWorkerCount;
-            
-            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers (' + totalBatches + ' batches) via Platform Events');
-            
             // Extract queryId from cursor for cross-transaction access
             String cursorQueryId = extractCursorQueryId(dbCursor);
             logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
             
-            // Update job record with cursor details and Processing status
-            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, queryDurationMs, totalBatches);
+            // Fan out workers and get accurate batch count (calculated during actual worker assignment)
+            Integer actualTotalBatches = fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
             
-            fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
+            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers (' + actualTotalBatches + ' batches) via Platform Events');
+            
+            // Update job record with cursor details and Processing status (using accurate batch count)
+            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, queryDurationMs, actualTotalBatches);
             
             onComplete();
             
@@ -276,14 +273,16 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     
     /**
      * @description Creates and publishes Platform Events to fan out parallel workers.
+     *              Returns the actual total batch count calculated during worker assignment.
      * @param cursorQueryId The queryId for cursor reconstruction
      * @param jobRecordId Job tracking record Id
      * @param workerCount Number of parallel workers to create
      * @param recordsPerWorker Number of records assigned to each worker
      * @param totalRecords Total number of records in the cursor
      * @param pageSize Number of records to fetch per page
+     * @return Actual total batch count (sum of pages across all workers)
      */
-    private void fanOutWithPlatformEvents(
+    private Integer fanOutWithPlatformEvents(
         String cursorQueryId,
         Id jobRecordId,
         Integer workerCount,
@@ -292,6 +291,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         Integer pageSize
     ) {
         List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>();
+        Integer actualTotalBatches = 0;
         
         // Diagnostic: Log sharding calculation
         logger.logInfo('Sharding calc: totalRecords=' + totalRecords + ', workerCount=' + workerCount + ', recordsPerWorker=' + recordsPerWorker + ', pageSize=' + pageSize);
@@ -306,8 +306,13 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Integer endPos = Math.min(startPos + recordsPerWorker, totalRecords);
             Integer workerNum = i + 1;
             
+            // Calculate actual pages this worker will process (accounts for last worker having fewer records)
+            Integer workerRecords = endPos - startPos;
+            Integer workerPages = (Integer) Math.ceil((Decimal) workerRecords / pageSize);
+            actualTotalBatches += workerPages;
+            
             // Diagnostic: Log each worker's assigned range
-            logger.logInfo('PE Worker #' + workerNum + ': range [' + startPos + ', ' + endPos + '), pageSize=' + pageSize);
+            logger.logInfo('PE Worker #' + workerNum + ': range [' + startPos + ', ' + endPos + '), pages=' + workerPages + ', pageSize=' + pageSize);
             
             events.add(new CursorBatch_Worker__e(
                 Job_Name__c = jobName,
@@ -324,6 +329,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         if (!events.isEmpty()) {
             publishEventBatches(events);
         }
+        
+        return actualTotalBatches;
     }
     
     /**

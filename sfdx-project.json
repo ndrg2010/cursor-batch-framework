@@ -10,8 +10,8 @@
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
-          "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
-          "platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
+          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
+          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
         ]
       }
     }
