@@ -57,13 +57,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CTW5AAO) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CTW5AAO) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CdC5AAK) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CdC5AAK) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000CTW5AAO --target-org your-org --wait 10
+sf package install --package 04tfj000000CdC5AAK --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -77,34 +77,39 @@ After installing the package, you must deploy the **Platform Event Subscriber Co
 Platform Event triggers run as the **Automated Process** user by default. This system user lacks permissions to:
 - Query `CursorBatch_Config__mdt` custom metadata
 - Create/update `CursorBatch_Job__c` records
-- Instantiate worker classes dynamically via `Type.forName()`
+- Instantiate coordinator/worker classes dynamically via `Type.forName()`
+
+Additionally, **all three triggers must run as the same user** because `Database.Cursor` is only accessible to the user who created it. The coordinator creates the cursor, and workers need to access it.
 
 The Platform Event Subscriber Config overrides this default, allowing triggers to run as a **permissioned user** with the necessary access.
 
 #### Deploy the Subscriber Configs
 
-The framework uses **two** Platform Event triggers that require subscriber configurations:
+The framework uses **three** Platform Event triggers that require subscriber configurations:
 
 | Trigger | Platform Event | Purpose |
 |---------|----------------|---------|
+| `CursorBatchCoordinatorTrigger` | `CursorBatch_Coordinator__e` | Enqueues the coordinator queueable |
 | `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
 | `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles worker completion and invokes `finish()` callback |
 
 1. Clone or download the repository to access the `unpackaged/` directory
-2. Deploy both subscriber configurations:
+2. Deploy all three subscriber configurations:
 
 ```bash
 sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs --target-org your-org
 ```
 
 3. Verify deployment in Setup → Platform Events:
+   - `CursorBatch_Coordinator__e` → Subscriptions
    - `CursorBatch_Worker__e` → Subscriptions
    - `CursorBatch_WorkerComplete__e` → Subscriptions
 
 #### Choosing the Run-As User
 
-The included configs use a placeholder user. Update both files in `unpackaged/platformEventSubscriberConfigs/` before deploying:
+The included configs use a placeholder user. Update all three files in `unpackaged/platformEventSubscriberConfigs/` before deploying:
 
+- `CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml`
 - `CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
 - `CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml`
 
@@ -117,7 +122,7 @@ The included configs use a placeholder user. Update both files in `unpackaged/pl
 - Must have **Create/Edit** access to `CursorBatch_Job__c`
 - Must have **Apex Class** access to coordinator, worker, and any dependent classes and objects.
 - Recommended: Use a dedicated integration user or system administrator
-- Both triggers should use the **same user** for consistency
+- All three triggers **must use the same user** for cursor access to work
 
 > **Note:** See [unpackaged/README.md](unpackaged/README.md) for complete details and troubleshooting.
 > **Note:** Since these configs are not in the package, your customizations are always preserved during upgrades.
@@ -268,8 +273,19 @@ new MyDataProcessingCoordinator().submit();
 
 Both the **Coordinator** and **Workers** are implemented as `Queueable` classes:
 
-- **`CursorBatchCoordinator`** (Queueable): Executes the SOQL query, creates a `Database.Cursor`, extracts its queryId for cross-transaction access, and publishes Platform Events to fan out workers. Uses a Queueable Finalizer to handle cursor query timeouts with automatic retries.
+- **`CursorBatchCoordinator`** (Queueable): Executes the SOQL query, creates a `Database.Cursor`, extracts its queryId for cross-transaction access, and publishes Platform Events to fan out workers. Uses a Queueable Finalizer to handle cursor query timeouts with automatic retries. **Routed through a Platform Event** to ensure it runs as the dedicated trigger user.
 - **`CursorBatchWorker`** (Queueable): Processes batches of records from assigned cursor positions. Workers can re-enqueue themselves to process subsequent pages within their assigned range.
+
+### Cursor User Affinity
+
+`Database.Cursor` is only accessible to the user who created it. To ensure workers can access the cursor:
+
+1. **`submit()` publishes a Platform Event** (`CursorBatch_Coordinator__e`) instead of directly enqueueing the coordinator
+2. **Platform Event trigger** runs as the dedicated trigger user (configured in PlatformEventSubscriberConfig)
+3. **Coordinator queueable** runs as the trigger user and creates the cursor
+4. **Workers** also run as the trigger user (via `CursorBatch_Worker__e` trigger) and can access the cursor
+
+This is why all three Platform Event Subscriber Configs must specify the **same user**.
 
 ### Retry Handling for Cursor Timeouts
 
@@ -499,18 +515,36 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 );
 ```
 
-### Platform Events: Enabling Parallel Fanout
+### Platform Events: Enabling Parallel Fanout and Cursor Access
 
-**Why Platform Events?** Salesforce Queueable chaining is limited to **1 child job per execution**. This means a Queueable can only directly enqueue one other Queueable job. To achieve parallel execution of 50+ workers, the framework uses Platform Events as an orchestration mechanism:
+**Why Platform Events?** Platform Events serve two critical purposes in the framework:
 
-1. **Coordinator** (Queueable) publishes `CursorBatch_Worker__e` Platform Events (one per worker)
-2. **Platform Event Trigger** (`CursorBatchWorkerTrigger`) receives these events
-3. **Trigger Handler** (`CursorBatchWorkerTriggerHandler`) enqueues the actual Queueable workers
-4. This bypasses the Queueable chaining limitation, allowing 50+ parallel workers to be spawned simultaneously
+1. **Cursor User Affinity**: `Database.Cursor` is only accessible to the user who created it. By routing the coordinator through a Platform Event trigger, both coordinator and workers run as the same dedicated user, enabling cursor access.
 
-Platform Events are **not** used for the actual work execution—they're purely an orchestration mechanism to overcome the Queueable chaining constraint.
+2. **Parallel Worker Fanout**: Salesforce Queueable chaining is limited to **1 child job per execution**. Platform Events bypass this, allowing 50+ parallel workers to be spawned simultaneously.
+
+**The flow:**
+
+1. **`submit()`** creates a job record and publishes `CursorBatch_Coordinator__e`
+2. **Coordinator Trigger** (`CursorBatchCoordinatorTrigger`) enqueues the coordinator queueable
+3. **Coordinator** (Queueable) creates `Database.Cursor` and publishes `CursorBatch_Worker__e` events
+4. **Worker Trigger** (`CursorBatchWorkerTrigger`) enqueues the worker queueables
+5. **Workers** can access the cursor because they run as the same user who created it
 
 ```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              User calls submit()                             │
+│                     (Creates job record, publishes Coordinator PE)           │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                      │
+                                      ▼
+                          ┌───────────────────────┐
+                          │ CursorBatch_          │
+                          │ Coordinator__e        │
+                          │ (Platform Event)      │
+                          └───────────────────────┘
+                                      │
+                                      ▼ (runs as dedicated trigger user)
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                           CursorBatchCoordinator                             │
 │                     (Queueable - executes query, fans out)                   │
@@ -531,7 +565,7 @@ Platform Events are **not** used for the actual work execution—they're purely 
           │  Event)       │  │  Event)       │  │  Event)       │
           └───────────────┘  └───────────────┘  └───────────────┘
                    │                  │                  │
-                   │  (Orchestration) │                  │
+                   │ (same user)      │                  │
                    ▼                  ▼                  ▼
           ┌───────────────┐  ┌───────────────┐  ┌───────────────┐
           │ CursorBatch   │  │ CursorBatch   │  │ CursorBatch   │
@@ -1130,12 +1164,13 @@ The framework logs key events at each stage:
 |-------|-------------|
 | `CursorBatchCoordinator` | Abstract base for coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
+| `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that enqueues coordinator Queueable from submit() |
 | `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages |
 | `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
+| `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
 | `CursorBatchRetryException` | Custom exception to explicitly request page retry with optional delay |
 | `CursorBatchContext` | Value object encapsulating worker execution parameters including retry state and final page tracking |
 | `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks |
-| `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
 | `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework |
 | `CursorBatchLogger` | Default `System.debug` logger implementation |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
@@ -1146,6 +1181,7 @@ The framework logs key events at each stage:
 |--------|------|-------------|
 | `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings) |
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
+| `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag for final page tracking) |
 
@@ -1153,6 +1189,7 @@ The framework logs key events at each stage:
 
 | Trigger | Event | Description |
 |---------|-------|-------------|
+| `CursorBatchCoordinatorTrigger` | `CursorBatch_Coordinator__e` | Enqueues coordinator from submit() events |
 | `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
 | `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles completion and callbacks |
 

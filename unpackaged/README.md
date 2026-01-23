@@ -14,19 +14,22 @@ This directory contains metadata that is **NOT included in the CursorBatchFramew
 
 ## 1. Platform Event Subscriber Configs (Required)
 
-The framework uses **two** Platform Event triggers that require subscriber configurations. These are intentionally **NOT included in the package** for two reasons:
+The framework uses **three** Platform Event triggers that require subscriber configurations. These are intentionally **NOT included in the package** for two reasons:
 
 1. **Org-specific user**: The configs require a running user that must be valid in your specific org
 2. **Upgrade safety**: By keeping these outside the package, your customizations are preserved during package upgrades
 
 | Config File | Trigger | Platform Event | Purpose |
 |-------------|---------|----------------|---------|
+| `CursorBatchCoordinatorTriggerConfig` | `CursorBatchCoordinatorTrigger` | `CursorBatch_Coordinator__e` | Enqueues the coordinator queueable, ensuring it runs as the dedicated user |
 | `CursorBatchWorkerTriggerConfig` | `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns Queueable workers from coordinator fanout events |
 | `CursorBatchWorkerCompleteTriggerConfig` | `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles worker completion, updates job tracking, invokes `finish()` callback |
 
+> **Important:** All three triggers **must use the same user**. This is critical because `Database.Cursor` is only accessible by the user who created it. By running all triggers as the same user, the coordinator creates the cursor, and workers can access it.
+
 ### Post-Install Setup (Required)
 
-After installing the CursorBatchFramework package, deploy both Platform Event Subscriber Configs:
+After installing the CursorBatchFramework package, deploy all three Platform Event Subscriber Configs:
 
 #### Option 1: Deploy as-is (uses default user)
 
@@ -36,11 +39,24 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
 
 #### Option 2: Customize the running user
 
-1. Edit both config files in `platformEventSubscriberConfigs/`:
+1. Edit all three config files in `platformEventSubscriberConfigs/`:
+   - `CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml`
    - `CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
    - `CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml`
 
-2. Update the `<user>` element in each file with your desired running user:
+2. Update the `<user>` element in each file with your desired running user (must be the **same user** in all three):
+
+**CursorBatchCoordinatorTriggerConfig** (enqueues coordinator):
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<PlatformEventSubscriberConfig xmlns="http://soap.sforce.com/2006/04/metadata">
+    <batchSize>1</batchSize>
+    <isProtected>true</isProtected>
+    <masterLabel>CursorBatchCoordinatorTriggerConfig</masterLabel>
+    <platformEventConsumer>CursorBatchCoordinatorTrigger</platformEventConsumer>
+    <user>your-integration-user@example.com</user>
+</PlatformEventSubscriberConfig>
+```
 
 **CursorBatchWorkerTriggerConfig** (spawns workers):
 ```xml
@@ -76,23 +92,33 @@ sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs/
 
 Configure each trigger subscription in Setup:
 
-1. **Worker Trigger**: Setup → Platform Events → `CursorBatch_Worker__e` → Subscriptions
-2. **Completion Trigger**: Setup → Platform Events → `CursorBatch_WorkerComplete__e` → Subscriptions
+1. **Coordinator Trigger**: Setup → Platform Events → `CursorBatch_Coordinator__e` → Subscriptions
+2. **Worker Trigger**: Setup → Platform Events → `CursorBatch_Worker__e` → Subscriptions
+3. **Completion Trigger**: Setup → Platform Events → `CursorBatch_WorkerComplete__e` → Subscriptions
 
-### Why Both Configs Are Required
+### Why All Three Configs Are Required
 
 | Config | What Happens Without It |
 |--------|------------------------|
+| **CoordinatorTriggerConfig** | Coordinator won't run — `submit()` publishes event but trigger runs as Automated Process user (lacks permissions) |
 | **WorkerTriggerConfig** | Workers won't spawn — coordinator publishes events but trigger runs as Automated Process user (lacks permissions) |
 | **WorkerCompleteTriggerConfig** | `finish()` callback won't fire — worker completions are tracked but coordinator isn't notified |
+
+### Why All Three Must Use the Same User
+
+`Database.Cursor` is only accessible to the user who created it. The framework routes the coordinator through a Platform Event trigger so that:
+
+1. The coordinator runs as the dedicated trigger user and creates the cursor
+2. Workers also run as the dedicated trigger user and can access the cursor
+3. If different users were used, workers would fail with cursor access errors
 
 ### Important Notes
 
 - These configs are **required** for the framework to function properly
-- Both configurations are **your responsibility** to maintain
+- All three configurations are **your responsibility** to maintain
 - Package upgrades will **never** overwrite your configurations (they're not in the package)
 - If you don't deploy these, the Platform Event triggers will run as Automated Process user (which lacks permissions)
-- Both triggers should use the **same running user** for consistency
+- All three triggers **must use the same running user** for cursor access to work
 
 ---
 

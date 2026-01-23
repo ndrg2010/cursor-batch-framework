@@ -3,9 +3,15 @@
  *              creates a Database.Cursor, extracts its queryId for cross-transaction access,
  *              and publishes Platform Events to fan out parallel workers. Platform Events
  *              are used because queueable-to-queueable chaining is limited to one job.
+ * 
+ *              The coordinator itself is routed through a Platform Event (CursorBatch_Coordinator__e)
+ *              to ensure it runs as the dedicated trigger user. This is required because
+ *              Database.Cursor is only accessible by the user who created it, and workers
+ *              run as the trigger user.
  * @group CursorBatchFramework
  * @see CursorBatchWorker
  * @see CursorBatchWorkerTriggerHandler
+ * @see CursorBatchCoordinatorTriggerHandler
  */
 public abstract without sharing class CursorBatchCoordinator implements Queueable, Database.AllowsCallouts {
     
@@ -75,28 +81,53 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Submits the coordinator job. Creates the job record before enqueueing to ensure
-     *              it survives any transaction rollback in execute(). By default, checks both 
-     *              CursorBatch_Job__c records and AsyncApexJob to prevent duplicate jobs. 
-     *              Override isJobAlreadyRunning() to customize duplicate detection logic.
+     * @description Submits the coordinator job. Creates the job record and publishes a Platform Event
+     *              to route execution through the trigger, ensuring the coordinator runs as the
+     *              dedicated trigger user. This is required for cursor access by workers.
+     *              By default, checks both CursorBatch_Job__c records and AsyncApexJob to prevent 
+     *              duplicate jobs. Override isJobAlreadyRunning() to customize duplicate detection logic.
      */
     public void submit() {
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
-            System.enqueueJob(this);
+            publishCoordinatorEvent(null);
         }
     }
     
     /**
-     * @description Submits the coordinator job with a delay. Creates the job record before enqueueing
-     *              to ensure it survives any transaction rollback in execute(). Uses Queueable's
-     *              built-in delay feature for deferred execution.
+     * @description Submits the coordinator job with a delay. Creates the job record and publishes a
+     *              Platform Event to route execution through the trigger with the specified delay.
      * @param delayMinutes Number of minutes to delay before execution (1-10 supported by platform)
      */
     public void submitWithDelay(Integer delayMinutes) {
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
-            System.enqueueJob(this, delayMinutes);
+            publishCoordinatorEvent(delayMinutes);
+        }
+    }
+    
+    /**
+     * @description Publishes a CursorBatch_Coordinator__e Platform Event to trigger coordinator
+     *              execution. The trigger runs as the dedicated user configured in the
+     *              PlatformEventSubscriberConfig, ensuring the cursor is created by that user.
+     * @param delayMinutes Optional delay in minutes for deferred execution; null for immediate
+     */
+    private void publishCoordinatorEvent(Integer delayMinutes) {
+        CursorBatch_Coordinator__e evt = new CursorBatch_Coordinator__e(
+            Job_Name__c = jobName,
+            Coordinator_Class__c = CursorBatchContext.getClassName(this),
+            Job_Record_Id__c = jobRecordId,
+            Delay_Minutes__c = delayMinutes
+        );
+        
+        Database.SaveResult result = EventBus.publish(evt);
+        if (!result.isSuccess()) {
+            for (Database.Error err : result.getErrors()) {
+                logger.logError('CursorBatchCoordinator: Failed to publish coordinator event: ' + err.getMessage());
+            }
+        } else {
+            String delayMsg = delayMinutes != null ? ' with ' + delayMinutes + ' min delay' : '';
+            logger.logInfo('CursorBatchCoordinator: Published coordinator event for ' + jobName + delayMsg);
         }
     }
     
