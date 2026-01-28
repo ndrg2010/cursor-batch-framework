@@ -86,6 +86,29 @@ public without sharing class CursorBatchTestUtils {
         Integer workerMaxRetries,
         Integer workerRetryDelay
     ) {
+        return createTestConfig(jobName, workerCount, pageSize, coordinatorMaxRetries, workerMaxRetries, workerRetryDelay, false);
+    }
+    
+    /**
+     * @description Creates a test configuration for cursor batch jobs with full settings including skip duplicate check.
+     * @param jobName Job name/label
+     * @param workerCount Number of workers
+     * @param pageSize Page size for cursor fetching
+     * @param coordinatorMaxRetries Maximum retry attempts for coordinator cursor timeouts
+     * @param workerMaxRetries Maximum retry attempts for worker page failures
+     * @param workerRetryDelay Base delay in minutes for worker retry exponential backoff
+     * @param skipDuplicateCheck When true, bypasses duplicate job detection
+     * @return CursorBatch_Config__mdt instance (not inserted - custom metadata)
+     */
+    public static CursorBatch_Config__mdt createTestConfig(
+        String jobName, 
+        Integer workerCount, 
+        Integer pageSize,
+        Integer coordinatorMaxRetries,
+        Integer workerMaxRetries,
+        Integer workerRetryDelay,
+        Boolean skipDuplicateCheck
+    ) {
         CursorBatch_Config__mdt config = new CursorBatch_Config__mdt(
             MasterLabel = jobName,
             Parallel_Count__c = workerCount,
@@ -93,6 +116,7 @@ public without sharing class CursorBatchTestUtils {
             Coordinator_Max_Retries__c = coordinatorMaxRetries,
             Worker_Max_Retries__c = workerMaxRetries,
             Worker_Retry_Delay__c = workerRetryDelay,
+            Skip_Duplicate_Check__c = skipDuplicateCheck,
             Active__c = true
         );
         return config;
@@ -419,6 +443,65 @@ public without sharing class CursorBatchTestUtils {
         }
         
         // Note: Does NOT override isJobAlreadyRunning() to test base implementation
+        
+    }
+    
+    // Static fields for ReschedulingCoordinator state tracking
+    public static Boolean reschedulingCoordinator_finishCalled = false;
+    public static Boolean reschedulingCoordinator_submitWithDelayCalled = false;
+    public static Integer reschedulingCoordinator_rescheduleDelayMinutes = null;
+    
+    /**
+     * @description Resets static state between tests for ReschedulingCoordinator.
+     */
+    public static void resetReschedulingCoordinator() {
+        reschedulingCoordinator_finishCalled = false;
+        reschedulingCoordinator_submitWithDelayCalled = false;
+        reschedulingCoordinator_rescheduleDelayMinutes = null;
+    }
+    
+    /**
+     * @description Test coordinator that calls submitWithDelay() in finish() to test
+     *              continuous processing/rescheduling behavior. Uses a query that returns
+     *              0 records to trigger the 0-records path in execute().
+     */
+    public class ReschedulingCoordinator extends CursorBatchCoordinator {
+        
+        public Integer rescheduleDelayMinutes;
+        public Boolean shouldReschedule;
+        
+        public ReschedulingCoordinator(String jobName) {
+            this(jobName, true, 5);
+        }
+        
+        public ReschedulingCoordinator(String jobName, Boolean shouldReschedule, Integer rescheduleDelayMinutes) {
+            super(jobName);
+            this.shouldReschedule = shouldReschedule;
+            this.rescheduleDelayMinutes = rescheduleDelayMinutes;
+        }
+        
+        public override String buildQuery() {
+            // Query that returns 0 records to trigger the 0-records path
+            return 'SELECT Id FROM Account WHERE Name = \'NonExistentAccount_ReschedulingTest_12345\'';
+        }
+        
+        public override String getWorkerClassName() {
+            return 'CursorBatchTestUtils.TestCursorBatchWorker';
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            super.finish(jobRecord);
+            reschedulingCoordinator_finishCalled = true;
+            
+            if (shouldReschedule) {
+                reschedulingCoordinator_rescheduleDelayMinutes = rescheduleDelayMinutes;
+                // This should NOT be blocked by isJobAlreadyRunning() finding the current job
+                submitWithDelay(rescheduleDelayMinutes);
+                reschedulingCoordinator_submitWithDelayCalled = true;
+            }
+        }
+        
+        // Note: Does NOT override isJobAlreadyRunning() to test base implementation with exclude logic
         
     }
     

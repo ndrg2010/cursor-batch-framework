@@ -75,7 +75,7 @@ public without sharing class CursorBatchSelector {
         
         List<CursorBatch_Config__mdt> configs = [
             SELECT MasterLabel, Parallel_Count__c, Page_Size__c, Coordinator_Max_Retries__c, 
-                   Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c
+                   Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true
@@ -91,17 +91,36 @@ public without sharing class CursorBatchSelector {
      * @return List of running AsyncApexJob records
      */
     public static List<AsyncApexJob> getRunningAsyncJobsByClass(String className) {
+        return getRunningAsyncJobsByClass(className, null);
+    }
+    
+    /**
+     * @description Queries AsyncApexJob records that are currently running for a given class,
+     *              with the option to exclude a specific job (e.g., the currently executing job).
+     *              Used to check if a coordinator job is already running while allowing the
+     *              current job to reschedule itself (e.g., finish() calling submitWithDelay()).
+     * @param className The fully qualified ApexClass name
+     * @param excludeJobId Optional AsyncApexJob Id to exclude from the query (e.g., current job)
+     * @return List of running AsyncApexJob records
+     */
+    public static List<AsyncApexJob> getRunningAsyncJobsByClass(String className, Id excludeJobId) {
         if (String.isBlank(className)) {
             return new List<AsyncApexJob>();
         }
         
-        return [
-            SELECT Id 
-            FROM AsyncApexJob 
-            WHERE ApexClass.Name = :className 
-            AND Status IN ('Queued', 'Holding', 'Preparing', 'Processing')
-            LIMIT 1
-        ];
+        String query = 'SELECT Id FROM AsyncApexJob WHERE ApexClass.Name = :className ' +
+                       'AND Status IN (\'Queued\', \'Holding\', \'Preparing\', \'Processing\')';
+        
+        Map<String, Object> bindVars = new Map<String, Object>{ 'className' => className };
+        
+        if (excludeJobId != null) {
+            query += ' AND Id != :excludeJobId';
+            bindVars.put('excludeJobId', excludeJobId);
+        }
+        
+        query += ' LIMIT 1';
+        
+        return Database.queryWithBinds(query, bindVars, AccessLevel.SYSTEM_MODE);
     }
     
     // ============== Private Helpers ==============

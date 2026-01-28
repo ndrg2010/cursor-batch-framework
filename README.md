@@ -57,13 +57,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CdC5AAK) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CdC5AAK) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CzvlAAC) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CzvlAAC) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000CdC5AAK --target-org your-org --wait 10
+sf package install --package 04tfj000000CzvlAAC --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -600,6 +600,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Coordinator_Max_Retries__c` | Number | 3 | Max retry attempts for coordinator cursor query timeouts |
 | `Worker_Max_Retries__c` | Number | 3 | Max retry attempts for failed worker page processing |
 | `Worker_Retry_Delay__c` | Number | 1 | Base delay in minutes for worker retry exponential backoff |
+| `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
 
 ### CursorBatch_Job__c Fields
 
@@ -813,6 +814,23 @@ The framework automatically prevents duplicate jobs by checking:
 
 1. `CursorBatch_Job__c` records with `Status__c IN ('Preparing', 'Processing')`
 2. `AsyncApexJob` for running queueables of the same coordinator class
+
+#### Skip Duplicate Check Option
+
+If you need to allow multiple instances of the same job to run concurrently, enable `Skip_Duplicate_Check__c` in your `CursorBatch_Config__mdt` record. This bypasses both checks above.
+
+**Use cases for skipping duplicate detection:**
+- Jobs that process different data subsets and can safely run in parallel
+- High-frequency jobs where overlap is acceptable
+- Testing or debugging scenarios
+
+> **Caution:** When duplicate detection is disabled, ensure your job logic is idempotent and can handle concurrent execution without data corruption.
+
+#### Self-Chaining from finish()
+
+When using `submitWithDelay()` from within `finish()` for continuous processing patterns, the framework automatically excludes the current job from duplicate detection. This allows the self-chaining pattern to work correctly even when duplicate detection is enabled.
+
+#### Custom Duplicate Detection
 
 Override `isJobAlreadyRunning()` for custom logic:
 

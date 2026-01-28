@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Skip_Duplicate_Check__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>When checked, the coordinator will skip the duplicate job detection check, allowing multiple instances of the same job to run concurrently. Use with caution - this bypasses the protection against duplicate job execution.</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Check this to allow multiple instances of this job to run at the same time. Leave unchecked to prevent duplicate job execution.</inlineHelpText>
+    <label>Skip Duplicate Check</label>
+    <type>Checkbox</type>
+</CustomField>

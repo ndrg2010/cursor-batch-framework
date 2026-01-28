@@ -25,6 +25,14 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     public static final Integer DEFAULT_WORKER_RETRY_DELAY = 1;
     public static final Integer MAX_DELAY_MINUTES = 10;
     
+    /**
+     * @description Tracks the current Queueable's AsyncApexJob ID during execute().
+     *              Used to exclude the current job from duplicate detection when finish()
+     *              calls submitWithDelay() for continuous processing (e.g., 0-records scenario).
+     */
+    @TestVisible
+    private static Id currentAsyncJobId;
+    
     protected String jobName;
     protected ICursorBatchLogger logger;
     
@@ -138,6 +146,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @throws CursorBatchException When no active config is found or job record is missing
      */
     public void execute(QueueableContext ctx) {
+        // Track the current job ID so isJobAlreadyRunning() can exclude it from duplicate detection.
+        // This allows finish() to call submitWithDelay() for continuous processing (e.g., 0-records).
+        currentAsyncJobId = ctx?.getJobId();
         try {
             // Fetch the job record created by submit() or set by finalizer
             CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobRecordId);
@@ -210,6 +221,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinator error for ' + jobName, e);
             throw e;
+        } finally {
+            // Always clear the current job ID to prevent stale references
+            currentAsyncJobId = null;
         }
     }
     
@@ -498,10 +512,24 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Checks if the job is already running by querying both the CursorBatch_Job__c
      *              tracking records and the AsyncApexJob table for running queueables. Override
      *              to customize duplicate detection logic.
+     *              
+     *              If the job's config has Skip_Duplicate_Check__c enabled, this method returns
+     *              false immediately, allowing multiple instances of the job to run concurrently.
+     *              
+     *              When called from within execute() (e.g., finish() calling submitWithDelay()
+     *              for continuous processing), the current job is excluded from the AsyncApexJob
+     *              check to allow rescheduling.
      * @param jobName Job name to check
      * @return True if job is currently running; false otherwise
      */
     protected virtual Boolean isJobAlreadyRunning(String jobName) {
+        // Check if duplicate detection is disabled for this job
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        if (config != null && config.Skip_Duplicate_Check__c == true) {
+            logger.logInfo('CursorBatchCoordinator: Skipping duplicate check for "' + jobName + '" (Skip_Duplicate_Check__c enabled)');
+            return false;
+        }
+        
         // Check custom job tracking record for running jobs with the same name
         List<CursorBatch_Job__c> runningJobs = CursorBatchSelector.getRunningJobsByName(jobName);
         if (!runningJobs.isEmpty()) {
@@ -510,8 +538,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         }
         
         // Check AsyncApexJob for running queueables of the same coordinator class
+        // Exclude the current job ID if we're being called from within execute()
         String className = CursorBatchContext.getClassName(this);
-        List<AsyncApexJob> asyncJobs = CursorBatchSelector.getRunningAsyncJobsByClass(className);
+        List<AsyncApexJob> asyncJobs = CursorBatchSelector.getRunningAsyncJobsByClass(className, currentAsyncJobId);
         if (!asyncJobs.isEmpty()) {
             logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found AsyncApexJob for ' + className + ')');
             return true;

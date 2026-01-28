@@ -407,4 +407,230 @@ private without sharing class CursorBatchCoordinatorTest {
         System.assertEquals('Processing', updatedJob.Status__c, 'Job should be in Processing status');
         System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 'Retry count should be preserved');
     }
+    
+    @IsTest
+    static void testCurrentAsyncJobIdExcludesCurrentJobFromDuplicateCheck() {
+        // Arrange - Simulate being inside execute() by setting currentAsyncJobId
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'ExcludeTestJob', 5, 20
+        );
+        
+        // Create a mock job ID to simulate current running job
+        // Use a valid-looking AsyncApexJob ID format
+        String prefix = AsyncApexJob.SObjectType.getDescribe().getKeyPrefix();
+        Id mockCurrentJobId = Id.valueOf(prefix + '000000000001');
+        
+        // Set the static field to simulate being inside execute()
+        CursorBatchCoordinator.currentAsyncJobId = mockCurrentJobId;
+        
+        try {
+            CursorBatchTestUtils.DuplicateCheckCoordinator coordinator = 
+                new CursorBatchTestUtils.DuplicateCheckCoordinator('ExcludeTestJob');
+            
+            // Act
+            Test.startTest();
+            coordinator.submit();
+            Test.stopTest();
+            
+            // Assert - Job should execute because we excluded the "current" job
+            // (In real scenario, the current job would be in AsyncApexJob, but our mock ID
+            // doesn't exist in the table, so this just verifies the code path works)
+            List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('ExcludeTestJob');
+            System.assertEquals(1, jobs.size(), 'Should create one job record when current job is excluded');
+        } finally {
+            // Clean up
+            CursorBatchCoordinator.currentAsyncJobId = null;
+        }
+    }
+    
+    @IsTest
+    static void testCurrentAsyncJobIdClearedAfterExecuteCompletes() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('ClearIdTestJob', 5, 20);
+        
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('ClearIdTestJob');
+        coordinator.setJobRecordId(jobRecord.Id);
+        
+        // Verify currentAsyncJobId starts as null
+        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+            'currentAsyncJobId should be null before execute()');
+        
+        // Act
+        Test.startTest();
+        coordinator.execute(null);
+        Test.stopTest();
+        
+        // Assert - currentAsyncJobId should be cleared in finally block
+        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+            'currentAsyncJobId should be null after execute() completes');
+    }
+    
+    @IsTest
+    static void testCurrentAsyncJobIdClearedAfterExecuteThrowsException() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('ExceptionClearIdTestJob', 5, 20);
+        
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('ExceptionClearIdTestJob',
+                'SELECT InvalidField FROM Account');
+        coordinator.setJobRecordId(jobRecord.Id);
+        
+        // Act
+        Test.startTest();
+        try {
+            coordinator.execute(null);
+        } catch (Exception e) {
+            // Expected - invalid query
+        }
+        Test.stopTest();
+        
+        // Assert - currentAsyncJobId should be cleared even after exception
+        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+            'currentAsyncJobId should be null after execute() throws exception');
+    }
+    
+    @IsTest
+    static void testGetRunningAsyncJobsByClassWithExcludeId() {
+        // This test verifies the selector method works correctly with exclusion
+        // We can't easily create real AsyncApexJob records, but we can verify the method runs
+        
+        // Act
+        Test.startTest();
+        
+        // Test with null excludeJobId (should work like original method)
+        List<AsyncApexJob> jobsWithoutExclude = 
+            CursorBatchSelector.getRunningAsyncJobsByClass('CursorBatchTestUtils.TestCursorBatchCoordinator', null);
+        
+        // Test with a fake excludeJobId (should exclude it from results if it existed)
+        String prefix = AsyncApexJob.SObjectType.getDescribe().getKeyPrefix();
+        Id fakeJobId = Id.valueOf(prefix + '000000000001');
+        List<AsyncApexJob> jobsWithExclude = 
+            CursorBatchSelector.getRunningAsyncJobsByClass('CursorBatchTestUtils.TestCursorBatchCoordinator', fakeJobId);
+        
+        Test.stopTest();
+        
+        // Assert - Both should return empty since no real async jobs exist in test context
+        System.assertEquals(0, jobsWithoutExclude.size(), 'Should return empty list without exclude');
+        System.assertEquals(0, jobsWithExclude.size(), 'Should return empty list with exclude');
+    }
+    
+    @IsTest
+    static void testGetRunningAsyncJobsByClassWithEmptyClassName() {
+        // Act
+        Test.startTest();
+        List<AsyncApexJob> jobsNull = CursorBatchSelector.getRunningAsyncJobsByClass(null, null);
+        List<AsyncApexJob> jobsEmpty = CursorBatchSelector.getRunningAsyncJobsByClass('', null);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(0, jobsNull.size(), 'Should return empty list for null className');
+        System.assertEquals(0, jobsEmpty.size(), 'Should return empty list for empty className');
+    }
+    
+    @IsTest
+    static void testSkipDuplicateCheck_AllowsJobWhenRunningJobExists() {
+        // Arrange - Create a running job record to simulate duplicate scenario
+        CursorBatch_Job__c runningJob = CursorBatchTestUtils.createTestJobRecord(
+            'SkipDuplicateTestJob', 5, 'CursorBatchTestUtils.DuplicateCheckCoordinator'
+        );
+        
+        // Config with Skip_Duplicate_Check__c = true
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'SkipDuplicateTestJob', 5, 20, 3, 3, 1, true
+        );
+        
+        CursorBatchTestUtils.DuplicateCheckCoordinator coordinator = 
+            new CursorBatchTestUtils.DuplicateCheckCoordinator('SkipDuplicateTestJob');
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - Should have 2 job records: original + new one (duplicate check skipped)
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('SkipDuplicateTestJob');
+        System.assertEquals(2, jobs.size(), 
+            'Should create second job record when Skip_Duplicate_Check__c is enabled');
+    }
+    
+    @IsTest
+    static void testSkipDuplicateCheck_BlocksJobWhenDisabled() {
+        // Arrange - Create a running job record to simulate duplicate scenario
+        CursorBatch_Job__c runningJob = CursorBatchTestUtils.createTestJobRecord(
+            'NoSkipDuplicateTestJob', 5, 'CursorBatchTestUtils.DuplicateCheckCoordinator'
+        );
+        
+        // Config with Skip_Duplicate_Check__c = false (default)
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'NoSkipDuplicateTestJob', 5, 20, 3, 3, 1, false
+        );
+        
+        CursorBatchTestUtils.DuplicateCheckCoordinator coordinator = 
+            new CursorBatchTestUtils.DuplicateCheckCoordinator('NoSkipDuplicateTestJob');
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - Should still have only 1 job record (duplicate check blocked the new one)
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('NoSkipDuplicateTestJob');
+        System.assertEquals(1, jobs.size(), 
+            'Should not create second job record when Skip_Duplicate_Check__c is disabled');
+        System.assertEquals(runningJob.Id, jobs[0].Id, 
+            'Should still be the original job record');
+    }
+    
+    @IsTest
+    static void testSkipDuplicateCheck_LogsMessageWhenSkipping() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'SkipDuplicateLogTestJob', 5, 20, 3, 3, 1, true
+        );
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        CursorBatchTestUtils.DuplicateCheckCoordinator coordinator = 
+            new CursorBatchTestUtils.DuplicateCheckCoordinator('SkipDuplicateLogTestJob');
+        coordinator.setLogger(mockLogger);
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - Should log that duplicate check was skipped
+        System.assert(mockLogger.hasInfoContaining('Skipping duplicate check'), 
+            'Should log message about skipping duplicate check');
+        System.assert(mockLogger.hasInfoContaining('Skip_Duplicate_Check__c enabled'), 
+            'Should mention Skip_Duplicate_Check__c in log message');
+    }
+    
+    @IsTest
+    static void testSkipDuplicateCheck_DefaultsToFalse() {
+        // Arrange - Config without explicitly setting Skip_Duplicate_Check__c
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'DefaultSkipTestJob', 5, 20
+        );
+        
+        // Create a running job to test duplicate detection
+        CursorBatch_Job__c runningJob = CursorBatchTestUtils.createTestJobRecord(
+            'DefaultSkipTestJob', 5, 'CursorBatchTestUtils.DuplicateCheckCoordinator'
+        );
+        
+        CursorBatchTestUtils.DuplicateCheckCoordinator coordinator = 
+            new CursorBatchTestUtils.DuplicateCheckCoordinator('DefaultSkipTestJob');
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - Default behavior should block duplicates
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('DefaultSkipTestJob');
+        System.assertEquals(1, jobs.size(), 
+            'Default config should block duplicate jobs (Skip_Duplicate_Check__c defaults to false)');
+    }
 }
