@@ -19,24 +19,30 @@ Traditional Salesforce batch processing has limitations:
 - 📡 **Platform Event Orchestration** — Bypass Queueable chaining limits (1 child job) to enable parallel fanout
 - 🔄 **Automatic Completion Callbacks** — Chain jobs or send notifications when done
 - 📊 **Built-in Job Tracking** — Monitor progress with custom object records and real-time percent complete
-- 🧩 **Pluggable Logging** — Integrate with Nebula Logger, Pharos, or custom solutions
+- 🧩 **Pluggable Logging** — Integrate with Nebula Logger, Pharos, or custom solutions with convention-based discovery
 - 🔁 **Built-in Retry Support** — Automatic retry for both coordinator cursor queries AND worker page failures
 - 🎛️ **Caller-Controlled Retry** — Throw `CursorBatchRetryException` to explicitly request page retry
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
+- 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
 
 ## Table of Contents
 
 - [Installation](#installation)
 - [Quick Start](#quick-start)
+  - [Option A: Metadata-Driven Jobs (CursorJob)](#option-a-metadata-driven-jobs-cursorjob)
+  - [Option B: Custom Coordinator Classes](#option-b-custom-coordinator-classes)
 - [Architecture](#architecture)
 - [Configuration Reference](#configuration-reference)
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
 - [Advanced Usage](#advanced-usage)
   - [Monitoring Jobs](#monitoring-jobs)
   - [Job Chaining](#job-chaining)
+  - [Worker finish() Method](#worker-finish-method)
   - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
   - [Pluggable Logging](#pluggable-logging)
+  - [Convention-Based Logger Discovery](#convention-based-logger-discovery)
+- [Migration Guide](#migration-guide)
 - [Governor Limits & Best Practices](#governor-limits--best-practices)
 - [Troubleshooting](#troubleshooting)
 - [Components](#components)
@@ -57,13 +63,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CzvlAAC) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000CzvlAAC) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DLLBAA4) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DLLBAA4) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000CzvlAAC --target-org your-org --wait 10
+sf package install --package 04tfj000000DLLBAA4 --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -135,7 +141,90 @@ The included configs use a placeholder user. Update all three files in `unpackag
 
 ## Quick Start
 
-### 1. Create a Coordinator
+Choose your approach based on complexity:
+
+| Approach | Best For | Boilerplate |
+|----------|----------|-------------|
+| **CursorJob (Metadata-Driven)** | Simple jobs with standard query/worker pattern | Zero code — configure in metadata |
+| **Custom Coordinator** | Complex logic, conditional queries, custom callbacks | ~50-80 lines |
+
+### Option A: Metadata-Driven Jobs (CursorJob)
+
+For most batch jobs, you can eliminate coordinator classes entirely and configure everything in metadata.
+
+#### 1. Create a Worker
+
+```apex
+public class MyDataProcessingWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        List<Account> accounts = (List<Account>) records;
+        
+        for (Account acc : accounts) {
+            acc.Status__c = 'Processed';
+        }
+        
+        update accounts;
+    }
+}
+```
+
+#### 2. Implement ICursorBatchQueryBuilder in Your Selector
+
+Extend your selector to provide queries for metadata-driven jobs:
+
+```apex
+public class AccountSelector implements ICursorBatchQueryBuilder {
+    
+    // Required by ICursorBatchQueryBuilder - routes method names to actual methods
+    public String buildQuery(String methodName) {
+        switch on methodName {
+            when 'buildPendingAccountsQuery' {
+                return buildPendingAccountsQuery();
+            }
+            when else { 
+                return null; 
+            }
+        }
+    }
+    
+    public String buildPendingAccountsQuery() {
+        return 'SELECT Id, Name, Status__c FROM Account WHERE Status__c = \'Pending\'';
+    }
+}
+```
+
+#### 3. Configure Metadata
+
+Create a `CursorBatch_Config__mdt` record:
+
+| Field | Value |
+|-------|-------|
+| **MasterLabel** | `MyDataProcessingJob` |
+| **Active__c** | `true` |
+| **Query_Builder_Class__c** | `AccountSelector` |
+| **Query_Builder_Method__c** | `buildPendingAccountsQuery` |
+| **Worker_Class__c** | `MyDataProcessingWorker` |
+| **Logger_Tag__c** | `Data Processing` (optional) |
+
+#### 4. Execute
+
+```apex
+CursorJob.run('MyDataProcessingJob');
+
+// Or with a delay (1-10 minutes)
+CursorJob.runWithDelay('MyDataProcessingJob', 5);
+```
+
+**That's it!** No coordinator class needed.
+
+---
+
+### Option B: Custom Coordinator Classes
+
+For complex scenarios requiring custom logic, conditional queries, or specialized callbacks, create a coordinator class.
+
+#### 1. Create a Coordinator
 
 The coordinator defines your query and specifies the worker class:
 
@@ -179,7 +268,7 @@ public class MyDataProcessingCoordinator extends CursorBatchCoordinator {
 }
 ```
 
-### 2. Create a Worker
+#### 2. Create a Worker
 
 The worker processes batches of records. Both coordinator and worker implement `Database.AllowsCallouts`, so callouts are supported out of the box:
 
@@ -247,7 +336,7 @@ public class MyLoggingWorker extends CursorBatchWorker {
 }
 ```
 
-### 3. Configure the Job
+#### 3. Configure the Job
 
 Create a `CursorBatch_Config__mdt` record:
 
@@ -261,7 +350,7 @@ Create a `CursorBatch_Config__mdt` record:
 | **Worker_Max_Retries__c** | `3` | Max retries for failed pages |
 | **Worker_Retry_Delay__c** | `1` | Base delay (minutes) for retry backoff |
 
-### 4. Execute
+#### 4. Execute
 
 ```apex
 new MyDataProcessingCoordinator().submit();
@@ -592,6 +681,8 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 
 ### CursorBatch_Config__mdt Fields
 
+#### Core Settings
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `Active__c` | Checkbox | — | Must be `true` to run |
@@ -601,6 +692,19 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Worker_Max_Retries__c` | Number | 3 | Max retry attempts for failed worker page processing |
 | `Worker_Retry_Delay__c` | Number | 1 | Base delay in minutes for worker retry exponential backoff |
 | `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
+
+#### CursorJob Settings (Metadata-Driven Jobs)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Query_Builder_Class__c` | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
+| `Query_Builder_Method__c` | Text(255) | Method name to call on query builder |
+| `Worker_Class__c` | Text(255) | Worker class extending `CursorBatchWorker` |
+| `Chain_To_Class__c` | Text(255) | Class to chain to after completion (must implement `Callable`) |
+| `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
+| `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
+
+**Note:** When `Query_Builder_Class__c` is set, use `CursorJob.run('JobName')` instead of creating a coordinator class.
 
 ### CursorBatch_Job__c Fields
 
@@ -829,6 +933,65 @@ If you need to allow multiple instances of the same job to run concurrently, ena
 #### Self-Chaining from finish()
 
 When using `submitWithDelay()` from within `finish()` for continuous processing patterns, the framework automatically excludes the current job from duplicate detection. This allows the self-chaining pattern to work correctly even when duplicate detection is enabled.
+
+### Worker finish() Method
+
+Workers can implement completion logic that runs when ALL workers for a job complete. This is useful for conditional chaining based on job results.
+
+```apex
+public class BillingBatchWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        // Process records...
+    }
+    
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        // Called when ALL workers complete
+        String jobName = jobRecord.Job_Name__c;
+        
+        if (jobName == 'Billing Before Advance') {
+            CursorJob.run('Submit For Advance Approval');
+        } else if (jobName == 'Billing After Advance') {
+            if (shouldRunGCS()) {
+                CursorJob.run('GCS Debt Set Batch');
+            }
+        }
+    }
+}
+```
+
+#### Finish Flow Logic
+
+When all workers complete, the framework determines which `finish()` method to call:
+
+```
+┌─────────────────────────┐
+│   All Workers Complete  │
+└───────────┬─────────────┘
+            │
+            ▼
+    ┌───────────────────┐
+    │ Chain_To_Class    │──Yes──▶ Invoke Chain_To_Class.method()
+    │ is set?           │
+    └───────┬───────────┘
+            │ No
+            ▼
+    ┌───────────────────┐
+    │ Query_Builder     │──Yes──▶ Call worker.finish()
+    │ is set?           │         (CursorJob path)
+    └───────┬───────────┘
+            │ No
+            ▼
+    ┌───────────────────┐
+    │ Custom Coordinator│──────▶ Call coordinator.finish()
+    └───────────────────┘
+```
+
+| Config Pattern | What Happens | Use Case |
+|----------------|--------------|----------|
+| `Chain_To_Class__c` set | Invoke chain class directly | Simple linear chaining |
+| `Query_Builder_Class__c` set (no chain) | Call `worker.finish()` | Complex conditional logic |
+| Neither set | Call `coordinator.finish()` | Legacy custom coordinators |
 
 #### Custom Duplicate Detection
 
@@ -1100,6 +1263,101 @@ public class PharosLoggerAdapter implements ICursorBatchLogger {
 }
 ```
 
+### Convention-Based Logger Discovery
+
+The framework automatically discovers custom loggers without requiring explicit configuration. Both `CursorBatchCoordinator` and `CursorBatchWorker` check for a class named `CursorBatchLoggerAdapter` at runtime.
+
+#### How It Works
+
+```apex
+// Automatic resolution in base classes
+private static ICursorBatchLogger resolveLogger() {
+    try {
+        Type adapterType = Type.forName('CursorBatchLoggerAdapter');
+        if (adapterType != null) {
+            Object instance = adapterType.newInstance();
+            if (instance instanceof ICursorBatchLogger) {
+                return (ICursorBatchLogger) instance;
+            }
+        }
+    } catch (Exception e) {
+        // Class not found or instantiation failed - use default
+    }
+    return CursorBatchLogger.getDefault();
+}
+```
+
+#### Setting Up Convention-Based Logging
+
+1. Create a class named `CursorBatchLoggerAdapter` that implements `ICursorBatchLogger`:
+
+```apex
+public class CursorBatchLoggerAdapter implements ICursorBatchLogger {
+    
+    private static final String LOG_PREFIX = '[CursorBatch] ';
+    
+    public void logInfo(String message) {
+        Logger.info(LOG_PREFIX + message);
+        Logger.saveLog();
+    }
+    
+    public void logError(String message) {
+        Logger.error(LOG_PREFIX + message);
+        Logger.saveLog();
+    }
+    
+    public void logException(String message, Exception e) {
+        Logger.error(LOG_PREFIX + message, e);
+        Logger.saveLog();
+    }
+}
+```
+
+2. Deploy the class to your org. **That's it!** All coordinators and workers automatically use it.
+
+> **Tip:** See `unpackaged/classes/CursorBatchLoggerAdapter.cls` for a Nebula Logger template.
+
+#### Benefits
+
+- **Zero configuration** — Workers don't need constructors to set up logging
+- **Org-wide consistency** — All jobs use the same logger automatically
+- **Override when needed** — Call `setLogger()` to use a different logger for specific jobs
+
+#### Simplifying Existing Workers
+
+With convention-based logging, you can remove boilerplate from workers:
+
+**Before (with explicit logger):**
+
+```apex
+public class BillingBatchWorker extends CursorBatchWorker {
+    
+    public BillingBatchWorker() {
+        super();
+        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance('Billing'));
+    }
+    
+    public override void process(List<SObject> records) {
+        // ...
+    }
+}
+```
+
+**After (with convention-based discovery):**
+
+```apex
+public class BillingBatchWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        Set<Id> dealIds = new Map<Id, SObject>(records).keySet();
+        
+        IBillingService billingService = (IBillingService) Application.Service.newInstance(IBillingService.class);
+        billingService.rebillDeals(dealIds, true);
+        logger.logInfo('Rebilled ' + dealIds.size() + ' deals');
+    }
+}
+```
+
 #### What Gets Logged
 
 The framework logs key events at each stage:
@@ -1121,6 +1379,142 @@ The framework logs key events at each stage:
 | Job completion | INFO | `CursorBatchCompletionHandler: Job MyJob completed. Status: Completed, Workers Finished: 48, Failed: 2` |
 | Errors | ERROR | `CursorBatchCoordinator error for MyJob: INVALID_QUERY...` |
 | Exceptions | ERROR | Full stack trace included via `logException()` |
+
+## Migration Guide
+
+### Migrating from Custom Coordinators to CursorJob
+
+For simple coordinators that just define a query and worker, you can eliminate the coordinator class entirely.
+
+#### Before: Custom Coordinator (~50 lines)
+
+```apex
+public class Five9DeleteCoordinator extends CursorBatchCoordinator {
+    private static final String JOB_NAME = 'Five9 Delete Batch';
+    
+    public Five9DeleteCoordinator() {
+        super(JOB_NAME);
+        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance());
+    }
+    
+    public override String buildQuery() {
+        return CampaignMembersSelector.newInstance()
+            .buildScheduledDeleteMembersQuery();
+    }
+    
+    public override String getWorkerClassName() {
+        return 'Five9DeleteWorker';
+    }
+}
+```
+
+#### After: Metadata-Driven (0 lines)
+
+**Step 1:** Extend your selector interface to include `ICursorBatchQueryBuilder`:
+
+```apex
+// ICampaignMembersSelector.cls
+public interface ICampaignMembersSelector extends ndr_ISObjectSelector, ICursorBatchQueryBuilder {
+    // Existing method signatures...
+    String buildScheduledDeleteMembersQuery();
+}
+```
+
+> **Note:** Only add `ICursorBatchQueryBuilder` to selector interfaces that will be used with CursorJob.
+
+**Step 2:** Add the dispatch method to your selector class:
+
+```apex
+// CampaignMembersSelector.cls
+public class CampaignMembersSelector extends ndr_SObjectSelector 
+    implements ICampaignMembersSelector {
+    
+    // Required by ICursorBatchQueryBuilder - routes method names to actual methods
+    public String buildQuery(String methodName) {
+        switch on methodName {
+            when 'buildScheduledDeleteMembersQuery' {
+                return buildScheduledDeleteMembersQuery();
+            }
+            when else { 
+                return null; 
+            }
+        }
+    }
+    
+    // Existing query method (no changes needed)
+    public String buildScheduledDeleteMembersQuery() {
+        return 'SELECT Id FROM CampaignMember WHERE ...';
+    }
+}
+```
+
+**Step 3:** Configure metadata:
+
+| Field | Value |
+|-------|-------|
+| MasterLabel | `Five9 Delete Batch` |
+| Query_Builder_Class__c | `CampaignMembersSelector` |
+| Query_Builder_Method__c | `buildScheduledDeleteMembersQuery` |
+| Worker_Class__c | `Five9DeleteWorker` |
+| Logger_Tag__c | `Five9 Sync` |
+
+**Step 4:** Delete the coordinator class
+
+**Step 5:** Update callers:
+
+```apex
+// Old
+new Five9DeleteCoordinator().submit();
+
+// New
+CursorJob.run('Five9 Delete Batch');
+```
+
+### Migrating Complex Coordinators
+
+If your coordinator has conditional chaining logic in `finish()`, move it to the worker:
+
+```apex
+public class BillingBatchWorker extends CursorBatchWorker {
+    
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        String jobName = jobRecord.Job_Name__c;
+        
+        if (jobName == 'Billing Before Advance') {
+            CursorJob.run('Submit For Advance Approval');
+        } else if (jobName == 'Billing After Advance') {
+            if (shouldRunGCS()) {
+                CursorJob.run('GCS Debt Set Batch');
+            }
+        }
+    }
+}
+```
+
+### Sample CursorJob Configurations
+
+```yaml
+# Simple job with query builder
+MasterLabel: Five9 Delete Batch
+Active__c: true
+Parallel_Count__c: 50
+Page_Size__c: 20
+Query_Builder_Class__c: CampaignMembersSelector
+Query_Builder_Method__c: buildScheduledDeleteMembersQuery
+Worker_Class__c: Five9DeleteWorker
+Logger_Tag__c: Five9 Sync
+
+# Job with automatic chaining
+MasterLabel: TAP Transaction Finder
+Active__c: true
+Parallel_Count__c: 25
+Page_Size__c: 50
+Query_Builder_Class__c: DealsSelector
+Query_Builder_Method__c: buildAllPendingDealsCursorQuery
+Worker_Class__c: TAPTransactionFinderWorker
+Chain_To_Class__c: TAPTransactionJob
+Chain_To_Method__c: run
+```
 
 ## Governor Limits & Best Practices
 
@@ -1180,28 +1574,41 @@ The framework logs key events at each stage:
 
 | Class | Description |
 |-------|-------------|
-| `CursorBatchCoordinator` | Abstract base for coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
+| `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code |
+| `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
 | `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that enqueues coordinator Queueable from submit() |
-| `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages |
+| `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages. Includes `finish()` virtual method for completion logic |
 | `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
 | `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
 | `CursorBatchRetryException` | Custom exception to explicitly request page retry with optional delay |
 | `CursorBatchContext` | Value object encapsulating worker execution parameters including retry state and final page tracking |
-| `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks |
+| `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks (coordinator, worker, or chain class) |
 | `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework |
 | `CursorBatchLogger` | Default `System.debug` logger implementation |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
+| `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
 
 ### Custom Objects
 
 | Object | Type | Description |
 |--------|------|-------------|
-| `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings) |
+| `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings, CursorJob settings) |
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag for final page tracking) |
+
+### New Metadata Fields (v0.9)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Query_Builder_Class__c` | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
+| `Query_Builder_Method__c` | Text(255) | Method name to call on query builder |
+| `Worker_Class__c` | Text(255) | Worker class extending `CursorBatchWorker` |
+| `Chain_To_Class__c` | Text(255) | Class to chain to after completion (implements `Callable`) |
+| `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
+| `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
 
 ### Triggers
 

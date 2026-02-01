@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Query_Builder_Method__c</fullName>
+    <description>Method name to pass to ICursorBatchQueryBuilder.buildQuery(). Used by CursorJob for metadata-driven coordinator configuration. The query builder class uses this to route to the appropriate query method.</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Enter the method name for building the query (e.g., buildQueryForBillingFullDatabase). Required for CursorJob; leave blank for custom coordinator classes.</inlineHelpText>
+    <label>Query Builder Method</label>
+    <length>255</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

@@ -119,9 +119,81 @@ public without sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
-        // Invoke callbacks for completed jobs
+        // Invoke callbacks for completed jobs using 3-path finish logic
         for (CursorBatch_Job__c job : completedJobs) {
-            CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
+            invokeFinishCallback(job);
+        }
+    }
+    
+    /**
+     * @description Invokes the appropriate finish callback based on job configuration.
+     *              Uses 3-path logic:
+     *              1. If Chain_To_Class__c is set → invoke the chain
+     *              2. Else if Query_Builder_Class__c is set (CursorJob) → call worker.finish()
+     *              3. Else → call coordinator.finish()
+     * @param job The completed job record
+     */
+    private void invokeFinishCallback(CursorBatch_Job__c job) {
+        CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(job.Job_Name__c);
+        
+        // Path 1: Chain_To_Class is set - invoke the chain directly
+        if (config != null && String.isNotBlank(config.Chain_To_Class__c)) {
+            invokeChain(config.Chain_To_Class__c, config.Chain_To_Method__c, job, logger);
+            return;
+        }
+        
+        // Path 2: Query_Builder_Class is set - this is a CursorJob, call worker.finish()
+        if (config != null && String.isNotBlank(config.Query_Builder_Class__c)) {
+            String workerClass = config.Worker_Class__c;
+            if (String.isNotBlank(workerClass)) {
+                CursorBatchWorker.invokeFinishCallback(workerClass, job, logger);
+            }
+            return;
+        }
+        
+        // Path 3: Custom coordinator - call coordinator.finish()
+        CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
+    }
+    
+    /**
+     * @description Invokes the chain class/method using Callable interface.
+     * @param chainClass The class to chain to
+     * @param chainMethod The method to call (defaults to 'run' if blank)
+     * @param job The completed job record (passed for context)
+     * @param logger Logger for error reporting
+     */
+    private static void invokeChain(String chainClass, String chainMethod, CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        String methodToCall = String.isNotBlank(chainMethod) ? chainMethod : 'run';
+        
+        try {
+            Type chainType = Type.forName(chainClass);
+            if (chainType == null) {
+                logger.logError('CursorBatchCompletionHandler: Chain class not found: ' + chainClass);
+                return;
+            }
+            
+            Object instance = chainType.newInstance();
+            
+            // Try Callable interface first
+            if (instance instanceof Callable) {
+                Callable callableInstance = (Callable) instance;
+                callableInstance.call(methodToCall, new Map<String, Object>{ 'jobRecord' => job });
+                logger.logInfo('CursorBatchCompletionHandler: Chained to ' + chainClass + '.' + methodToCall + '()');
+                return;
+            }
+            
+            // Fallback: Check if it's a CursorJob chaining to another CursorJob
+            // This handles CursorJob.run('NextJobName') pattern
+            if (chainClass == 'CursorJob' && methodToCall == 'run') {
+                // For CursorJob, we need the job name - this scenario requires explicit config
+                logger.logError('CursorBatchCompletionHandler: Chain to CursorJob requires Callable implementation in ' + chainClass);
+                return;
+            }
+            
+            logger.logError('CursorBatchCompletionHandler: Chain class ' + chainClass + ' must implement Callable interface');
+            
+        } catch (Exception e) {
+            logger.logException('CursorBatchCompletionHandler: Error invoking chain ' + chainClass + '.' + methodToCall, e);
         }
     }
 }

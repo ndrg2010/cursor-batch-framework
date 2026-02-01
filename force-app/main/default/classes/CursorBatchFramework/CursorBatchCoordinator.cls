@@ -65,7 +65,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              CursorBatchCompletionHandler when invoking the finish() callback.
      * @param jobName Job identifier from the job record
      */
-    public void initializeJobName(String jobName) {
+    public virtual void initializeJobName(String jobName) {
         this.jobName = jobName;
     }
     

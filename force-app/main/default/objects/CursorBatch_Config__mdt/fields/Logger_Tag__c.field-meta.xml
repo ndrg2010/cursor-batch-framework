@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Logger_Tag__c</fullName>
+    <description>Optional tag to apply to all log entries for this job. Useful for filtering logs by job type or feature area (e.g., Five9 Sync, Billing).</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Enter a tag to apply to all logs for this job (e.g., Five9 Sync). Leave blank for no tagging.</inlineHelpText>
+    <label>Logger Tag</label>
+    <length>255</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

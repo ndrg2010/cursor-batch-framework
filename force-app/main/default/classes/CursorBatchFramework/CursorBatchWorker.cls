@@ -15,10 +15,11 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     
     /**
      * @description Default constructor for reflection-based instantiation. Context must be set
-     *              via initialize() before enqueueing.
+     *              via initialize() before enqueueing. Uses convention-based logger resolution
+     *              to automatically discover CursorBatchLoggerAdapter if present.
      */
     protected CursorBatchWorker() {
-        this.logger = CursorBatchLogger.getDefault();
+        this.logger = resolveLogger();
     }
     
     /**
@@ -37,6 +38,27 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     @TestVisible
     protected void setLogger(ICursorBatchLogger logger) {
         this.logger = logger;
+    }
+    
+    /**
+     * @description Resolves the logger implementation using convention-based discovery.
+     *              Looks for a class named 'CursorBatchLoggerAdapter' that implements ICursorBatchLogger.
+     *              Falls back to CursorBatchLogger (System.debug) if not found.
+     * @return ICursorBatchLogger instance
+     */
+    private static ICursorBatchLogger resolveLogger() {
+        try {
+            Type adapterType = Type.forName('CursorBatchLoggerAdapter');
+            if (adapterType != null) {
+                Object instance = adapterType.newInstance();
+                if (instance instanceof ICursorBatchLogger) {
+                    return (ICursorBatchLogger) instance;
+                }
+            }
+        } catch (Exception e) {
+            // Class not found or instantiation failed - use default
+        }
+        return CursorBatchLogger.getDefault();
     }
     
     /**
@@ -162,5 +184,56 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      */
     public virtual void onComplete() {
         logger.logInfo('CursorBatchWorker (' + ctx.jobName + ') worker #' + ctx.workerNum + ' completed. Position: ' + ctx.startPosition + ', EndPosition: ' + ctx.endPosition);
+    }
+    
+    /**
+     * @description Called when ALL workers for the job have completed (success or failure).
+     *              This is invoked by CursorBatchCompletionHandler on a fresh worker instance
+     *              for CursorJob (metadata-driven) jobs. Override to implement custom completion
+     *              logic such as chaining to another batch, sending notifications, or cleanup.
+     *              
+     *              Note: This method is called on a NEW instance of the worker class, not the
+     *              instances that processed records. Use jobRecord fields for completion info.
+     * @param jobRecord The CursorBatch_Job__c record with completion status and worker counts
+     */
+    public virtual void finish(CursorBatch_Job__c jobRecord) {
+        // Default: no-op. Subclasses override for custom completion logic.
+    }
+    
+    /**
+     * @description Invokes the worker's finish() callback method via reflection.
+     *              Used by CursorBatchCompletionHandler for CursorJob (metadata-driven) jobs.
+     * @param workerClassName Fully qualified name of the worker class
+     * @param jobRecord Job record containing completion details
+     * @param logger Logger instance for error reporting
+     */
+    public static void invokeFinishCallback(
+        String workerClassName,
+        CursorBatch_Job__c jobRecord,
+        ICursorBatchLogger logger
+    ) {
+        if (String.isBlank(workerClassName)) {
+            return;
+        }
+        
+        try {
+            Type workerType = Type.forName(workerClassName);
+            if (workerType == null) {
+                logger.logError('CursorBatchWorker: Worker class not found: ' + workerClassName);
+                return;
+            }
+            
+            Object instance = workerType.newInstance();
+            if (!(instance instanceof CursorBatchWorker)) {
+                logger.logError('CursorBatchWorker: Class ' + workerClassName + ' must extend CursorBatchWorker');
+                return;
+            }
+            
+            CursorBatchWorker worker = (CursorBatchWorker) instance;
+            worker.finish(jobRecord);
+            
+        } catch (Exception e) {
+            logger.logException('CursorBatchWorker: Error invoking finish() for ' + workerClassName, e);
+        }
     }
 }

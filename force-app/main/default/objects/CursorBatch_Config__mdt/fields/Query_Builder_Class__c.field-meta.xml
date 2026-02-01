@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Query_Builder_Class__c</fullName>
+    <description>Class name that implements ICursorBatchQueryBuilder interface. Used by CursorJob for metadata-driven coordinator configuration. The class must have a no-arg constructor and implement the buildQuery(String methodName) method.</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Enter the API name of a class implementing ICursorBatchQueryBuilder (e.g., DealsSelector). Required for CursorJob; leave blank for custom coordinator classes.</inlineHelpText>
+    <label>Query Builder Class</label>
+    <length>255</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>
