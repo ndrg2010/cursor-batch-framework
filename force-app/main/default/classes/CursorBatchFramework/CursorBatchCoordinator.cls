@@ -591,6 +591,29 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
+     * @description Kills a running job by setting its status to Cancelled (kill switch).
+     *              Running workers will stop processing after their current page completes.
+     *              Workers check the job status before enqueueing the next page.
+     * @param jobRecordId The Id of the CursorBatch_Job__c record to cancel
+     * @return true if job was cancelled, false if job not found or already in terminal state
+     */
+    public static Boolean killJob(Id jobRecordId) {
+        CursorBatch_Job__c job = CursorBatchSelector.getJobById(jobRecordId);
+        if (job == null) {
+            return false;
+        }
+        // Don't cancel jobs that are already in a terminal state
+        if (job.Status__c == 'Completed' || job.Status__c == 'Failed' || 
+            job.Status__c == 'Completed with Errors' || job.Status__c == 'Cancelled') {
+            return false;
+        }
+        job.Status__c = 'Cancelled';
+        job.Completed_At__c = System.now();
+        update job;
+        return true;
+    }
+    
+    /**
      * @description Exception class for cursor batch framework errors.
      */
     public class CursorBatchException extends Exception {}

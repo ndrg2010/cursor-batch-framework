@@ -99,14 +99,19 @@ public without sharing class CursorBatchCompletionHandler {
             // Check if all workers are done (using Workers_Finished + Failed, not batch count)
             Decimal totalDone = job.Workers_Finished__c + job.Failed_Workers__c;
             if (totalDone >= job.Total_Workers__c) {
-                if (job.Failed_Workers__c == 0) {
-                    job.Status__c = 'Completed';
-                } else if (job.Workers_Finished__c > 0) {
-                    job.Status__c = 'Completed with Errors';
-                } else {
-                    job.Status__c = 'Failed';
+                // Preserve Cancelled status if job was killed (don't overwrite with completion status)
+                if (job.Status__c != 'Cancelled') {
+                    if (job.Failed_Workers__c == 0) {
+                        job.Status__c = 'Completed';
+                    } else if (job.Workers_Finished__c > 0) {
+                        job.Status__c = 'Completed with Errors';
+                    } else {
+                        job.Status__c = 'Failed';
+                    }
                 }
-                job.Completed_At__c = System.now();
+                if (job.Completed_At__c == null) {
+                    job.Completed_At__c = System.now();
+                }
                 completedJobs.add(job);
                 logger.logInfo('CursorBatchCompletionHandler: Job ' + job.Job_Name__c + ' completed. ' +
                     'Status: ' + job.Status__c + ', Workers Finished: ' + job.Workers_Finished__c + ', Failed: ' + job.Failed_Workers__c);
@@ -119,30 +124,47 @@ public without sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
-        // Invoke callbacks for completed jobs using 3-path finish logic
+        // Invoke callbacks for completed jobs using 4-path finish logic
+        // Skip callbacks for cancelled jobs (kill switch activated)
         for (CursorBatch_Job__c job : completedJobs) {
-            invokeFinishCallback(job);
+            if (job.Status__c != 'Cancelled') {
+                invokeFinishCallback(job);
+            } else {
+                logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
+            }
         }
     }
     
     /**
      * @description Invokes the appropriate finish callback based on job configuration.
-     *              Uses 3-path logic:
-     *              1. If Chain_To_Class__c is set → invoke the chain
-     *              2. Else if Query_Builder_Class__c is set (CursorJob) → call worker.finish()
-     *              3. Else → call coordinator.finish()
+     *              Uses 4-path logic:
+     *              1. If Chain_To_Job__c is set → chain to another CursorJob by name
+     *              2. Else if Chain_To_Class__c is set → invoke the chain via Callable
+     *              3. Else if Query_Builder_Class__c is set (CursorJob) → call worker.finish()
+     *              4. Else → call coordinator.finish()
      * @param job The completed job record
      */
     private void invokeFinishCallback(CursorBatch_Job__c job) {
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(job.Job_Name__c);
         
-        // Path 1: Chain_To_Class is set - invoke the chain directly
+        // Path 1: Chain_To_Job is set - chain to another CursorJob by name
+        if (config != null && String.isNotBlank(config.Chain_To_Job__c)) {
+            try {
+                CursorJob.run(config.Chain_To_Job__c);
+                logger.logInfo('CursorBatchCompletionHandler: Chained to job ' + config.Chain_To_Job__c);
+            } catch (Exception e) {
+                logger.logException('CursorBatchCompletionHandler: Error chaining to job ' + config.Chain_To_Job__c, e);
+            }
+            return;
+        }
+        
+        // Path 2: Chain_To_Class is set - invoke the chain directly
         if (config != null && String.isNotBlank(config.Chain_To_Class__c)) {
             invokeChain(config.Chain_To_Class__c, config.Chain_To_Method__c, job, logger);
             return;
         }
         
-        // Path 2: Query_Builder_Class is set - this is a CursorJob, call worker.finish()
+        // Path 3: Query_Builder_Class is set - this is a CursorJob, call worker.finish()
         if (config != null && String.isNotBlank(config.Query_Builder_Class__c)) {
             String workerClass = config.Worker_Class__c;
             if (String.isNotBlank(workerClass)) {
@@ -151,7 +173,7 @@ public without sharing class CursorBatchCompletionHandler {
             return;
         }
         
-        // Path 3: Custom coordinator - call coordinator.finish()
+        // Path 4: Custom coordinator - call coordinator.finish()
         CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
     }
     

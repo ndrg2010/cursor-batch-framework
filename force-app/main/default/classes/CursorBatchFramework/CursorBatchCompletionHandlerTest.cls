@@ -482,4 +482,124 @@ private without sharing class CursorBatchCompletionHandlerTest {
         System.assertEquals(2, updatedJob.Workers_Finished__c, 'Trigger should have fired and handler should have processed both events');
         System.assertEquals('Completed', updatedJob.Status__c, 'Status should be Completed');
     }
+    
+    // ============================================
+    // Cancelled Job (Kill Switch) Tests
+    // ============================================
+    
+    @IsTest
+    static void testHandleCancelledJobPreservesStatus() {
+        // Arrange - Create a job that has been cancelled (kill switch activated)
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CancelledTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Cancelled';
+        Datetime cancelledAt = System.now().addMinutes(-1);
+        jobRecord.Completed_At__c = cancelledAt;
+        update jobRecord;
+        
+        // Simulate workers completing after cancellation
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            ),
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert - Status should remain Cancelled, not be overwritten to Completed
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Cancelled', updatedJob.Status__c, 
+            'Cancelled status should be preserved, not overwritten');
+        System.assertEquals(cancelledAt, updatedJob.Completed_At__c, 
+            'Completed_At should not be overwritten if already set');
+    }
+    
+    @IsTest
+    static void testHandleCancelledJobWithFailuresPreservesStatus() {
+        // Arrange - Cancelled job with failed workers
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CancelledFailedTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Cancelled';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'Worker stopped due to cancellation',
+                Is_Final__c = true
+            ),
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'Worker stopped due to cancellation',
+                Is_Final__c = true
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert - Status should remain Cancelled, not be changed to Failed
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Cancelled', updatedJob.Status__c, 
+            'Cancelled status should be preserved even when all workers fail');
+    }
+    
+    @IsTest
+    static void testCancelledJobSkipsFinishCallback() {
+        // Arrange - Cancelled job with a coordinator that would normally get finish() called
+        // The finish() callback should NOT be invoked for cancelled jobs
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CancelledCallbackTestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Cancelled';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        
+        // Act - Should complete without throwing exception
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert - Job should remain cancelled and handler should complete successfully
+        // (No exception means finish callback was either skipped or handled gracefully)
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Cancelled', updatedJob.Status__c, 
+            'Status should remain Cancelled after handling completion events');
+        System.assertEquals(1, updatedJob.Workers_Finished__c, 
+            'Worker completion should still be tracked');
+    }
 }

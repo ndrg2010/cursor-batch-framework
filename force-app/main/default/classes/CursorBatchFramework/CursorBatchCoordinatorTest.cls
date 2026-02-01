@@ -633,4 +633,168 @@ private without sharing class CursorBatchCoordinatorTest {
         System.assertEquals(1, jobs.size(), 
             'Default config should block duplicate jobs (Skip_Duplicate_Check__c defaults to false)');
     }
+    
+    // ============================================
+    // Kill Switch Tests
+    // ============================================
+    
+    @IsTest
+    static void testKillJob_CancelsRunningJob() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'KillTestJob', 5, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        System.assertEquals('Processing', jobRecord.Status__c, 'Job should start in Processing status');
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(true, result, 'killJob should return true for running job');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
+        System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
+    }
+    
+    @IsTest
+    static void testKillJob_ReturnsFalseForNonExistentJob() {
+        // Arrange - Use a fake job ID
+        Id fakeJobId = CursorBatch_Job__c.SObjectType.getDescribe().getKeyPrefix() + '000000000001';
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(fakeJobId);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'killJob should return false for non-existent job');
+    }
+    
+    @IsTest
+    static void testKillJob_ReturnsFalseForCompletedJob() {
+        // Arrange - Create a completed job
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CompletedKillTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'killJob should return false for completed job');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Completed', updatedJob.Status__c, 'Status should remain Completed');
+    }
+    
+    @IsTest
+    static void testKillJob_ReturnsFalseForFailedJob() {
+        // Arrange - Create a failed job
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FailedKillTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Failed';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'killJob should return false for failed job');
+    }
+    
+    @IsTest
+    static void testKillJob_ReturnsFalseForAlreadyCancelledJob() {
+        // Arrange - Create an already cancelled job
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'AlreadyCancelledTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Cancelled';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'killJob should return false for already cancelled job');
+    }
+    
+    @IsTest
+    static void testKillJob_CancelsPreparingJob() {
+        // Arrange - Create a job in Preparing status
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'PreparingKillTestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchCoordinator.killJob(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(true, result, 'killJob should return true for preparing job');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
+    }
+    
+    // ============================================
+    // isJobCancelled Selector Tests
+    // ============================================
+    
+    @IsTest
+    static void testIsJobCancelled_ReturnsTrueForCancelledJob() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CancelledCheckTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Cancelled';
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchSelector.isJobCancelled(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(true, result, 'Should return true for cancelled job');
+    }
+    
+    @IsTest
+    static void testIsJobCancelled_ReturnsFalseForProcessingJob() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ProcessingCheckTestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchSelector.isJobCancelled(jobRecord.Id);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'Should return false for processing job');
+    }
+    
+    @IsTest
+    static void testIsJobCancelled_ReturnsFalseForNullId() {
+        // Act
+        Test.startTest();
+        Boolean result = CursorBatchSelector.isJobCancelled(null);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(false, result, 'Should return false for null job ID');
+    }
 }

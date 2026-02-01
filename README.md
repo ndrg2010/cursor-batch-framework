@@ -39,6 +39,7 @@ Traditional Salesforce batch processing has limitations:
   - [Job Chaining](#job-chaining)
   - [Worker finish() Method](#worker-finish-method)
   - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
+  - [Kill Switch (Cancelling Jobs)](#kill-switch-cancelling-jobs)
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
   - [Pluggable Logging](#pluggable-logging)
   - [Convention-Based Logger Discovery](#convention-based-logger-discovery)
@@ -63,13 +64,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DLLBAA4) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DLLBAA4) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DM17AAG) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DM17AAG) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000DLLBAA4 --target-org your-org --wait 10
+sf package install --package 04tfj000000DM17AAG --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -700,6 +701,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Query_Builder_Class__c` | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
 | `Query_Builder_Method__c` | Text(255) | Method name to call on query builder |
 | `Worker_Class__c` | Text(255) | Worker class extending `CursorBatchWorker` |
+| `Chain_To_Job__c` | Text(255) | Job name (MasterLabel) to chain to after completion — simplest chaining option |
 | `Chain_To_Class__c` | Text(255) | Class to chain to after completion (must implement `Callable`) |
 | `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
 | `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
@@ -739,6 +741,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Completed` | All workers completed successfully |
 | `Completed with Errors` | Some workers succeeded, some failed |
 | `Failed` | All workers failed, or max retries exhausted |
+| `Cancelled` | Job was manually stopped via kill switch (`killJob()`) |
 
 ## Important: Cursor Snapshot Behavior
 
@@ -848,7 +851,42 @@ The framework includes two list views for monitoring:
 
 ### Job Chaining
 
-Chain jobs in the `finish()` callback:
+The framework provides multiple ways to chain jobs, from simple metadata configuration to complex conditional logic.
+
+#### Option 1: Chain_To_Job__c (Simplest)
+
+For simple linear chaining, configure `Chain_To_Job__c` in your `CursorBatch_Config__mdt` record:
+
+| Field | Value |
+|-------|-------|
+| `Chain_To_Job__c` | `Next Job Name` |
+
+When the job completes, the framework automatically calls `CursorJob.run('Next Job Name')`. No code required.
+
+#### Option 2: Chain_To_Class__c (Class-Based)
+
+For chaining to a class that implements `Callable`:
+
+| Field | Value |
+|-------|-------|
+| `Chain_To_Class__c` | `MyChainableClass` |
+| `Chain_To_Method__c` | `submitJob` (optional, defaults to `run`) |
+
+The class receives the job record for context:
+
+```apex
+public class MyChainableClass implements Callable {
+    public Object call(String action, Map<String, Object> args) {
+        CursorBatch_Job__c jobRecord = (CursorBatch_Job__c) args.get('jobRecord');
+        // Chain logic here
+        return null;
+    }
+}
+```
+
+#### Option 3: finish() Callback (Most Flexible)
+
+For complex conditional logic, override `finish()` in your worker or coordinator:
 
 ```apex
 public override void finish(CursorBatch_Job__c jobRecord) {
@@ -857,6 +895,17 @@ public override void finish(CursorBatch_Job__c jobRecord) {
     }
 }
 ```
+
+#### Chaining Priority
+
+When a job completes, the framework checks in order:
+
+1. **Chain_To_Job__c** → Calls `CursorJob.run(jobName)`
+2. **Chain_To_Class__c** → Invokes `Callable.call(method, args)`
+3. **Query_Builder_Class__c set** (CursorJob) → Calls `worker.finish()`
+4. **Custom Coordinator** → Calls `coordinator.finish()`
+
+The first matching condition is executed; subsequent options are skipped.
 
 #### Delayed Job Submission
 
@@ -933,6 +982,77 @@ If you need to allow multiple instances of the same job to run concurrently, ena
 #### Self-Chaining from finish()
 
 When using `submitWithDelay()` from within `finish()` for continuous processing patterns, the framework automatically excludes the current job from duplicate detection. This allows the self-chaining pattern to work correctly even when duplicate detection is enabled.
+
+### Kill Switch (Cancelling Jobs)
+
+The framework provides a kill switch to stop running jobs gracefully. When activated, workers complete their current page but don't process additional pages.
+
+#### Using the Kill Switch
+
+```apex
+// Get the job record ID from the CursorBatch_Job__c record
+Id jobRecordId = 'a0Bxx0000001234AAA';
+
+// Cancel the job
+Boolean cancelled = CursorBatchCoordinator.killJob(jobRecordId);
+
+if (cancelled) {
+    System.debug('Job cancelled successfully');
+} else {
+    System.debug('Job could not be cancelled (not found or already in terminal state)');
+}
+```
+
+#### How It Works
+
+1. `killJob()` sets the job status to `Cancelled` and records `Completed_At__c`
+2. Workers check `CursorBatchSelector.isJobCancelled()` before enqueueing the next page
+3. If cancelled, workers stop processing and call `onComplete()`
+4. The completion handler preserves the `Cancelled` status (doesn't overwrite to `Completed` or `Failed`)
+5. The `finish()` callback is **not invoked** for cancelled jobs
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                           Kill Switch Flow                                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  Admin/Code calls                Worker finishes
+  killJob(jobId)                  current page
+       │                               │
+       ▼                               ▼
+  ┌──────────────┐            ┌──────────────────┐
+  │ Job.Status = │            │ isJobCancelled() │
+  │ 'Cancelled'  │            │ returns true     │
+  └──────────────┘            └──────────────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │ Worker stops,    │
+                              │ calls onComplete │
+                              │ (no next page)   │
+                              └──────────────────┘
+                                       │
+                                       ▼
+                              ┌──────────────────┐
+                              │ Completion       │
+                              │ handler skips    │
+                              │ finish() callback│
+                              └──────────────────┘
+```
+
+#### killJob() Return Values
+
+| Return Value | Meaning |
+|--------------|---------|
+| `true` | Job was cancelled successfully |
+| `false` | Job not found, or already in terminal state (`Completed`, `Failed`, `Completed with Errors`, `Cancelled`) |
+
+#### Use Cases
+
+- **Emergency stop** — Stop a runaway job that's causing issues
+- **Maintenance windows** — Gracefully stop long-running jobs before deployments
+- **User-initiated cancellation** — Allow admins to cancel jobs from a custom UI
+- **Timeout handling** — Implement custom timeout logic that cancels stale jobs
 
 ### Worker finish() Method
 
@@ -1504,7 +1624,17 @@ Query_Builder_Method__c: buildScheduledDeleteMembersQuery
 Worker_Class__c: Five9DeleteWorker
 Logger_Tag__c: Five9 Sync
 
-# Job with automatic chaining
+# Job with simple job-name chaining (recommended for most cases)
+MasterLabel: Billing Before Advance
+Active__c: true
+Parallel_Count__c: 25
+Page_Size__c: 50
+Query_Builder_Class__c: DealsSelector
+Query_Builder_Method__c: buildDealsForBillingQuery
+Worker_Class__c: BillingBatchWorker
+Chain_To_Job__c: Submit For Advance Approval
+
+# Job with class-based chaining (for custom chain logic)
 MasterLabel: TAP Transaction Finder
 Active__c: true
 Parallel_Count__c: 25
@@ -1568,6 +1698,13 @@ Chain_To_Method__c: run
 - Review `Error_Message__c` for the first captured error
 - Check `Total_Worker_Retries__c` to see if retries were attempted
 
+### Job shows "Cancelled"
+
+- Job was stopped via `CursorBatchCoordinator.killJob(jobRecordId)`
+- Workers completed their current page but didn't process additional pages
+- The `finish()` callback was not invoked (by design)
+- Check `Completed_At__c` to see when the job was cancelled
+
 ## Components
 
 ### Apex Classes
@@ -1599,13 +1736,14 @@ Chain_To_Method__c: run
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag for final page tracking) |
 
-### New Metadata Fields (v0.9)
+### New Metadata Fields (v0.10)
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `Query_Builder_Class__c` | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
 | `Query_Builder_Method__c` | Text(255) | Method name to call on query builder |
 | `Worker_Class__c` | Text(255) | Worker class extending `CursorBatchWorker` |
+| `Chain_To_Job__c` | Text(255) | Job name to chain to after completion (simplest option) |
 | `Chain_To_Class__c` | Text(255) | Class to chain to after completion (implements `Callable`) |
 | `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
 | `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |

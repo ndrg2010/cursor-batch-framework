@@ -107,8 +107,14 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             Integer newPosition = ctx.startPosition + scope.size();
             
             if (newPosition < ctx.endPosition && newPosition < ctx.cursor.getNumRecords()) {
-                // More pages to process - not final
-                if (!Test.isRunningTest()) {
+                // Check if job was cancelled (kill switch) before spooling to next page
+                if (CursorBatchSelector.isJobCancelled(ctx.jobRecordId)) {
+                    logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
+                        ') stopping - job was cancelled');
+                    ctx.isFinal = true;
+                    onComplete();
+                } else if (!Test.isRunningTest()) {
+                    // More pages to process - enqueue next page
                     CursorBatchContext nextCtx = ctx.withNextPosition(newPosition);
                     System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
                 }

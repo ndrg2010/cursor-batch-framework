@@ -37,7 +37,7 @@ public without sharing class CursorBatchSelector {
         List<CursorBatch_Job__c> jobs = [
             SELECT Id, Job_Name__c, Total_Workers__c, Completed_Batches__c, Workers_Finished__c, 
                    Failed_Workers__c, Status__c, Coordinator_Class__c, Error_Message__c, 
-                   Total_Worker_Retries__c
+                   Total_Worker_Retries__c, Completed_At__c
             FROM CursorBatch_Job__c
             WHERE Id IN :jobIds
         ];
@@ -75,13 +75,33 @@ public without sharing class CursorBatchSelector {
         
         List<CursorBatch_Config__mdt> configs = [
             SELECT MasterLabel, Parallel_Count__c, Page_Size__c, Coordinator_Max_Retries__c, 
-                   Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c
+                   Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c,
+                   Chain_To_Job__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true
             LIMIT 1
         ];
         return configs.isEmpty() ? null : configs[0];
+    }
+    
+    /**
+     * @description Checks if a job has been cancelled (kill switch activated).
+     *              Used by workers to determine if they should stop processing.
+     * @param jobId The Id of the job record to check
+     * @return true if job status is 'Cancelled', false otherwise
+     */
+    public static Boolean isJobCancelled(Id jobId) {
+        if (jobId == null) {
+            return false;
+        }
+        List<CursorBatch_Job__c> jobs = [
+            SELECT Status__c 
+            FROM CursorBatch_Job__c 
+            WHERE Id = :jobId AND Status__c = 'Cancelled' 
+            LIMIT 1
+        ];
+        return !jobs.isEmpty();
     }
     
     /**
