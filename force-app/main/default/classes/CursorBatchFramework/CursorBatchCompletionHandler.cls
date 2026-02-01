@@ -142,9 +142,30 @@ public without sharing class CursorBatchCompletionHandler {
      *              2. Else if Chain_To_Class__c is set → invoke the chain via Callable
      *              3. Else if Query_Builder_Class__c is set (CursorJob) → call worker.finish()
      *              4. Else → call coordinator.finish()
+     *              
+     *              Wrapped in try-catch to ensure exceptions are logged and don't silently
+     *              crash the Platform Event trigger. Falls back to coordinator.finish() on error.
      * @param job The completed job record
      */
     private void invokeFinishCallback(CursorBatch_Job__c job) {
+        try {
+            invokeFinishCallbackInternal(job);
+        } catch (Exception e) {
+            logger.logException('CursorBatchCompletionHandler: Error in invokeFinishCallback for job ' + job.Job_Name__c, e);
+            // Fallback: still try to call coordinator.finish() so custom cleanup can run
+            try {
+                CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
+            } catch (Exception fallbackEx) {
+                logger.logException('CursorBatchCompletionHandler: Fallback coordinator.finish() also failed for ' + job.Job_Name__c, fallbackEx);
+            }
+        }
+    }
+    
+    /**
+     * @description Internal implementation of the 4-path finish callback logic.
+     * @param job The completed job record
+     */
+    private void invokeFinishCallbackInternal(CursorBatch_Job__c job) {
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(job.Job_Name__c);
         
         // Path 1: Chain_To_Job is set - chain to another CursorJob by name
