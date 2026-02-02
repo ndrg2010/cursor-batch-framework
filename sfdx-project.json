@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.11",
-      "versionNumber": "0.11.0.NEXT",
+      "versionName": "ver 0.12",
+      "versionNumber": "0.12.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "CursorBatchCompletionHandler and CursorBatchSelector updates",
+      "versionDescription": "Fix CursorBatchSelector to query Query_Builder_Method__c and Logger_Tag__c fields for CursorJob",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -33,7 +33,8 @@
     "CursorBatchFramework@0.8.0-1": "04tfj000000CzvlAAC",
     "CursorBatchFramework@0.9.0-1": "04tfj000000DLLBAA4",
     "CursorBatchFramework@0.10.0-1": "04tfj000000DM17AAG",
-    "CursorBatchFramework@0.11.0-1": "04tfj000000DMFdAAO"
+    "CursorBatchFramework@0.11.0-1": "04tfj000000DMFdAAO",
+    "CursorBatchFramework@0.12.0-1": "04tfj000000DMvZAAW"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

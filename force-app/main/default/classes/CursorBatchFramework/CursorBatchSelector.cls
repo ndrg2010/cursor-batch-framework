@@ -77,7 +77,7 @@ public without sharing class CursorBatchSelector {
             SELECT MasterLabel, Parallel_Count__c, Page_Size__c, Coordinator_Max_Retries__c, 
                    Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c,
                    Chain_To_Job__c, Chain_To_Class__c, Chain_To_Method__c,
-                   Query_Builder_Class__c, Worker_Class__c
+                   Query_Builder_Class__c, Query_Builder_Method__c, Worker_Class__c, Logger_Tag__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true
