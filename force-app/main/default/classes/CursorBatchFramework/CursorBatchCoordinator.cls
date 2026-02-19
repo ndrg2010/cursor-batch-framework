@@ -208,13 +208,17 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             String cursorQueryId = extractCursorQueryId(dbCursor);
             logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
             
-            // Fan out workers and get accurate batch count (calculated during actual worker assignment)
-            Integer actualTotalBatches = fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
+            // Fan out workers and get accurate counts (calculated during actual worker assignment)
+            // Returns [actualWorkerCount, actualTotalBatches] since some workers may be skipped
+            // when recordsPerWorker calculation results in fewer workers than initially calculated
+            List<Integer> fanOutResult = fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
+            Integer actualWorkersSpawned = fanOutResult[0];
+            Integer actualTotalBatches = fanOutResult[1];
             
-            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkerCount + ' workers (' + actualTotalBatches + ' batches) via Platform Events');
+            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkersSpawned + ' workers (' + actualTotalBatches + ' batches) via Platform Events');
             
-            // Update job record with cursor details and Processing status (using accurate batch count)
-            updateJobRecordAfterCursor(jobRecord, actualWorkerCount, cursorQueryId, totalRecords, queryDurationMs, actualTotalBatches);
+            // Update job record with cursor details and Processing status (using accurate counts)
+            updateJobRecordAfterCursor(jobRecord, actualWorkersSpawned, cursorQueryId, totalRecords, queryDurationMs, actualTotalBatches);
             
             onComplete();
             
@@ -318,16 +322,18 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     
     /**
      * @description Creates and publishes Platform Events to fan out parallel workers.
-     *              Returns the actual total batch count calculated during worker assignment.
+     *              Returns both the actual worker count and batch count calculated during 
+     *              worker assignment. The actual worker count may be less than the requested
+     *              workerCount when ceil(totalRecords/workerCount) * workerCount > totalRecords.
      * @param cursorQueryId The queryId for cursor reconstruction
      * @param jobRecordId Job tracking record Id
      * @param workerCount Number of parallel workers to create
      * @param recordsPerWorker Number of records assigned to each worker
      * @param totalRecords Total number of records in the cursor
      * @param pageSize Number of records to fetch per page
-     * @return Actual total batch count (sum of pages across all workers)
+     * @return List containing [actualWorkerCount, actualTotalBatches]
      */
-    private Integer fanOutWithPlatformEvents(
+    private List<Integer> fanOutWithPlatformEvents(
         String cursorQueryId,
         Id jobRecordId,
         Integer workerCount,
@@ -337,6 +343,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     ) {
         List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>();
         Integer actualTotalBatches = 0;
+        Integer actualWorkerCount = 0;
         
         // Diagnostic: Log sharding calculation
         logger.logInfo('Sharding calc: totalRecords=' + totalRecords + ', workerCount=' + workerCount + ', recordsPerWorker=' + recordsPerWorker + ', pageSize=' + pageSize);
@@ -350,6 +357,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             }
             Integer endPos = Math.min(startPos + recordsPerWorker, totalRecords);
             Integer workerNum = i + 1;
+            actualWorkerCount++;
             
             // Calculate actual pages this worker will process (accounts for last worker having fewer records)
             Integer workerRecords = endPos - startPos;
@@ -375,7 +383,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             publishEventBatches(events);
         }
         
-        return actualTotalBatches;
+        // Log if fewer workers were spawned than initially calculated
+        if (actualWorkerCount < workerCount) {
+            logger.logInfo('Spawned ' + actualWorkerCount + ' workers (reduced from ' + workerCount + ' due to recordsPerWorker rounding)');
+        }
+        
+        return new List<Integer>{ actualWorkerCount, actualTotalBatches };
     }
     
     /**
