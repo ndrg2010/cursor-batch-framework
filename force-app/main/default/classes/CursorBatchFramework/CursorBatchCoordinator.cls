@@ -182,14 +182,14 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             logger.logInfo('CursorBatchCoordinator cursor query took ' + queryDurationMs + 'ms, totalRecords: ' + totalRecords);
             
             if (totalRecords == 0) {
-                logger.logInfo('No records to process for ' + jobName + ', exiting.');
+                logger.logInfo('No records to process for ' + jobName + ', completing job.');
                 jobRecord.Status__c = 'Completed';
                 jobRecord.Completed_At__c = System.now();
                 jobRecord.Total_Records__c = 0;
                 jobRecord.Query_Duration_Ms__c = queryDurationMs;
                 update jobRecord;
                 onComplete();
-                finish(jobRecord);
+                CursorBatchCompletionHandler.routeFinishCallback(jobRecord, logger);
                 return;
             }
             
@@ -522,9 +522,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Checks if the job is already running by querying both the CursorBatch_Job__c
-     *              tracking records and the AsyncApexJob table for running queueables. Override
-     *              to customize duplicate detection logic.
+     * @description Checks if the job is already running by querying CursorBatch_Job__c
+     *              tracking records and the AsyncApexJob table. Override to customize.
      *              
      *              If the job's config has Skip_Duplicate_Check__c enabled, this method returns
      *              false immediately, allowing multiple instances of the job to run concurrently.
@@ -532,34 +531,69 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              When called from within execute() (e.g., finish() calling submitWithDelay()
      *              for continuous processing), the current job is excluded from the AsyncApexJob
      *              check to allow rescheduling.
+     *              
+     *              For metadata-driven jobs (CursorJob), the AsyncApexJob coordinator class check
+     *              is skipped because all such jobs share the same coordinator class, which would
+     *              cause false duplicate positives across unrelated jobs.
      * @param jobName Job name to check
      * @return True if job is currently running; false otherwise
      */
     protected virtual Boolean isJobAlreadyRunning(String jobName) {
-        // Check if duplicate detection is disabled for this job
         CursorBatch_Config__mdt config = getConfig(jobName);
         if (config != null && config.Skip_Duplicate_Check__c == true) {
             logger.logInfo('CursorBatchCoordinator: Skipping duplicate check for "' + jobName + '" (Skip_Duplicate_Check__c enabled)');
             return false;
         }
         
-        // Check custom job tracking record for running jobs with the same name
+        // Check 1: CursorBatch_Job__c records for running jobs with the same name
         List<CursorBatch_Job__c> runningJobs = CursorBatchSelector.getRunningJobsByName(jobName);
         if (!runningJobs.isEmpty()) {
             logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found CursorBatch_Job__c record)');
             return true;
         }
         
-        // Check AsyncApexJob for running queueables of the same coordinator class
-        // Exclude the current job ID if we're being called from within execute()
-        String className = CursorBatchContext.getClassName(this);
-        List<AsyncApexJob> asyncJobs = CursorBatchSelector.getRunningAsyncJobsByClass(className, currentAsyncJobId);
-        if (!asyncJobs.isEmpty()) {
-            logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found AsyncApexJob for ' + className + ')');
-            return true;
+        // Check 2: AsyncApexJob for coordinator class — only for dedicated coordinators.
+        // CursorJob is shared by all metadata-driven jobs, so checking it would block
+        // unrelated jobs from running concurrently.
+        String coordinatorClassName = CursorBatchContext.getClassName(this);
+        if (coordinatorClassName != 'CursorJob') {
+            List<AsyncApexJob> asyncJobs = CursorBatchSelector.getRunningAsyncJobsByClass(coordinatorClassName, currentAsyncJobId);
+            if (!asyncJobs.isEmpty()) {
+                logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found AsyncApexJob for coordinator ' + coordinatorClassName + ')');
+                return true;
+            }
+        }
+        
+        // Check 3: AsyncApexJob for worker class — guardrail for all job types.
+        // Each job has a unique worker class, so this catches cases where
+        // job tracking records were lost but workers are still running.
+        String workerClassName = resolveWorkerClassName(config);
+        if (String.isNotBlank(workerClassName)) {
+            List<AsyncApexJob> workerJobs = CursorBatchSelector.getRunningAsyncJobsByClass(workerClassName, null);
+            if (!workerJobs.isEmpty()) {
+                logger.logInfo('CursorBatchCoordinator: Job "' + jobName + '" is already running (found AsyncApexJob for worker ' + workerClassName + ')');
+                return true;
+            }
         }
         
         return false;
+    }
+    
+    /**
+     * @description Resolves the worker class name from config or the abstract method.
+     *              Used by isJobAlreadyRunning() for the worker class guardrail check.
+     * @param config Job configuration (may be null)
+     * @return Worker class name, or null if it cannot be determined
+     */
+    private String resolveWorkerClassName(CursorBatch_Config__mdt config) {
+        if (config != null && String.isNotBlank(config.Worker_Class__c)) {
+            return config.Worker_Class__c;
+        }
+        try {
+            return getWorkerClassName();
+        } catch (Exception e) {
+            return null;
+        }
     }
     
     /**

@@ -128,7 +128,7 @@ public without sharing class CursorBatchCompletionHandler {
         // Skip callbacks for cancelled jobs (kill switch activated)
         for (CursorBatch_Job__c job : completedJobs) {
             if (job.Status__c != 'Cancelled') {
-                invokeFinishCallback(job);
+                routeFinishCallback(job, logger);
             } else {
                 logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
             }
@@ -136,23 +136,27 @@ public without sharing class CursorBatchCompletionHandler {
     }
     
     /**
-     * @description Invokes the appropriate finish callback based on job configuration.
-     *              Uses 4-path logic:
+     * @description Routes the finish callback for a completed job using 4-path logic.
+     *              Called by both the completion handler (when workers finish) and the
+     *              coordinator (when cursor returns 0 records). This ensures consistent
+     *              finish behavior regardless of whether records were processed.
+     *              
+     *              4-path logic:
      *              1. If Chain_To_Job__c is set → chain to another CursorJob by name
      *              2. Else if Chain_To_Class__c is set → invoke the chain via Callable
      *              3. Else if Query_Builder_Class__c is set (CursorJob) → call worker.finish()
      *              4. Else → call coordinator.finish()
      *              
      *              Wrapped in try-catch to ensure exceptions are logged and don't silently
-     *              crash the Platform Event trigger. Falls back to coordinator.finish() on error.
+     *              crash the caller. Falls back to coordinator.finish() on error.
      * @param job The completed job record
+     * @param logger Logger instance for error reporting
      */
-    private void invokeFinishCallback(CursorBatch_Job__c job) {
+    public static void routeFinishCallback(CursorBatch_Job__c job, ICursorBatchLogger logger) {
         try {
-            invokeFinishCallbackInternal(job);
+            routeFinishCallbackInternal(job, logger);
         } catch (Exception e) {
-            logger.logException('CursorBatchCompletionHandler: Error in invokeFinishCallback for job ' + job.Job_Name__c, e);
-            // Fallback: still try to call coordinator.finish() so custom cleanup can run
+            logger.logException('CursorBatchCompletionHandler: Error in routeFinishCallback for job ' + job.Job_Name__c, e);
             try {
                 CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
             } catch (Exception fallbackEx) {
@@ -164,8 +168,9 @@ public without sharing class CursorBatchCompletionHandler {
     /**
      * @description Internal implementation of the 4-path finish callback logic.
      * @param job The completed job record
+     * @param logger Logger instance for routing
      */
-    private void invokeFinishCallbackInternal(CursorBatch_Job__c job) {
+    private static void routeFinishCallbackInternal(CursorBatch_Job__c job, ICursorBatchLogger logger) {
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(job.Job_Name__c);
         
         // Path 1: Chain_To_Job is set - chain to another CursorJob by name

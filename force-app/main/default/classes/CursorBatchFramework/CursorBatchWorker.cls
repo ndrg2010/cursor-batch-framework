@@ -23,11 +23,27 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     }
     
     /**
-     * @description Initializes the worker with execution context.
+     * @description Initializes the worker with execution context. Applies the Logger_Tag__c
+     *              from job config to the logger if it supports tagging via Callable.
      * @param ctx CursorBatchContext containing all worker parameters
      */
     public void initialize(CursorBatchContext ctx) {
         this.ctx = ctx;
+        applyLoggerTag();
+    }
+    
+    /**
+     * @description Applies the Logger_Tag__c from job config to the logger. Uses Callable
+     *              interface to avoid compile-time dependency on CursorBatchLoggerAdapter.
+     */
+    private void applyLoggerTag() {
+        if (ctx == null || String.isBlank(ctx.jobName) || !(this.logger instanceof Callable)) {
+            return;
+        }
+        CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(ctx.jobName);
+        if (config != null && String.isNotBlank(config.Logger_Tag__c)) {
+            ((Callable) this.logger).call('addTag', new Map<String, Object>{ 'tag' => config.Logger_Tag__c });
+        }
     }
     
     /**

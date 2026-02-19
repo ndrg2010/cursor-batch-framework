@@ -15,7 +15,7 @@
  * @see ICursorBatchLogger
  * @see CursorJob
  */
-public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchLogger {
+public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
     
     private static final String LOG_PREFIX = '[CursorBatch] ';
     
@@ -119,6 +119,23 @@ public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchL
             return message;
         }
         return '[' + String.join(new List<String>(tags), ', ') + '] ' + message;
+    }
+    
+    /**
+     * @description Callable implementation for cross-package tag support. The CursorBatchFramework
+     *              package uses Callable to pass Logger_Tag__c from metadata config to the adapter
+     *              without requiring a compile-time dependency on this class.
+     * @param action Action name: 'addTag' or 'addTags'
+     * @param args Map with 'tag' (String) for addTag, or 'tags' (Set<String>) for addTags
+     * @return This adapter instance
+     */
+    public Object call(String action, Map<String, Object> args) {
+        if (action == 'addTag') {
+            addTag((String) args.get('tag'));
+        } else if (action == 'addTags') {
+            addTags((Set<String>) args.get('tags'));
+        }
+        return this;
     }
     
     // TODO: Add this method for Nebula Logger integration

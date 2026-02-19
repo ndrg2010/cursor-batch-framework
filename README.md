@@ -64,13 +64,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DNwTAAW) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000DNwTAAW) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000EfEbAAK) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000EfEbAAK) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000DNwTAAW --target-org your-org --wait 10
+sf package install --package 04tfj000000EfEbAAK --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -963,10 +963,11 @@ public class RecurringSyncCoordinator extends CursorBatchCoordinator {
 
 ### Preventing Duplicate Jobs
 
-The framework automatically prevents duplicate jobs by checking:
+The framework automatically prevents duplicate jobs using a three-layer check:
 
-1. `CursorBatch_Job__c` records with `Status__c IN ('Preparing', 'Processing')`
-2. `AsyncApexJob` for running queueables of the same coordinator class
+1. **Job tracking records** — `CursorBatch_Job__c` with `Status__c IN ('Preparing', 'Processing')` and matching job name
+2. **Coordinator class** — `AsyncApexJob` for running queueables of the coordinator class (skipped for `CursorJob` since all metadata-driven jobs share the same class)
+3. **Worker class** — `AsyncApexJob` for running queueables of the worker class (guardrail for cases where job records were lost but workers are still running)
 
 #### Skip Duplicate Check Option
 
@@ -1409,33 +1410,56 @@ private static ICursorBatchLogger resolveLogger() {
 
 #### Setting Up Convention-Based Logging
 
-1. Create a class named `CursorBatchLoggerAdapter` that implements `ICursorBatchLogger`:
+1. Create a class named `CursorBatchLoggerAdapter` that implements `ICursorBatchLogger` and `Callable`:
 
 ```apex
-public class CursorBatchLoggerAdapter implements ICursorBatchLogger {
+public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
     
     private static final String LOG_PREFIX = '[CursorBatch] ';
+    private Set<String> tags = new Set<String>();
+    
+    public CursorBatchLoggerAdapter addTag(String tag) {
+        if (String.isNotBlank(tag)) { this.tags.add(tag); }
+        return this;
+    }
     
     public void logInfo(String message) {
         Logger.info(LOG_PREFIX + message);
+        applyTags();
         Logger.saveLog();
     }
     
     public void logError(String message) {
         Logger.error(LOG_PREFIX + message);
+        applyTags();
         Logger.saveLog();
     }
     
     public void logException(String message, Exception e) {
         Logger.error(LOG_PREFIX + message, e);
+        applyTags();
         Logger.saveLog();
+    }
+    
+    // Required: enables the framework to pass Logger_Tag__c from metadata config
+    public Object call(String action, Map<String, Object> args) {
+        if (action == 'addTag') {
+            addTag((String) args.get('tag'));
+        }
+        return this;
+    }
+    
+    private void applyTags() {
+        // Apply tags to log entries per your logging framework
     }
 }
 ```
 
 2. Deploy the class to your org. **That's it!** All coordinators and workers automatically use it.
 
-> **Tip:** See `unpackaged/classes/CursorBatchLoggerAdapter.cls` for a Nebula Logger template.
+> **Important:** The `Callable` implementation is required for `Logger_Tag__c` propagation. The framework uses `Callable` to pass tags from metadata config to the adapter without a compile-time dependency. If your adapter doesn't implement `Callable`, logging will work but tags will be silently ignored.
+
+> **Tip:** See `unpackaged/classes/CursorBatchLoggerAdapter.cls` for a complete template.
 
 #### Benefits
 

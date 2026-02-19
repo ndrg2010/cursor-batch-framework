@@ -170,22 +170,10 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
             if (adapterType != null) {
                 Object instance = adapterType.newInstance();
                 if (instance instanceof ICursorBatchLogger) {
-                    ICursorBatchLogger loggerInstance = (ICursorBatchLogger) instance;
-                    // Try to apply tag if the adapter has an addTag method
-                    if (String.isNotBlank(tag)) {
-                        try {
-                            // Use reflection-safe approach - check if method exists
-                            // CursorBatchLoggerAdapter should have addTag(String) method
-                            String adapterClassName = adapterType.getName();
-                            if (adapterClassName == 'CursorBatchLoggerAdapter') {
-                                // Cast and call addTag - adapter is expected to support this
-                                ((Object) loggerInstance).toString(); // Validate instance
-                            }
-                        } catch (Exception e) {
-                            // Tag application failed - continue without tag
-                        }
+                    if (String.isNotBlank(tag) && instance instanceof Callable) {
+                        ((Callable) instance).call('addTag', new Map<String, Object>{ 'tag' => tag });
                     }
-                    return loggerInstance;
+                    return (ICursorBatchLogger) instance;
                 }
             }
         } catch (Exception e) {

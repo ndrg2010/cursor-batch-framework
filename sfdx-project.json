@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.13",
-      "versionNumber": "0.13.0.NEXT",
+      "versionName": "ver 0.14",
+      "versionNumber": "0.14.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Fix Total_Workers__c count when actual workers spawned is less than configured parallel count due to recordsPerWorker rounding",
+      "versionDescription": "Fix 0-records finish routing, CursorJob duplicate check false positives, and Logger_Tag__c propagation to workers",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -36,7 +36,9 @@
     "CursorBatchFramework@0.11.0-1": "04tfj000000DMFdAAO",
     "CursorBatchFramework@0.12.0-1": "04tfj000000DMvZAAW",
     "CursorBatchFramework@0.13.0-1": "04tfj000000DN5FAAW",
-    "CursorBatchFramework@0.13.0-2": "04tfj000000DNwTAAW"
+    "CursorBatchFramework@0.13.0-2": "04tfj000000DNwTAAW",
+    "CursorBatchFramework@0.14.0-1": "04tfj000000EfEbAAK",
+    "CursorBatchFramework@0.14.0-1": "04tfj000000EfEbAAK"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
