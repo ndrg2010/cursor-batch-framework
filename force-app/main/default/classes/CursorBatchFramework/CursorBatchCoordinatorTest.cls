@@ -82,21 +82,15 @@ private without sharing class CursorBatchCoordinatorTest {
                 'SELECT Id FROM Account WHERE Name = \'NonExistentAccount12345\'');
         coordinator.setJobRecordId(jobRecord.Id);
         
-        // Act & Assert - Database.getCursor throws FatalCursorException for zero records
-        // This is expected behavior - coordinators should ensure their query returns records
+        // Act - Zero records completes job gracefully (0-records finish routing)
         Test.startTest();
-        Boolean exceptionThrown = false;
-        try {
-            coordinator.execute(null);
-        } catch (System.FatalCursorException e) {
-            exceptionThrown = true;
-            System.assert(e.getMessage().contains('Invalid Apex cursor'), 
-                'Should throw FatalCursorException for zero records');
-        }
+        coordinator.execute(null);
         Test.stopTest();
         
-        System.assertEquals(true, exceptionThrown, 
-            'Should throw FatalCursorException when query returns zero records');
+        // Assert - Job should be Completed with 0 records
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete when query returns zero records');
+        System.assertEquals(0, updatedJob.Total_Records__c, 'Total_Records__c should be 0');
     }
     
     @IsTest
