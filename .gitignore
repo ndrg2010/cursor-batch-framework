@@ -60,3 +60,4 @@ eslint.config.js
 jest.config.js
 manifest/
 package.json
+*.iml
