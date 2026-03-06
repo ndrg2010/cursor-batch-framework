@@ -13,3 +13,11 @@ package.xml
 
 # Unpackaged metadata (not part of the unlocked package - must be deployed separately by subscribers)
 unpackaged/**
+
+# Added by Illuminated Cloud
+/.illuminatedCloud/
+**/*.ts
+**/tsconfig*.json
+**/*.tsbuildinfo
+**/eslint.config.mjs
+**/graphql.config.yml
