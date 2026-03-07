@@ -259,11 +259,25 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     
     /**
      * @description Returns the initial shared state JSON for a new job record.
-     *              Base coordinators are stateless by default.
-     * @return Serialized initial state JSON, or null
+     *              When the job's CursorBatch_Config__mdt has State_Reducer_Class__c set,
+     *              initial state is created via the configured reducer (for both custom
+     *              coordinators and CursorJob). Override to supply custom initial state.
+     * @return Serialized initial state JSON, or null when no reducer is configured
      */
     protected virtual String getInitialJobStateJson() {
-        return null;
+        if (String.isBlank(jobName)) {
+            return null;
+        }
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        if (config == null || String.isBlank(config.State_Reducer_Class__c)) {
+            return null;
+        }
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
+            Job_Name__c = jobName,
+            Coordinator_Class__c = CursorBatchContext.getClassName(this),
+            Status__c = 'Preparing'
+        );
+        return CursorBatchStateManager.initializeState(jobName, job);
     }
     
     /**

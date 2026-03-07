@@ -32,6 +32,31 @@ private without sharing class CursorBatchCoordinatorTest {
     }
     
     @IsTest
+    static void testCustomCoordinatorWithConfigReducerSetsInitialState() {
+        // Custom coordinator with config that has State_Reducer_Class__c gets initial State_JSON__c at submit
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig(
+            'CustomStatefulTestJob', 5, 20
+        );
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('CustomStatefulTestJob');
+        
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('CustomStatefulTestJob');
+        System.assertEquals(1, jobs.size(), 'Should create one job record');
+        System.assert(String.isNotBlank(jobs[0].State_JSON__c), 'Job should have initial State_JSON__c when config has reducer');
+        Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(jobs[0].State_JSON__c);
+        System.assertEquals(0, state.get('processedCount'), 'Initial state should have processedCount 0');
+        System.assertEquals(0, state.get('pagesProcessed'), 'Initial state should have pagesProcessed 0');
+        System.assertEquals('CustomStatefulTestJob', state.get('jobName'), 'Initial state should include job name');
+    }
+    
+    @IsTest
     static void testSubmitBlockedByDuplicateCheck() {
         // Arrange
         CursorBatchTestUtils.TestCursorBatchCoordinator coordinator = 

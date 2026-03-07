@@ -1121,7 +1121,7 @@ When all workers complete, the framework determines which `finish()` method to c
 
 `CursorJob` can optionally persist reducer-managed shared state on the job record so workers can read a snapshot of the latest state and contribute deltas after successful page processing.
 
-Configure `State_Reducer_Class__c` with a class that implements `ICursorBatchStateReducer`:
+Configure `State_Reducer_Class__c` with a class that implements `ICursorBatchStateReducer`. Custom coordinator jobs also support stateful behavior: ensure the job's `CursorBatch_Config__mdt` has `State_Reducer_Class__c` set; the framework sets initial state at job creation and workers use the same reducer. No coordinator code change is required beyond using the same job name as the config. Custom coordinators can still override `getInitialJobStateJson()` to supply custom initial state (e.g. when not using a config reducer).
 
 ```apex
 public class MyStateReducer implements ICursorBatchStateReducer {

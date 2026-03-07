@@ -61,3 +61,8 @@ jest.config.js
 manifest/
 package.json
 *.iml
+
+# misc
+deploy_from_sha.txt
+destructiveChanges/
+package/
