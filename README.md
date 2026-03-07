@@ -38,6 +38,7 @@ Traditional Salesforce batch processing has limitations:
   - [Monitoring Jobs](#monitoring-jobs)
   - [Job Chaining](#job-chaining)
   - [Worker finish() Method](#worker-finish-method)
+  - [Reducer-Based Shared State](#reducer-based-shared-state)
   - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
   - [Kill Switch (Cancelling Jobs)](#kill-switch-cancelling-jobs)
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
@@ -705,6 +706,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Chain_To_Class__c` | Text(255) | Class to chain to after completion (must implement `Callable`) |
 | `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
 | `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
+| `State_Reducer_Class__c` | Text(255) | Optional class implementing `ICursorBatchStateReducer` for reducer-based shared state in `CursorJob` |
 
 **Note:** When `Query_Builder_Class__c` is set, use `CursorJob.run('JobName')` instead of creating a coordinator class.
 
@@ -729,6 +731,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Query_Duration_Ms__c` | Number | Time to execute cursor query (ms) |
 | `Worker_Processing_Time_Min__c` | Formula | Estimated worker processing time in minutes |
 | `Error_Message__c` | Long Text | Error details if failed |
+| `State_JSON__c` | Long Text | Serialized reducer-managed shared state for stateful `CursorJob` runs |
 | `Started_At__c` | DateTime | Job start time |
 | `Completed_At__c` | DateTime | Job completion time |
 
@@ -1113,6 +1116,68 @@ When all workers complete, the framework determines which `finish()` method to c
 | `Chain_To_Class__c` set | Invoke chain class directly | Simple linear chaining |
 | `Query_Builder_Class__c` set (no chain) | Call `worker.finish()` | Complex conditional logic |
 | Neither set | Call `coordinator.finish()` | Legacy custom coordinators |
+
+### Reducer-Based Shared State
+
+`CursorJob` can optionally persist reducer-managed shared state on the job record so workers can read a snapshot of the latest state and contribute deltas after successful page processing.
+
+Configure `State_Reducer_Class__c` with a class that implements `ICursorBatchStateReducer`:
+
+```apex
+public class MyStateReducer implements ICursorBatchStateReducer {
+    
+    public Object createInitialState(CursorBatch_Job__c jobRecord) {
+        return new Map<String, Object>{ 'processedCount' => 0 };
+    }
+    
+    public Object reduce(Object currentState, Object delta, CursorBatch_Job__c jobRecord) {
+        Map<String, Object> state = currentState != null
+            ? (Map<String, Object>) currentState
+            : new Map<String, Object>{ 'processedCount' => 0 };
+        Map<String, Object> deltaMap = (Map<String, Object>) delta;
+        Integer processedCount = ((Decimal) state.get('processedCount')).intValue();
+        processedCount += ((Decimal) deltaMap.get('processedCount')).intValue();
+        state.put('processedCount', processedCount);
+        return state;
+    }
+    
+    public String serializeState(Object state) { return JSON.serialize(state); }
+    public Object deserializeState(String stateJson) { return JSON.deserializeUntyped(stateJson); }
+    public String serializeDelta(Object delta) { return JSON.serialize(delta); }
+    public Object deserializeDelta(String deltaJson) { return JSON.deserializeUntyped(deltaJson); }
+}
+```
+
+Workers can read the current snapshot with `getCurrentState()` and emit a delta by overriding `buildStateDelta()`:
+
+```apex
+public class MyStatefulWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        Map<String, Object> state = (Map<String, Object>) getCurrentState();
+        // Use the current snapshot while processing this page
+    }
+    
+    protected override Object buildStateDelta(List<SObject> records) {
+        return new Map<String, Object>{
+            'processedCount' => records.size()
+        };
+    }
+    
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        Map<String, Object> finalState = (Map<String, Object>) getCurrentState();
+        // finalState reflects the fully reduced State_JSON__c value
+    }
+}
+```
+
+**Semantics of v1 shared state:**
+
+- Workers read a **snapshot** of `State_JSON__c` at page start; concurrent workers may see slightly stale state
+- Workers do **not** write shared state directly; they emit deltas that are merged later in `CursorBatchCompletionHandler`
+- Deltas are only applied after a page succeeds and its completion event is processed
+- Reducers should be deterministic and preferably idempotent because event delivery or retries can still be retried at the platform level
+- The final reduced state is persisted on `CursorBatch_Job__c.State_JSON__c` and is available to `worker.finish()`
 
 #### Custom Duplicate Detection
 
@@ -1749,6 +1814,8 @@ Chain_To_Method__c: run
 | `CursorBatchLogger` | Default `System.debug` logger implementation |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
+| `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
+| `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
 
 ### Custom Objects
 
@@ -1771,6 +1838,7 @@ Chain_To_Method__c: run
 | `Chain_To_Class__c` | Text(255) | Class to chain to after completion (implements `Callable`) |
 | `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
 | `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
+| `State_Reducer_Class__c` | Text(255) | Class implementing `ICursorBatchStateReducer` for reducer-based shared state |
 
 ### Triggers
 

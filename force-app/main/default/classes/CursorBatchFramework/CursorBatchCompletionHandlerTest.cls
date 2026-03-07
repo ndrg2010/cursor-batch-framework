@@ -446,6 +446,48 @@ private without sharing class CursorBatchCompletionHandlerTest {
     }
     
     @IsTest
+    static void testHandleSuccessEventReducesSharedState() {
+        // Arrange
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
+        config.Query_Builder_Class__c = 'CursorJobTest.TestQueryBuilder';
+        config.Query_Builder_Method__c = 'getAccountsQuery';
+        config.Worker_Class__c = 'CursorBatchTestUtils.TestStatefulCursorJobWorker';
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorJob'
+        );
+        jobRecord.State_JSON__c = '{"processedCount":2,"pagesProcessed":1}';
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = false,
+                State_Delta__c = '{"processedCount":5,"pagesProcessed":1}'
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(updatedJob.State_JSON__c);
+        System.assertEquals(7, ((Decimal) state.get('processedCount')).intValue(),
+            'Reducer should merge page delta into the persisted state');
+        System.assertEquals(2, ((Decimal) state.get('pagesProcessed')).intValue(),
+            'Reducer should update page count in persisted state');
+    }
+    
+    @IsTest
     static void testTriggerFiresOnEventPublish() {
         // Arrange - This test actually fires the trigger by publishing Platform Events
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(

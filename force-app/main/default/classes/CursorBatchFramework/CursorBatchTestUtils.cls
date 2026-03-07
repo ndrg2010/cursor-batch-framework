@@ -520,6 +520,20 @@ public without sharing class CursorBatchTestUtils {
         testWorker_onCompleteCalled = false;
     }
     
+    // Static fields for reducer-state test helpers
+    public static Map<String, Object> testStatefulWorker_lastSeenState = null;
+    public static Map<String, Object> testStatefulWorker_lastFinishedState = null;
+    public static Boolean testStatefulWorker_finishCalled = false;
+    
+    /**
+     * @description Resets static reducer-state tracking between tests.
+     */
+    public static void resetStatefulWorker() {
+        testStatefulWorker_lastSeenState = null;
+        testStatefulWorker_lastFinishedState = null;
+        testStatefulWorker_finishCalled = false;
+    }
+    
     /**
      * @description Concrete implementation of CursorBatchWorker for testing.
      */
@@ -547,6 +561,88 @@ public without sharing class CursorBatchTestUtils {
         public override void onComplete() {
             super.onComplete();
             testWorker_onCompleteCalled = true;
+        }
+    }
+    
+    /**
+     * @description Test reducer that stores simple aggregate counts in JSON.
+     */
+    public class TestStateReducer implements ICursorBatchStateReducer {
+        
+        public Object createInitialState(CursorBatch_Job__c jobRecord) {
+            return new Map<String, Object>{
+                'processedCount' => 0,
+                'pagesProcessed' => 0,
+                'jobName' => jobRecord != null ? jobRecord.Job_Name__c : null
+            };
+        }
+        
+        public Object reduce(Object currentState, Object delta, CursorBatch_Job__c jobRecord) {
+            Map<String, Object> state = currentState != null
+                ? (Map<String, Object>) currentState
+                : (Map<String, Object>) createInitialState(jobRecord);
+            Map<String, Object> deltaMap = delta != null
+                ? (Map<String, Object>) delta
+                : new Map<String, Object>();
+            
+            Integer processedCount = asInteger(state.get('processedCount')) + asInteger(deltaMap.get('processedCount'));
+            Integer pagesProcessed = asInteger(state.get('pagesProcessed')) + asInteger(deltaMap.get('pagesProcessed'));
+            
+            state.put('processedCount', processedCount);
+            state.put('pagesProcessed', pagesProcessed);
+            state.put('lastWorkerCount', deltaMap.get('processedCount'));
+            return state;
+        }
+        
+        public String serializeState(Object state) {
+            return state != null ? JSON.serialize(state) : null;
+        }
+        
+        public Object deserializeState(String stateJson) {
+            return String.isNotBlank(stateJson) ? JSON.deserializeUntyped(stateJson) : null;
+        }
+        
+        public String serializeDelta(Object delta) {
+            return delta != null ? JSON.serialize(delta) : null;
+        }
+        
+        public Object deserializeDelta(String deltaJson) {
+            return String.isNotBlank(deltaJson) ? JSON.deserializeUntyped(deltaJson) : null;
+        }
+        
+        private Integer asInteger(Object value) {
+            if (value == null) {
+                return 0;
+            }
+            if (value instanceof Integer) {
+                return (Integer) value;
+            }
+            if (value instanceof Decimal) {
+                return ((Decimal) value).intValue();
+            }
+            return Integer.valueOf(String.valueOf(value));
+        }
+    }
+    
+    /**
+     * @description Test worker that reads reducer state snapshots and emits deltas.
+     */
+    public class TestStatefulCursorJobWorker extends CursorBatchWorker {
+        
+        public override void process(List<SObject> records) {
+            testStatefulWorker_lastSeenState = (Map<String, Object>) getCurrentState();
+        }
+        
+        protected override Object buildStateDelta(List<SObject> records) {
+            return new Map<String, Object>{
+                'processedCount' => records != null ? records.size() : 0,
+                'pagesProcessed' => 1
+            };
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            testStatefulWorker_finishCalled = true;
+            testStatefulWorker_lastFinishedState = (Map<String, Object>) getCurrentState();
         }
     }
     

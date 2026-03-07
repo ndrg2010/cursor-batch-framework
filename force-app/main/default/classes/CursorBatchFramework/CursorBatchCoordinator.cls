@@ -243,6 +243,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Coordinator_Class__c = CursorBatchContext.getClassName(this),
             Started_At__c = System.now(),
             Query__c = buildQuery(),
+            State_JSON__c = getInitialJobStateJson(),
             Total_Cursor_Retries__c = 0,
             Total_Workers__c = 0,
             Total_Batches__c = 0,
@@ -254,6 +255,15 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         insert job;
         this.jobRecordId = job.Id;
         logger.logInfo('CursorBatchCoordinator created job record in submit: ' + job.Id);
+    }
+    
+    /**
+     * @description Returns the initial shared state JSON for a new job record.
+     *              Base coordinators are stateless by default.
+     * @return Serialized initial state JSON, or null
+     */
+    protected virtual String getInitialJobStateJson() {
+        return null;
     }
     
     /**

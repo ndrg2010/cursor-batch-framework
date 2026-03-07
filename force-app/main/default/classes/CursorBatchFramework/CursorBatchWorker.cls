@@ -12,6 +12,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     
     protected CursorBatchContext ctx;
     protected ICursorBatchLogger logger;
+    protected Object currentState;
     
     /**
      * @description Default constructor for reflection-based instantiation. Context must be set
@@ -29,6 +30,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      */
     public void initialize(CursorBatchContext ctx) {
         this.ctx = ctx;
+        this.currentState = null;
         applyLoggerTag();
     }
     
@@ -118,7 +120,9 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + 
                 scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
             
+            loadCurrentState();
             process(scope);
+            ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta(scope));
             
             Integer newPosition = ctx.startPosition + scope.size();
             
@@ -193,6 +197,30 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     }
     
     /**
+     * @description Loads the latest persisted shared state snapshot for the current job.
+     *              State reads are intentionally unlocked so workers do not serialize each other.
+     */
+    private void loadCurrentState() {
+        currentState = null;
+        if (ctx == null || ctx.jobRecordId == null || String.isBlank(ctx.jobName)) {
+            return;
+        }
+        
+        CursorBatch_Job__c jobSnapshot = CursorBatchSelector.getJobSnapshotById(ctx.jobRecordId);
+        if (jobSnapshot != null) {
+            currentState = CursorBatchStateManager.deserializeState(ctx.jobName, jobSnapshot.State_JSON__c);
+        }
+    }
+    
+    /**
+     * @description Initializes the shared state snapshot for finish() callbacks.
+     * @param jobRecord Completed job record containing the final persisted state
+     */
+    private void initializeFinishState(CursorBatch_Job__c jobRecord) {
+        currentState = CursorBatchStateManager.deserializeState(jobRecord?.Job_Name__c, jobRecord?.State_JSON__c);
+    }
+    
+    /**
      * @description Processes a batch of records fetched from the cursor. Override to implement
      *              business logic. Throw CursorBatchRetryException to request retry of the
      *              current page.
@@ -200,6 +228,25 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      * @throws CursorBatchRetryException When the caller wants to retry this page
      */
     public abstract void process(List<SObject> records);
+    
+    /**
+     * @description Returns the current shared state snapshot for reducer-enabled CursorJob workers.
+     *              Subclasses can cast this to their reducer's state type.
+     * @return Current state snapshot, or null when no reducer is configured
+     */
+    protected Object getCurrentState() {
+        return currentState;
+    }
+    
+    /**
+     * @description Produces a reducer delta after a page processes successfully.
+     *              Override in reducer-enabled workers to contribute shared state updates.
+     * @param records Records that were processed successfully
+     * @return Delta object to serialize and publish, or null
+     */
+    protected virtual Object buildStateDelta(List<SObject> records) {
+        return null;
+    }
     
     /**
      * @description Called when all pages have been processed. Override for cleanup or chaining.
@@ -252,6 +299,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             }
             
             CursorBatchWorker worker = (CursorBatchWorker) instance;
+            worker.initializeFinishState(jobRecord);
             worker.finish(jobRecord);
             
         } catch (Exception e) {

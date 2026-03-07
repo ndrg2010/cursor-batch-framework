@@ -193,6 +193,44 @@ private without sharing class CursorBatchWorkerTest {
     }
     
     @IsTest
+    static void testExecuteLoadsSharedStateAndCapturesDelta() {
+        // Arrange
+        CursorBatchTestUtils.resetStatefulWorker();
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        jobRecord.State_JSON__c = '{"processedCount":3,"pagesProcessed":1}';
+        update jobRecord;
+        
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulCursorJobWorker', null, 0
+        );
+        
+        CursorBatchTestUtils.TestStatefulCursorJobWorker worker =
+            new CursorBatchTestUtils.TestStatefulCursorJobWorker();
+        worker.initialize(ctx);
+        
+        // Act
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(
+            3,
+            ((Decimal) CursorBatchTestUtils.testStatefulWorker_lastSeenState.get('processedCount')).intValue(),
+            'Worker should read the latest persisted state snapshot before processing'
+        );
+        System.assert(String.isNotBlank(ctx.stateDeltaJson), 'Worker should capture a serialized reducer delta');
+    }
+    
+    @IsTest
     static void testOnCompleteCallback() {
         // Arrange
         CursorBatchTestUtils.resetTestWorker();

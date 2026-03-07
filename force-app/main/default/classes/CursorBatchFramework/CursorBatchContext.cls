@@ -16,6 +16,7 @@ public without sharing class CursorBatchContext {
     public String cursorQueryId { get; private set; }
     public Integer retryCount { get; private set; }
     public Boolean isFinal { get; set; }
+    public String stateDeltaJson { get; set; }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -53,6 +54,7 @@ public without sharing class CursorBatchContext {
         this.cursorQueryId = cursorQueryId;
         this.retryCount = retryCount != null ? retryCount : 0;
         this.isFinal = false;
+        this.stateDeltaJson = null;
     }
     
     /**
@@ -66,6 +68,7 @@ public without sharing class CursorBatchContext {
             this.cursorQueryId, this.retryCount
         );
         ctx.isFinal = this.isFinal;
+        ctx.stateDeltaJson = this.stateDeltaJson;
         return ctx;
     }
     

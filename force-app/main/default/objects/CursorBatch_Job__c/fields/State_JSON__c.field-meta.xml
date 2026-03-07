@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>State_JSON__c</fullName>
+    <description>Persisted reducer-based shared state for CursorJob executions.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Serialized shared state for reducer-enabled CursorJob runs. This field is maintained by the framework.</inlineHelpText>
+    <label>State JSON</label>
+    <length>32768</length>
+    <required>false</required>
+    <type>LongTextArea</type>
+    <visibleLines>4</visibleLines>
+</CustomField>

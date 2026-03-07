@@ -219,6 +219,41 @@ private without sharing class CursorBatchWorkerFinalizerTest {
     }
     
     @IsTest
+    static void testExecuteInternalSuccessPublishesStateDelta() {
+        // Arrange
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 5);
+        config.Query_Builder_Class__c = 'CursorJobTest.TestQueryBuilder';
+        config.Query_Builder_Method__c = 'getAccountsQuery';
+        config.Worker_Class__c = 'CursorBatchTestUtils.TestStatefulCursorJobWorker';
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        jobRecord.State_JSON__c = '{"processedCount":1,"pagesProcessed":0}';
+        update jobRecord;
+        
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0);
+        ctx.stateDeltaJson = '{"processedCount":4,"pagesProcessed":1}';
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(ctx, mockLogger);
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(true, null);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(updatedJob.State_JSON__c);
+        System.assertEquals(5, ((Decimal) state.get('processedCount')).intValue(),
+            'Completion event should carry the reducer delta through to persisted state');
+    }
+    
+    @IsTest
     static void testRetryWithInvalidWorkerClass() {
         // Arrange - Test retry with a non-existent worker class
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(

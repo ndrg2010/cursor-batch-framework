@@ -27,6 +27,7 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     private String queryBuilderClass;
     private String queryBuilderMethod;
     private String workerClass;
+    private String stateReducerClass;
     
     /**
      * @description No-arg constructor for reflection-based instantiation.
@@ -74,6 +75,7 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
             queryBuilderClass = config.Query_Builder_Class__c;
             queryBuilderMethod = config.Query_Builder_Method__c;
             workerClass = config.Worker_Class__c;
+            stateReducerClass = config.State_Reducer_Class__c;
         }
     }
     
@@ -154,6 +156,23 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     public override void onComplete() {
         super.onComplete();
         logger.logInfo('[' + jobName + '] completed worker fanout');
+    }
+    
+    /**
+     * @description Returns the initial shared state JSON for reducer-enabled CursorJob runs.
+     * @return Serialized initial state JSON, or null when no reducer is configured
+     */
+    protected override String getInitialJobStateJson() {
+        if (String.isBlank(stateReducerClass)) {
+            return null;
+        }
+        
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
+            Job_Name__c = jobName,
+            Coordinator_Class__c = 'CursorJob',
+            Status__c = 'Preparing'
+        );
+        return CursorBatchStateManager.initializeState(jobName, job);
     }
     
     /**

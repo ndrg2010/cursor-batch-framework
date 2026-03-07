@@ -92,7 +92,7 @@ private without sharing class CursorJobTest {
         String queryBuilderMethod,
         String workerClass
     ) {
-        return createCursorJobConfig(jobName, queryBuilderClass, queryBuilderMethod, workerClass, null, null, null);
+        return createCursorJobConfig(jobName, queryBuilderClass, queryBuilderMethod, workerClass, null, null, null, null);
     }
     
     private static CursorBatch_Config__mdt createCursorJobConfig(
@@ -104,6 +104,28 @@ private without sharing class CursorJobTest {
         String chainToMethod,
         String loggerTag
     ) {
+        return createCursorJobConfig(
+            jobName,
+            queryBuilderClass,
+            queryBuilderMethod,
+            workerClass,
+            chainToClass,
+            chainToMethod,
+            loggerTag,
+            null
+        );
+    }
+    
+    private static CursorBatch_Config__mdt createCursorJobConfig(
+        String jobName,
+        String queryBuilderClass,
+        String queryBuilderMethod,
+        String workerClass,
+        String chainToClass,
+        String chainToMethod,
+        String loggerTag,
+        String stateReducerClass
+    ) {
         CursorBatch_Config__mdt config = new CursorBatch_Config__mdt(
             MasterLabel = jobName,
             Query_Builder_Class__c = queryBuilderClass,
@@ -112,6 +134,7 @@ private without sharing class CursorJobTest {
             Chain_To_Class__c = chainToClass,
             Chain_To_Method__c = chainToMethod,
             Logger_Tag__c = loggerTag,
+            State_Reducer_Class__c = stateReducerClass,
             Parallel_Count__c = 5,
             Page_Size__c = 20,
             Active__c = true
@@ -369,6 +392,31 @@ private without sharing class CursorJobTest {
         System.assertEquals(1, jobs.size(), 'Should create job record');
     }
     
+    @IsTest
+    static void testStaticRunMethodInitializesReducerState() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestStaticRunStateful',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorBatchTestUtils.TestStatefulCursorJobWorker',
+            null,
+            null,
+            null,
+            'CursorBatchTestUtils.TestStateReducer'
+        );
+        
+        // Act
+        Test.startTest();
+        CursorJob.run('TestStaticRunStateful');
+        Test.stopTest();
+        
+        // Assert
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestStaticRunStateful');
+        System.assertEquals(1, jobs.size(), 'Should create a job record');
+        System.assert(String.isNotBlank(jobs[0].State_JSON__c), 'Should initialize reducer state on submit');
+    }
+    
     // ============================================
     // Worker finish() Callback Tests
     // ============================================
@@ -505,6 +553,51 @@ private without sharing class CursorJobTest {
         // Assert
         System.assertEquals(true, workerFinishCalled, 
             'Worker finish() should be called for CursorJob path');
+    }
+    
+    @IsTest
+    static void testCompletionHandler_WorkerFinishPathIncludesFinalState() {
+        // Arrange
+        CursorBatchTestUtils.resetStatefulWorker();
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestStatefulWorkerPath',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorBatchTestUtils.TestStatefulCursorJobWorker',
+            null,
+            null,
+            null,
+            'CursorBatchTestUtils.TestStateReducer'
+        );
+        
+        CursorBatch_Job__c job = CursorBatchTestUtils.createTestJobRecord(
+            'TestStatefulWorkerPath', 1, 'CursorJob'
+        );
+        job.State_JSON__c = '{"processedCount":0,"pagesProcessed":0}';
+        update job;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = job.Id,
+                Success__c = true,
+                Is_Final__c = true,
+                State_Delta__c = '{"processedCount":7,"pagesProcessed":1}'
+            )
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(true, CursorBatchTestUtils.testStatefulWorker_finishCalled,
+            'Stateful worker finish() should be called');
+        System.assertEquals(
+            7,
+            ((Decimal) CursorBatchTestUtils.testStatefulWorker_lastFinishedState.get('processedCount')).intValue(),
+            'finish() should see the reduced final state'
+        );
     }
     
     @IsTest

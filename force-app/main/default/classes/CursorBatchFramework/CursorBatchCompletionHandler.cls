@@ -63,6 +63,9 @@ public without sharing class CursorBatchCompletionHandler {
                 
                 if (evt.Success__c) {
                     batchSuccessCount++;
+                    if (String.isNotBlank(evt.State_Delta__c)) {
+                        job.State_JSON__c = CursorBatchStateManager.reduceState(job, evt.State_Delta__c);
+                    }
                     // Only count toward Workers_Finished if this is the final page
                     if (evt.Is_Final__c == true) {
                         workersFinishedCount++;

@@ -130,6 +130,7 @@ Sample implementations demonstrating common usage patterns for the CursorBatch F
 |--------|---------|-------------|
 | `SampleLeadCoordinator` + `SampleLeadWorker` | Simple single-object | Query and process Lead records directly |
 | `SampleAccountOpportunityCoordinator` + `SampleAccountOpportunityWorker` | Parent/child | Query Accounts, process their Opportunities (avoids record locks) |
+| `SampleStatefulLeadQueryBuilder` + `SampleStatefulLeadWorker` + `SampleStatefulLeadReducer` | Reducer-based `CursorJob` state | Read state snapshots in workers and merge page deltas centrally |
 
 ### Simple Pattern: Lead Processing
 
@@ -158,6 +159,30 @@ new SampleAccountOpportunityCoordinator().submit();
 - Set `Active__c = true`
 
 > **See the main [README.md](../README.md#parentchild-pattern-for-avoiding-record-locks)** for a detailed explanation of this pattern and when to use it.
+
+### Reducer-Based Stateful Pattern: CursorJob Lead Processing
+
+The stateful Lead sample demonstrates the reducer-based shared-state API for metadata-driven `CursorJob` jobs.
+
+```apex
+// Execute the reducer-enabled sample job
+CursorJob.run('SampleStatefulLeadJob');
+```
+
+**What it shows:**
+- `SampleStatefulLeadQueryBuilder` provides the cursor query
+- `SampleStatefulLeadWorker` reads `getCurrentState()` before processing each page
+- `SampleStatefulLeadWorker.buildStateDelta()` emits a page delta after successful processing
+- `SampleStatefulLeadReducer` merges those deltas into `CursorBatch_Job__c.State_JSON__c`
+- `SampleStatefulLeadWorker.finish()` reads the final reduced state
+
+**Setup Required:**
+- Create `CursorBatch_Config__mdt` record with `MasterLabel = 'SampleStatefulLeadJob'`
+- Set `Active__c = true`
+- Set `Query_Builder_Class__c = 'SampleStatefulLeadQueryBuilder'`
+- Set `Query_Builder_Method__c = 'buildOpenLeadQuery'`
+- Set `Worker_Class__c = 'SampleStatefulLeadWorker'`
+- Set `State_Reducer_Class__c = 'SampleStatefulLeadReducer'`
 
 ---
 
@@ -226,6 +251,9 @@ sf project deploy start --source-dir unpackaged/classes/SampleLeadCoordinator.cl
 sf project deploy start --source-dir unpackaged/classes/SampleLeadWorker.cls
 sf project deploy start --source-dir unpackaged/classes/SampleAccountOpportunityCoordinator.cls
 sf project deploy start --source-dir unpackaged/classes/SampleAccountOpportunityWorker.cls
+sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadQueryBuilder.cls
+sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadWorker.cls
+sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadReducer.cls
 
 # Nebula Logger adapter only (optional, requires Nebula Logger)
 sf project deploy start --source-dir unpackaged/classes/NebulaLoggerAdapterForCursorBatch.cls
@@ -243,4 +271,7 @@ new SampleLeadCoordinator().submit();
 
 // Test Account/Opportunity processing
 new SampleAccountOpportunityCoordinator().submit();
+
+// Test reducer-based stateful processing
+CursorJob.run('SampleStatefulLeadJob');
 ```
