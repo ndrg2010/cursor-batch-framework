@@ -5,7 +5,7 @@
     <externalId>false</externalId>
     <inlineHelpText>Serialized shared state for reducer-enabled CursorJob runs. This field is maintained by the framework.</inlineHelpText>
     <label>State JSON</label>
-    <length>32768</length>
+    <length>131072</length>
     <required>false</required>
     <type>LongTextArea</type>
     <visibleLines>4</visibleLines>
