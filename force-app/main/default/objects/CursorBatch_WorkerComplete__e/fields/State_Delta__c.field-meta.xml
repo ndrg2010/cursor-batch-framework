@@ -7,7 +7,7 @@
     <isNameField>false</isNameField>
     <isSortingDisabled>false</isSortingDisabled>
     <label>State Delta</label>
-    <length>32768</length>
+    <length>131072</length>
     <required>false</required>
     <type>LongTextArea</type>
     <visibleLines>4</visibleLines>
