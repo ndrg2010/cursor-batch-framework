@@ -28,13 +28,23 @@ public without sharing class CursorBatchCompletionHandler {
         
         // Group events by Job ID
         Map<Id, List<CursorBatch_WorkerComplete__e>> eventsByJob = new Map<Id, List<CursorBatch_WorkerComplete__e>>();
+        Set<String> eventKeysInBatch = new Set<String>();
         for (CursorBatch_WorkerComplete__e evt : events) {
             Id jobId = evt.Job_Id__c;
             if (!eventsByJob.containsKey(jobId)) {
                 eventsByJob.put(jobId, new List<CursorBatch_WorkerComplete__e>());
             }
             eventsByJob.get(jobId).add(evt);
+            String key = getEventKey(evt);
+            if (String.isNotBlank(key)) {
+                eventKeysInBatch.add(key);
+            }
         }
+        
+        // Idempotency: already-processed (Job, ReplayId) from previous transactions
+        Set<String> alreadyProcessedKeys = getAlreadyProcessedEventKeys(eventKeysInBatch);
+        Set<String> processedInThisBatch = new Set<String>();
+        List<CursorBatch_Processed_Event__c> processedEventsToInsert = new List<CursorBatch_Processed_Event__c>();
         
         // Query job records
         Map<Id, CursorBatch_Job__c> jobsMap = CursorBatchSelector.getJobsByIds(eventsByJob.keySet());
@@ -56,6 +66,11 @@ public without sharing class CursorBatchCompletionHandler {
             Integer totalRetries = 0;
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
+                String eventKey = getEventKey(evt);
+                if (String.isNotBlank(eventKey) && (alreadyProcessedKeys.contains(eventKey) || processedInThisBatch.contains(eventKey))) {
+                    continue; // Replay or duplicate in same batch: skip
+                }
+                
                 // Aggregate worker retry counts
                 if (evt.Retry_Count__c != null && evt.Retry_Count__c > 0) {
                     totalRetries += Integer.valueOf(evt.Retry_Count__c);
@@ -82,6 +97,15 @@ public without sharing class CursorBatchCompletionHandler {
                     }
                     logger.logError('CursorBatchCompletionHandler: Worker failed for job ' + 
                         job.Job_Name__c + ': ' + evt.Error_Message__c);
+                }
+                
+                if (String.isNotBlank(eventKey)) {
+                    processedInThisBatch.add(eventKey);
+                    processedEventsToInsert.add(new CursorBatch_Processed_Event__c(
+                        Cursor_Batch_Job__c = jobId,
+                        Replay_Id__c = getReplayIdString(evt),
+                        Processed_Event_Key__c = eventKey
+                    ));
                 }
             }
             
@@ -131,6 +155,18 @@ public without sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
+        if (!processedEventsToInsert.isEmpty()) {
+            insert processedEventsToInsert;
+        }
+        
+        if (!completedJobs.isEmpty()) {
+            Set<Id> completedJobIds = new Set<Id>();
+            for (CursorBatch_Job__c j : completedJobs) {
+                completedJobIds.add(j.Id);
+            }
+            delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedJobIds];
+        }
+        
         // Invoke callbacks for completed jobs using 4-path finish logic
         // Skip callbacks for cancelled jobs (kill switch activated)
         for (CursorBatch_Job__c job : completedJobs) {
@@ -140,6 +176,39 @@ public without sharing class CursorBatchCompletionHandler {
                 logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
             }
         }
+    }
+    
+    private static String getEventKey(CursorBatch_WorkerComplete__e evt) {
+        Id jobId = evt.Job_Id__c;
+        String replayIdStr = getReplayIdString(evt);
+        if (jobId == null || String.isBlank(replayIdStr)) {
+            return null;
+        }
+        return jobId + '#' + replayIdStr;
+    }
+    
+    private static String getReplayIdString(CursorBatch_WorkerComplete__e evt) {
+        Object replayId = evt.get('ReplayId');
+        return replayId != null ? String.valueOf(replayId) : null;
+    }
+    
+    private static Set<String> getAlreadyProcessedEventKeys(Set<String> eventKeys) {
+        if (eventKeys == null || eventKeys.isEmpty()) {
+            return new Set<String>();
+        }
+        List<String> keyList = new List<String>(eventKeys);
+        List<CursorBatch_Processed_Event__c> existing = [
+            SELECT Processed_Event_Key__c
+            FROM CursorBatch_Processed_Event__c
+            WHERE Processed_Event_Key__c IN :keyList
+        ];
+        Set<String> result = new Set<String>();
+        for (CursorBatch_Processed_Event__c pe : existing) {
+            if (String.isNotBlank(pe.Processed_Event_Key__c)) {
+                result.add(pe.Processed_Event_Key__c);
+            }
+        }
+        return result;
     }
     
     /**

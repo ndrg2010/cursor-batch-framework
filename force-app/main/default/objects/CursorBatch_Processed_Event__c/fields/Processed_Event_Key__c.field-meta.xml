@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Processed_Event_Key__c</fullName>
+    <description>Composite key JobId#ReplayId for uniqueness. Set by the framework.</description>
+    <externalId>true</externalId>
+    <label>Processed Event Key</label>
+    <length>255</length>
+    <required>true</required>
+    <type>Text</type>
+    <unique>true</unique>
+</CustomField>

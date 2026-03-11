@@ -570,6 +570,80 @@ private without sharing class CursorBatchCompletionHandlerTest {
     }
     
     // ============================================
+    // Idempotency (Replay) and Cleanup Tests
+    // ============================================
+    
+    @IsTest
+    static void testHandleCompletedJobDeletesProcessedEvents() {
+        // When a job reaches terminal status, processed-event records for that job are deleted.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            ),
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.handle(events);
+        Integer remaining = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
+        System.assertEquals(0, remaining, 'Processed events for completed job should be deleted');
+    }
+    
+    @IsTest
+    static void testHandleReplayedEventsSkippedWhenProcessedEventsExist() {
+        // When processed-event records exist for (Job, ReplayId), handler skips those events (idempotency).
+        // We simulate "replay" by pre-inserting processed events and passing events with matching ReplayId via put.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 3, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        String key1 = jobRecord.Id + '#idem-replay-1';
+        String key2 = jobRecord.Id + '#idem-replay-2';
+        insert new List<CursorBatch_Processed_Event__c>{
+            new CursorBatch_Processed_Event__c(
+                Cursor_Batch_Job__c = jobRecord.Id,
+                Replay_Id__c = 'idem-replay-1',
+                Processed_Event_Key__c = key1
+            ),
+            new CursorBatch_Processed_Event__c(
+                Cursor_Batch_Job__c = jobRecord.Id,
+                Replay_Id__c = 'idem-replay-2',
+                Processed_Event_Key__c = key2
+            )
+        };
+        CursorBatch_WorkerComplete__e evt1 = new CursorBatch_WorkerComplete__e(
+            Job_Id__c = jobRecord.Id,
+            Success__c = true,
+            Error_Message__c = null,
+            Is_Final__c = true
+        );
+        evt1.put('ReplayId', 'idem-replay-1');
+        CursorBatch_WorkerComplete__e evt2 = new CursorBatch_WorkerComplete__e(
+            Job_Id__c = jobRecord.Id,
+            Success__c = true,
+            Error_Message__c = null,
+            Is_Final__c = true
+        );
+        evt2.put('ReplayId', 'idem-replay-2');
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{ evt1, evt2 };
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.handle(events);
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals(0, updatedJob.Completed_Batches__c, 'Replayed events should be skipped');
+        System.assertEquals(0, updatedJob.Workers_Finished__c, 'Replayed events should not count toward workers finished');
+        System.assertEquals('Processing', updatedJob.Status__c, 'Job should still be Processing');
+    }
+    
+    // ============================================
     // Cancelled Job (Kill Switch) Tests
     // ============================================
     
