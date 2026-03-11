@@ -7,6 +7,9 @@ public without sharing class CursorBatchStateManager {
     /** Maximum length of State_JSON__c (LongTextArea). Used to validate reduceState output before assignment. */
     public static final Integer STATE_JSON_MAX_LENGTH = 131072;
     
+    /** Cache of reducer by job name per transaction. Null value means no reducer configured (avoids repeated config lookups). */
+    private static Map<String, ICursorBatchStateReducer> reducerCache = new Map<String, ICursorBatchStateReducer>();
+    
     /**
      * @description Creates and serializes the initial state for a job when a reducer is configured.
      * @param jobName Job identifier used to resolve reducer metadata
@@ -75,9 +78,13 @@ public without sharing class CursorBatchStateManager {
         if (String.isBlank(jobName)) {
             return null;
         }
+        if (reducerCache.containsKey(jobName)) {
+            return reducerCache.get(jobName);
+        }
         
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(jobName);
         if (config == null || String.isBlank(config.State_Reducer_Class__c)) {
+            reducerCache.put(jobName, null);
             return null;
         }
         
@@ -96,6 +103,8 @@ public without sharing class CursorBatchStateManager {
             );
         }
         
-        return (ICursorBatchStateReducer) instance;
+        ICursorBatchStateReducer reducer = (ICursorBatchStateReducer) instance;
+        reducerCache.put(jobName, reducer);
+        return reducer;
     }
 }
