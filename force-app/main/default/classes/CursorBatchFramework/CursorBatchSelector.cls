@@ -188,8 +188,6 @@ public without sharing class CursorBatchSelector {
             query += ' LIMIT ' + queryLimit;
         }
 
-        query += ' FOR UPDATE';
-
         return Database.queryWithBinds(query, bindVars, AccessLevel.SYSTEM_MODE);
     }
 }
