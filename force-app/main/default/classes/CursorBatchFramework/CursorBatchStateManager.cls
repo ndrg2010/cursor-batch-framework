@@ -7,7 +7,8 @@ public without sharing class CursorBatchStateManager {
     /**
      * @description Creates and serializes the initial state for a job when a reducer is configured.
      * @param jobName Job identifier used to resolve reducer metadata
-     * @param jobRecord The job record being initialized
+     * @param jobRecord The job record being initialized. Typically the job being created;
+     *                  it may not be persisted yet (jobRecord.Id may be null).
      * @return Serialized initial state JSON, or null when no reducer is configured
      */
     public static String initializeState(String jobName, CursorBatch_Job__c jobRecord) {

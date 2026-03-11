@@ -272,6 +272,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         if (config == null || String.isBlank(config.State_Reducer_Class__c)) {
             return null;
         }
+        // Job is not inserted yet; reducer.createInitialState() will receive a record with no Id.
         CursorBatch_Job__c job = new CursorBatch_Job__c(
             Job_Name__c = jobName,
             Coordinator_Class__c = CursorBatchContext.getClassName(this),

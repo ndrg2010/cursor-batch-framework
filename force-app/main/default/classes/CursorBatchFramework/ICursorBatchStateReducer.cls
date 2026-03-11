@@ -7,7 +7,9 @@ public interface ICursorBatchStateReducer {
     
     /**
      * @description Creates the initial shared state for a job before any workers run.
-     * @param jobRecord The job record being created
+     * @param jobRecord The job record being created. This record may not be inserted yet;
+     *                  jobRecord.Id may be null. Reducers must not rely on jobRecord.Id
+     *                  in this method. Use jobRecord.Job_Name__c or other set fields as needed.
      * @return Initial state object; may be null
      */
     Object createInitialState(CursorBatch_Job__c jobRecord);
