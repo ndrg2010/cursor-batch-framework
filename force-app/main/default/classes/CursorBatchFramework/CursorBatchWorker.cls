@@ -205,7 +205,9 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         if (ctx == null || ctx.jobRecordId == null || String.isBlank(ctx.jobName)) {
             return;
         }
-        
+        if (CursorBatchStateManager.getReducer(ctx.jobName) == null) {
+            return;
+        }
         CursorBatch_Job__c jobSnapshot = CursorBatchSelector.getJobSnapshotById(ctx.jobRecordId);
         if (jobSnapshot != null) {
             currentState = CursorBatchStateManager.deserializeState(ctx.jobName, jobSnapshot.State_JSON__c);
