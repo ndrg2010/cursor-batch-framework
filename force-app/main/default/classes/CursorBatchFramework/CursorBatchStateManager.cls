@@ -4,6 +4,9 @@
  */
 public without sharing class CursorBatchStateManager {
     
+    /** Maximum length of State_JSON__c (LongTextArea). Used to validate reduceState output before assignment. */
+    public static final Integer STATE_JSON_MAX_LENGTH = 131072;
+    
     /**
      * @description Creates and serializes the initial state for a job when a reducer is configured.
      * @param jobName Job identifier used to resolve reducer metadata

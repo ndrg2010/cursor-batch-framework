@@ -80,7 +80,12 @@ public without sharing class CursorBatchCompletionHandler {
                     batchSuccessCount++;
                     if (String.isNotBlank(evt.State_Delta__c)) {
                         try {
-                            job.State_JSON__c = CursorBatchStateManager.reduceState(job, evt.State_Delta__c);
+                            String newStateJson = CursorBatchStateManager.reduceState(job, evt.State_Delta__c);
+                            if (newStateJson != null && newStateJson.length() > CursorBatchStateManager.STATE_JSON_MAX_LENGTH) {
+                                logger.logError('CursorBatchCompletionHandler: State exceeded field limit for job ' + job.Job_Name__c + ', skipping delta');
+                            } else {
+                                job.State_JSON__c = newStateJson;
+                            }
                         } catch (Exception e) {
                             logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + ', skipping delta', e);
                         }
