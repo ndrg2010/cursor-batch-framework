@@ -488,6 +488,50 @@ private without sharing class CursorBatchCompletionHandlerTest {
     }
     
     @IsTest
+    static void testHandleStateReductionFailureContinuesProcessing() {
+        // When reduceState throws (e.g. malformed delta JSON), handler should log, skip the state update,
+        // and still apply worker counts and completion status so the job does not get stuck.
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 20);
+        config.Query_Builder_Class__c = 'CursorJobTest.TestQueryBuilder';
+        config.Query_Builder_Method__c = 'getAccountsQuery';
+        config.Worker_Class__c = 'CursorBatchTestUtils.TestStatefulCursorJobWorker';
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        String initialStateJson = '{"processedCount":0,"pagesProcessed":0}';
+        jobRecord.State_JSON__c = initialStateJson;
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true,
+                State_Delta__c = 'not valid json'
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        
+        // Act - should not throw; reduceState will throw internally, handler catches and continues
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert - worker count and completion status still updated; state update skipped
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals(1, updatedJob.Completed_Batches__c, 'Should count successful batch despite state reduction failure');
+        System.assertEquals(1, updatedJob.Workers_Finished__c, 'Should count worker finished');
+        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete and not stay stuck in Processing');
+        System.assertEquals(initialStateJson, updatedJob.State_JSON__c,
+            'State should be unchanged when reduceState throws (delta skipped)');
+    }
+    
+    @IsTest
     static void testTriggerFiresOnEventPublish() {
         // Arrange - This test actually fires the trigger by publishing Platform Events
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
