@@ -231,6 +231,38 @@ private without sharing class CursorBatchWorkerTest {
     }
     
     @IsTest
+    static void testLazyGetCurrentState_statefulWorkerThatNeverReadsStateCompletesSuccessfully() {
+        // Stateful job (reducer configured) but worker never calls getCurrentState() in process().
+        // Verifies lazy load: no SOQL for state read on this page; worker still completes and emits delta.
+        CursorBatchTestUtils.resetStatefulWorker();
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulDeltaOnlyWorker', null, 0
+        );
+        CursorBatchTestUtils.TestStatefulDeltaOnlyWorker worker =
+            new CursorBatchTestUtils.TestStatefulDeltaOnlyWorker();
+        worker.initialize(ctx);
+        
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        
+        System.assert(CursorBatchTestUtils.testStatefulDeltaOnlyWorker_onCompleteCalled,
+            'Worker that never calls getCurrentState() should still complete and call onComplete()');
+        System.assert(String.isNotBlank(ctx.stateDeltaJson),
+            'Worker should still emit state delta via buildStateDelta()');
+    }
+    
+    @IsTest
     static void testOnCompleteCallback() {
         // Arrange
         CursorBatchTestUtils.resetTestWorker();

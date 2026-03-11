@@ -21,6 +21,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     protected CursorBatchContext ctx;
     protected ICursorBatchLogger logger;
     protected Object currentState;
+    private Boolean stateLoaded = false;
     
     /**
      * @description Default constructor for reflection-based instantiation. Context must be set
@@ -39,6 +40,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     public void initialize(CursorBatchContext ctx) {
         this.ctx = ctx;
         this.currentState = null;
+        this.stateLoaded = false;
         applyLoggerTag();
     }
     
@@ -128,7 +130,6 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + 
                 scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
             
-            loadCurrentState();
             process(scope);
             ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta(scope));
             
@@ -207,8 +208,9 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     /**
      * @description Loads the latest persisted shared state snapshot for the current job.
      *              State reads are intentionally unlocked so workers do not serialize each other.
+     *              Called lazily from getCurrentState() so SOQL runs only when the worker reads state.
      */
-    private void loadCurrentState() {
+    private void loadCurrentStateInternal() {
         currentState = null;
         if (ctx == null || ctx.jobRecordId == null || String.isBlank(ctx.jobName)) {
             return;
@@ -228,6 +230,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      */
     private void initializeFinishState(CursorBatch_Job__c jobRecord) {
         currentState = CursorBatchStateManager.deserializeState(jobRecord?.Job_Name__c, jobRecord?.State_JSON__c);
+        stateLoaded = true;
     }
     
     /**
@@ -241,10 +244,15 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     
     /**
      * @description Returns the current shared state snapshot for reducer-enabled CursorJob workers.
-     *              Subclasses can cast this to their reducer's state type.
-     * @return Current state snapshot, or null when no reducer is configured
+     *              Loads state from the job record on first call (lazy); subsequent calls return
+     *              the cached value. Subclasses can cast this to their reducer's state type.
+     * @return Current state snapshot, or null when no reducer is configured or state is not loaded
      */
     protected Object getCurrentState() {
+        if (!stateLoaded) {
+            loadCurrentStateInternal();
+            stateLoaded = true;
+        }
         return currentState;
     }
     

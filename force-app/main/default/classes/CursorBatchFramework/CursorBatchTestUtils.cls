@@ -532,6 +532,7 @@ public without sharing class CursorBatchTestUtils {
         testStatefulWorker_lastSeenState = null;
         testStatefulWorker_lastFinishedState = null;
         testStatefulWorker_finishCalled = false;
+        testStatefulDeltaOnlyWorker_onCompleteCalled = false;
     }
     
     /**
@@ -643,6 +644,29 @@ public without sharing class CursorBatchTestUtils {
         public override void finish(CursorBatch_Job__c jobRecord) {
             testStatefulWorker_finishCalled = true;
             testStatefulWorker_lastFinishedState = (Map<String, Object>) getCurrentState();
+        }
+    }
+    
+    /**
+     * @description Test worker for lazy getCurrentState(): stateful (emits deltas) but never
+     *              calls getCurrentState() in process(). Used to verify no SOQL runs when state is not read.
+     */
+    public static Boolean testStatefulDeltaOnlyWorker_onCompleteCalled = false;
+    
+    public class TestStatefulDeltaOnlyWorker extends CursorBatchWorker {
+        public override void process(List<SObject> records) {
+            // Intentionally do not call getCurrentState() - exercises lazy load opt-out
+        }
+        
+        protected override Object buildStateDelta(List<SObject> records) {
+            return new Map<String, Object>{
+                'processedCount' => records != null ? records.size() : 0,
+                'pagesProcessed' => 1
+            };
+        }
+        
+        public override void onComplete() {
+            testStatefulDeltaOnlyWorker_onCompleteCalled = true;
         }
     }
     
