@@ -16,7 +16,14 @@ public without sharing class CursorBatchContext {
     public String cursorQueryId { get; private set; }
     public Integer retryCount { get; private set; }
     public Boolean isFinal { get; set; }
+    /** Serialized shared-state delta sent with the completion event; set by framework from buildStateDelta(). Worker decides when to contribute (per-page, final page only, or not at all). */
     public String stateDeltaJson { get; set; }
+    /**
+     * @description Optional serialized per-worker state carried across pages and retries.
+     *              Not sent on completion events; only on the context passed to the next queueable run.
+     *              Workers may set/read it; format and size are the worker's responsibility.
+     */
+    public String workerState { get; set; }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -55,6 +62,7 @@ public without sharing class CursorBatchContext {
         this.retryCount = retryCount != null ? retryCount : 0;
         this.isFinal = false;
         this.stateDeltaJson = null;
+        this.workerState = null;
     }
     
     /**
@@ -69,6 +77,7 @@ public without sharing class CursorBatchContext {
         );
         ctx.isFinal = this.isFinal;
         ctx.stateDeltaJson = this.stateDeltaJson;
+        ctx.workerState = this.workerState;
         return ctx;
     }
     
@@ -81,6 +90,22 @@ public without sharing class CursorBatchContext {
         CursorBatchContext ctx = copy();
         ctx.startPosition = nextPosition;
         ctx.retryCount = 0;  // Reset retry count for next page
+        return ctx;
+    }
+    
+    /**
+     * @description Creates a copy of this context with an updated start position and per-worker
+     *              state for the next page. Use when enqueueing the next page so the next run
+     *              receives the accumulated worker state.
+     * @param nextPosition New starting position for the next page
+     * @param workerStateForNextPage Serialized per-worker state to carry to the next run (may be null)
+     * @return New CursorBatchContext with updated startPosition, retryCount reset to 0, and workerState set
+     */
+    public CursorBatchContext withNextPosition(Integer nextPosition, String workerStateForNextPage) {
+        CursorBatchContext ctx = copy();
+        ctx.startPosition = nextPosition;
+        ctx.retryCount = 0;  // Reset retry count for next page
+        ctx.workerState = workerStateForNextPage;
         return ctx;
     }
     

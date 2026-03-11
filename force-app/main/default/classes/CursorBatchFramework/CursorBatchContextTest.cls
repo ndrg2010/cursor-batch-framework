@@ -40,6 +40,7 @@ private without sharing class CursorBatchContextTest {
         System.assertEquals(workerClassName, ctx.workerClassName, 'Worker class name should be set');
         System.assertEquals(0, ctx.retryCount, 'Retry count should default to 0');
         System.assertEquals(null, ctx.cursorQueryId, 'Cursor query ID should default to null');
+        System.assertEquals(null, ctx.workerState, 'workerState should default to null');
     }
     
     @IsTest
@@ -92,6 +93,51 @@ private without sharing class CursorBatchContextTest {
     }
     
     @IsTest
+    static void testWithNextPositionAndWorkerState() {
+        // Arrange
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatchContext originalCtx = new CursorBatchContext(
+            cursor, 0, 100, 20, 'TestJob', 1, null,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            'TestQueryId', 2
+        );
+        Integer nextPosition = 20;
+        String workerStateForNextPage = '{"recordsProcessed":15}';
+        
+        // Act
+        Test.startTest();
+        CursorBatchContext newCtx = originalCtx.withNextPosition(nextPosition, workerStateForNextPage);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(nextPosition, newCtx.startPosition, 'Start position should be updated');
+        System.assertEquals(0, newCtx.retryCount, 'Retry count should be reset to 0 for next page');
+        System.assertEquals(workerStateForNextPage, newCtx.workerState, 'workerState should be set for next page');
+    }
+    
+    @IsTest
+    static void testWithNextPositionPreservesWorkerState() {
+        // Arrange - withNextPosition(Integer) uses copy(), which copies workerState
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatchContext originalCtx = new CursorBatchContext(
+            cursor, 0, 100, 20, 'TestJob', 1, null,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            'TestQueryId', 1
+        );
+        originalCtx.workerState = '{"accumulated":10}';
+        Integer nextPosition = 20;
+        
+        // Act
+        Test.startTest();
+        CursorBatchContext newCtx = originalCtx.withNextPosition(nextPosition);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(nextPosition, newCtx.startPosition, 'Start position should be updated');
+        System.assertEquals('{"accumulated":10}', newCtx.workerState, 'workerState should be preserved via copy');
+    }
+    
+    @IsTest
     static void testWithRetry() {
         // Arrange
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
@@ -117,6 +163,28 @@ private without sharing class CursorBatchContextTest {
         System.assertEquals(originalCtx.cursor, newCtx.cursor, 'Cursor should remain same');
         System.assertEquals(originalCtx.workerClassName, newCtx.workerClassName, 'Worker class name should remain same');
         System.assertEquals(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
+    }
+    
+    @IsTest
+    static void testWithRetryPreservesWorkerState() {
+        // Arrange - withRetry uses copy(), which copies workerState
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatchContext originalCtx = new CursorBatchContext(
+            cursor, 10, 100, 20, 'TestJob', 1, null,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            'TestQueryId', 0
+        );
+        originalCtx.workerState = '{"retryState":true}';
+        Integer newRetryCount = 1;
+        
+        // Act
+        Test.startTest();
+        CursorBatchContext newCtx = originalCtx.withRetry(newRetryCount);
+        Test.stopTest();
+        
+        // Assert
+        System.assertEquals(newRetryCount, newCtx.retryCount, 'Retry count should be updated');
+        System.assertEquals('{"retryState":true}', newCtx.workerState, 'workerState should be preserved via copy');
     }
     
     @IsTest

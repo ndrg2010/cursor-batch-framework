@@ -490,4 +490,52 @@ private without sharing class CursorBatchWorkerTest {
                       CursorBatchTestUtils.testWorker_processCallCount == 1, 
             'Should process successfully even on retry');
     }
+    
+    @IsTest
+    static void testBuildSerializedWorkerStateAccumulatesAcrossPages() {
+        // Simulate two page runs: first run processes 5 records and carries state; second run
+        // receives that state and processes 5 more, accumulating to 10.
+        Database.Cursor cursor1 = CursorBatchTestUtils.createTestCursor(10);
+        Database.Cursor cursor2 = CursorBatchTestUtils.createTestCursor(20);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        
+        // Run 1: start 0, end 10, pageSize 5 -> processes 5 records; more pages so buildSerializedWorkerState() is called
+        CursorBatchContext ctx1 = new CursorBatchContext(
+            cursor1, 0, 10, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestWorkerStateAccumulatorWorker', null, 0
+        );
+        CursorBatchTestUtils.TestWorkerStateAccumulatorWorker worker1 =
+            new CursorBatchTestUtils.TestWorkerStateAccumulatorWorker();
+        worker1.initialize(ctx1);
+        
+        Test.startTest();
+        worker1.execute(null);
+        Test.stopTest();
+        
+        String stateAfterRun1 = CursorBatchTestUtils.testWorkerStateAccumulator_lastSerializedState;
+        System.assert(String.isNotBlank(stateAfterRun1), 'First run should set serialized worker state');
+        Map<String, Object> parsed1 = (Map<String, Object>) JSON.deserializeUntyped(stateAfterRun1);
+        System.assertEquals(5, parsed1.get('count'), 'First run should accumulate 5 records');
+        
+        // Run 2: context with workerState from run 1; start 5, end 20, pageSize 5 -> processes 5 records, then enqueues next page so buildSerializedWorkerState() is called
+        CursorBatchContext ctx2 = new CursorBatchContext(
+            cursor2, 5, 20, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestWorkerStateAccumulatorWorker', null, 0
+        );
+        ctx2.workerState = stateAfterRun1;
+        CursorBatchTestUtils.TestWorkerStateAccumulatorWorker worker2 =
+            new CursorBatchTestUtils.TestWorkerStateAccumulatorWorker();
+        worker2.initialize(ctx2);
+        
+        Test.startTest();
+        worker2.execute(null);
+        Test.stopTest();
+        
+        String stateAfterRun2 = CursorBatchTestUtils.testWorkerStateAccumulator_lastSerializedState;
+        System.assert(String.isNotBlank(stateAfterRun2), 'Second run should set serialized worker state');
+        Map<String, Object> parsed2 = (Map<String, Object>) JSON.deserializeUntyped(stateAfterRun2);
+        System.assertEquals(10, parsed2.get('count'), 'Second run should accumulate 5+5=10 from carried workerState');
+    }
 }

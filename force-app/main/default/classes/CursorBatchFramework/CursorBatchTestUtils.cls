@@ -646,6 +646,34 @@ public without sharing class CursorBatchTestUtils {
         }
     }
     
+    /** Last value returned by TestWorkerStateAccumulatorWorker.buildSerializedWorkerState() for test assertions. */
+    public static String testWorkerStateAccumulator_lastSerializedState = null;
+    
+    /**
+     * @description Test worker that accumulates per-worker state across pages via ctx.workerState.
+     *              Used to verify buildSerializedWorkerState() and workerState carry-over.
+     */
+    public class TestWorkerStateAccumulatorWorker extends CursorBatchWorker {
+        private Integer recordsProcessedThisWorker = 0;
+        
+        public override void process(List<SObject> records) {
+            if (ctx != null && String.isNotBlank(ctx.workerState)) {
+                Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(ctx.workerState);
+                Object prev = parsed.get('count');
+                recordsProcessedThisWorker = prev != null ? Integer.valueOf(prev) : 0;
+            } else {
+                recordsProcessedThisWorker = 0;
+            }
+            recordsProcessedThisWorker += (records != null ? records.size() : 0);
+        }
+        
+        protected override String buildSerializedWorkerState() {
+            String json = JSON.serialize(new Map<String, Object>{ 'count' => recordsProcessedThisWorker });
+            testWorkerStateAccumulator_lastSerializedState = json;
+            return json;
+        }
+    }
+    
     /**
      * @description Mock logger that captures log calls for test assertions.
      */

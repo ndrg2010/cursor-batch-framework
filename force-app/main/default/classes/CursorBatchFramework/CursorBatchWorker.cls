@@ -3,6 +3,14 @@
  *              assigned cursor position ranges, fetching pages and delegating to the abstract
  *              process() method. Uses Platform Events for parallel execution. Supports retry
  *              for failed pages via CursorBatchRetryException or automatic finalizer retry.
+ *
+ *              State management: It is the responsibility of the worker implementation to
+ *              manage shared state (via buildStateDelta, sent on completion events) and
+ *              per-worker state (e.g. ctx.workerState when available), and to decide when
+ *              to send deltas in completion events, if at all. Workers may send a per-page
+ *              state delta after every page (incremental deltas merged by the reducer), and
+ *              may also accumulate state across pages (e.g. in workerState) and optionally
+ *              flush to shared state once on the final page to avoid double-counting.
  * @group CursorBatchFramework
  * @see CursorBatchCoordinator
  * @see CursorBatchContext
@@ -135,7 +143,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
                     onComplete();
                 } else if (!Test.isRunningTest()) {
                     // More pages to process - enqueue next page
-                    CursorBatchContext nextCtx = ctx.withNextPosition(newPosition);
+                    CursorBatchContext nextCtx = ctx.withNextPosition(newPosition, buildSerializedWorkerState());
                     System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
                 }
             } else {
@@ -241,8 +249,27 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     }
     
     /**
+     * @description Returns serialized per-worker state to carry to the next page. Override to
+     *              accumulate state across pages (e.g. records processed by this worker).
+     *              The value is passed via context to the next run; it is not sent on completion
+     *              events. Flush accumulated value to shared state at most once (e.g. in
+     *              buildStateDelta() on the final page only) so the completion handler does not
+     *              double-count.
+     * @return Serialized per-worker state for the next run, or null
+     */
+    protected virtual String buildSerializedWorkerState() {
+        return null;
+    }
+    
+    /**
      * @description Produces a reducer delta after a page processes successfully.
      *              Override in reducer-enabled workers to contribute shared state updates.
+     *              The worker implementation decides when to send deltas in completion events:
+     *              per-page (return an incremental delta every page), only on the final page,
+     *              or not at all. Per-page deltas should be incremental (this page only) so
+     *              the completion handler does not double-count; accumulated per-worker state
+     *              should be flushed to shared state at most once (e.g. in this method on the
+     *              final page only).
      * @param records Records that were processed successfully
      * @return Delta object to serialize and publish, or null
      */
