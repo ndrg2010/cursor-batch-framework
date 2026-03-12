@@ -1,6 +1,8 @@
 /**
  * @description Handles CursorBatch_WorkerComplete__e Platform Events. Updates job tracking
  *              records and invokes coordinator callbacks when all workers have completed.
+ *              Idempotency (processed-event tracking) runs for all jobs to protect state
+ *              deltas (stateful jobs) and worker/batch counts (all jobs) from replay.
  * @group CursorBatchFramework
  * @see CursorBatchWorkerFinalizer
  * @see CursorBatchCoordinator
@@ -18,7 +20,8 @@ public without sharing class CursorBatchCompletionHandler {
     
     /**
      * @description Handles worker completion events by updating tracking records and invoking
-     *              callbacks when all workers finish.
+     *              callbacks when all workers finish. Idempotency runs for all jobs (insert per
+     *              event, delete on completion) as a known tradeoff vs. reducer-only tracking.
      * @param events CursorBatch_WorkerComplete__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_WorkerComplete__e> events) {
@@ -41,7 +44,9 @@ public without sharing class CursorBatchCompletionHandler {
             }
         }
         
-        // Idempotency: already-processed (Job, ReplayId) from previous transactions
+        // Idempotency: already-processed (Job, ReplayId) from previous transactions. Runs for
+        // all jobs to protect state deltas (stateful) and worker/batch counts (all jobs) from
+        // replay; known tradeoff is one insert per event and delete on completion for every job.
         Set<String> alreadyProcessedKeys = getAlreadyProcessedEventKeys(eventKeysInBatch);
         Set<String> processedInThisBatch = new Set<String>();
         List<CursorBatch_Processed_Event__c> processedEventsToInsert = new List<CursorBatch_Processed_Event__c>();
@@ -160,6 +165,7 @@ public without sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
+        // Idempotency DML: insert processed-event records (all jobs); wrapped so failure does not roll back job updates
         if (!processedEventsToInsert.isEmpty()) {
             try {
                 insert processedEventsToInsert;
@@ -168,6 +174,7 @@ public without sharing class CursorBatchCompletionHandler {
             }
         }
         
+        // Clean up idempotency records for completed jobs (all jobs; wrapped so failure does not roll back job updates)
         if (!completedJobs.isEmpty()) {
             Set<Id> completedJobIds = new Set<Id>();
             for (CursorBatch_Job__c j : completedJobs) {
