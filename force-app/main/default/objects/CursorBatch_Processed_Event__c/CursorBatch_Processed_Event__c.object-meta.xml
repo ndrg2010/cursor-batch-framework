@@ -9,5 +9,5 @@
         <type>AutoNumber</type>
     </nameField>
     <pluralLabel>Cursor Batch Processed Events</pluralLabel>
-    <sharingModel>ReadWrite</sharingModel>
+    <sharingModel>ControlledByParent</sharingModel>
 </CustomObject>
