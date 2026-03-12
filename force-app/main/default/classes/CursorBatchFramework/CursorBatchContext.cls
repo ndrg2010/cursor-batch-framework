@@ -166,6 +166,25 @@ public without sharing class CursorBatchContext {
     }
     
     /**
+     * @description Extracts the queryId from a Database.Cursor for passing across transactions
+     *              (e.g. to a Queueable). Used with reconstructCursor to recreate the cursor later.
+     * @param cursor The Database.Cursor to extract queryId from
+     * @return The queryId string, or null if cursor is null or queryId cannot be extracted
+     */
+    public static String extractQueryId(Database.Cursor cursor) {
+        if (cursor == null) {
+            return null;
+        }
+        try {
+            String cursorJson = JSON.serialize(cursor);
+            Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
+            return (String) cursorMap.get('queryId');
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    /**
      * @description Reconstructs a Database.Cursor from its queryId using JSON deserialization.
      *              Used by trigger handlers and finalizers to recreate cursors across transactions.
      * @param queryId The queryId extracted from the original cursor

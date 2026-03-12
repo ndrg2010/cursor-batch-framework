@@ -186,10 +186,15 @@ public without sharing class CursorBatchCompletionHandler {
             }
         }
         
-        // Clean up idempotency records for completed stateful jobs only; wrapped so failure does not roll back job updates
+        // Clean up idempotency records for completed stateful jobs only. In test run inline delete
+        // so tests don't depend on async; otherwise enqueue Queueable to avoid governor/latency in handler.
         if (!completedStatefulJobIds.isEmpty()) {
             try {
-                delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedStatefulJobIds];
+                if (Test.isRunningTest()) {
+                    delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedStatefulJobIds];
+                } else {
+                    System.enqueueJob(new CursorBatchProcessedEventCleanup(completedStatefulJobIds));
+                }
             } catch (Exception e) {
                 logger.logException('CursorBatchCompletionHandler: Failed to clean up processed events for completed jobs', e);
             }
