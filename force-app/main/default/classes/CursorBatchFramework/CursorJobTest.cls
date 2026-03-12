@@ -643,7 +643,7 @@ private without sharing class CursorJobTest {
         
         // Act
         Test.startTest();
-        ICursorBatchLogger logger = CursorJob.resolveLogger(null);
+        ICursorBatchLogger logger = CursorBatchLogger.resolveLogger(null);
         Test.stopTest();
         
         // Assert
@@ -658,7 +658,7 @@ private without sharing class CursorJobTest {
         
         // Act
         Test.startTest();
-        ICursorBatchLogger logger = CursorJob.resolveLogger('TestTag');
+        ICursorBatchLogger logger = CursorBatchLogger.resolveLogger('TestTag');
         Test.stopTest();
         
         // Assert

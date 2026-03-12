@@ -29,7 +29,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      *              to automatically discover CursorBatchLoggerAdapter if present.
      */
     protected CursorBatchWorker() {
-        this.logger = resolveLogger();
+        this.logger = CursorBatchLogger.resolveLogger(null);
     }
     
     /**
@@ -66,27 +66,6 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     @TestVisible
     protected void setLogger(ICursorBatchLogger logger) {
         this.logger = logger;
-    }
-    
-    /**
-     * @description Resolves the logger implementation using convention-based discovery.
-     *              Looks for a class named 'CursorBatchLoggerAdapter' that implements ICursorBatchLogger.
-     *              Falls back to CursorBatchLogger (System.debug) if not found.
-     * @return ICursorBatchLogger instance
-     */
-    private static ICursorBatchLogger resolveLogger() {
-        try {
-            Type adapterType = Type.forName('CursorBatchLoggerAdapter');
-            if (adapterType != null) {
-                Object instance = adapterType.newInstance();
-                if (instance instanceof ICursorBatchLogger) {
-                    return (ICursorBatchLogger) instance;
-                }
-            }
-        } catch (Exception e) {
-            // Class not found or instantiation failed - use default
-        }
-        return CursorBatchLogger.getDefault();
     }
     
     /**

@@ -205,7 +205,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
             
             // Extract queryId from cursor for cross-transaction access
-            String cursorQueryId = extractCursorQueryId(dbCursor);
+            String cursorQueryId = CursorBatchContext.extractQueryId(dbCursor);
             logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
             
             // Fan out workers and get accurate counts (calculated during actual worker assignment)
@@ -331,18 +331,6 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         jobRecord.Status__c = 'Processing';
         update jobRecord;
         logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
-    }
-    
-    /**
-     * @description Extracts the queryId from a Database.Cursor for cross-transaction storage.
-     *              The queryId can be used to reconstruct the cursor via JSON deserialization.
-     * @param cursor The Database.Cursor to extract the queryId from
-     * @return The queryId string that uniquely identifies this cursor
-     */
-    private String extractCursorQueryId(Database.Cursor cursor) {
-        String cursorJson = JSON.serialize(cursor);
-        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
-        return (String) cursorMap.get('queryId');
     }
     
     /**

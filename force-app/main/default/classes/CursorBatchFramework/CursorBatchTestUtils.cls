@@ -226,7 +226,7 @@ public without sharing class CursorBatchTestUtils {
      */
     public static CursorBatchContext createTestContext(Id jobRecordId, Integer retryCount) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -259,7 +259,7 @@ public without sharing class CursorBatchTestUtils {
         Integer retryCount
     ) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -313,7 +313,7 @@ public without sharing class CursorBatchTestUtils {
         Integer retryCount
     ) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -338,18 +338,6 @@ public without sharing class CursorBatchTestUtils {
      *              Used by test coordinators and cursor creation helpers.
      */
     public static final String DEFAULT_TEST_QUERY = 'SELECT Id, Name FROM Account ORDER BY Name';
-    
-    /**
-     * @description Extracts the queryId from a Database.Cursor for testing.
-     *              Used by trigger handler and finalizer tests for cursor reconstruction.
-     * @param cursor The Database.Cursor to extract queryId from
-     * @return The queryId string
-     */
-    public static String extractQueryId(Database.Cursor cursor) {
-        String cursorJson = JSON.serialize(cursor);
-        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
-        return (String) cursorMap.get('queryId');
-    }
     
     /**
      * @description Creates a Database.Cursor for testing using the default Account query.

@@ -16,6 +16,31 @@ public without sharing class CursorBatchLogger implements ICursorBatchLogger {
     public static ICursorBatchLogger getDefault() {
         return new CursorBatchLogger();
     }
+
+    /**
+     * @description Resolves the logger implementation using convention-based discovery.
+     *              Looks for a class named 'CursorBatchLoggerAdapter' that implements ICursorBatchLogger.
+     *              Falls back to CursorBatchLogger (System.debug) if not found.
+     * @param tag Optional tag to apply to log entries (when adapter supports Callable addTag)
+     * @return ICursorBatchLogger instance
+     */
+    public static ICursorBatchLogger resolveLogger(String tag) {
+        try {
+            Type adapterType = Type.forName('CursorBatchLoggerAdapter');
+            if (adapterType != null) {
+                Object instance = adapterType.newInstance();
+                if (instance instanceof ICursorBatchLogger) {
+                    if (String.isNotBlank(tag) && instance instanceof Callable) {
+                        ((Callable) instance).call('addTag', new Map<String, Object>{ 'tag' => tag });
+                    }
+                    return (ICursorBatchLogger) instance;
+                }
+            }
+        } catch (Exception e) {
+            // Class not found or instantiation failed - use default
+        }
+        return getDefault();
+    }
     
     /**
      * @description Logs an informational message at INFO level.

@@ -49,7 +49,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         
         // Create a cursor and extract its queryId
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
@@ -131,7 +131,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
         
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatchWorkerTriggerHandler handler = new CursorBatchWorkerTriggerHandler();
         
@@ -174,7 +174,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
         
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatchWorkerTriggerHandler handler = new CursorBatchWorkerTriggerHandler();
         
@@ -217,7 +217,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
         
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatchWorkerTriggerHandler handler = new CursorBatchWorkerTriggerHandler();
         
@@ -262,7 +262,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
         
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 3, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
@@ -304,7 +304,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
         
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'TestCoordinator'
@@ -351,13 +351,12 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
     static void testCursorReconstructionFromQueryId() {
         // Arrange - Verify that a cursor can be reconstructed from queryId
         Database.Cursor originalCursor = CursorBatchTestUtils.createTestCursor(10);
-        String queryId = CursorBatchTestUtils.extractQueryId(originalCursor);
+        String queryId = CursorBatchContext.extractQueryId(originalCursor);
         Integer originalCount = originalCursor.getNumRecords();
         
         // Act - Reconstruct cursor from queryId
         Test.startTest();
-        String cursorJson = '{"queryId":"' + queryId + '"}';
-        Database.Cursor reconstructedCursor = (Database.Cursor) JSON.deserialize(cursorJson, Database.Cursor.class);
+        Database.Cursor reconstructedCursor = CursorBatchContext.reconstructCursor(queryId);
         Test.stopTest();
         
         // Assert
@@ -377,7 +376,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         
         // Create a cursor and extract its queryId
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
-        String queryId = CursorBatchTestUtils.extractQueryId(cursor);
+        String queryId = CursorBatchContext.extractQueryId(cursor);
         
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
