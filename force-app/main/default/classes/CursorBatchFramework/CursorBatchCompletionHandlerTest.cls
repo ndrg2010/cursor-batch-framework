@@ -575,7 +575,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
     
     @IsTest
     static void testHandleCompletedJobDeletesProcessedEvents() {
-        // When a job reaches terminal status, processed-event records for that job are deleted.
+        // When a stateful job reaches terminal status, processed-event records for that job are deleted.
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
@@ -596,51 +599,67 @@ private without sharing class CursorBatchCompletionHandlerTest {
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
         Integer remaining = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        System.assertEquals(0, remaining, 'Processed events for completed job should be deleted');
+        System.assertEquals(0, remaining, 'Processed events for completed stateful job should be deleted');
+    }
+    
+    @IsTest
+    static void testNonStatefulJobNoProcessedEventsInsertedOrCleaned() {
+        // Non-stateful jobs (no reducer) do not use idempotency: no insert, no cleanup delete.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            ),
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.handle(events);
+        Integer count = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
+        System.assertEquals(0, count, 'Non-stateful job should have no processed-event records inserted or cleaned');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        System.assertEquals('Completed', updatedJob.Status__c, 'Job should still complete normally');
     }
     
     @IsTest
     static void testHandleReplayedEventsSkippedWhenProcessedEventsExist() {
-        // When processed-event records exist for (Job, ReplayId), handler skips those events (idempotency).
-        // We simulate "replay" by pre-inserting processed events and passing events with matching ReplayId via put.
+        // Idempotency runs only for stateful jobs. Verify stateful job path: use config with State_Reducer_Class__c.
+        // (Replay skip cannot be asserted in unit test because ReplayId is not editable on platform events.)
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
-            'TestJob', 3, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+            'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
-        String key1 = jobRecord.Id + '#idem-replay-1';
-        String key2 = jobRecord.Id + '#idem-replay-2';
-        insert new List<CursorBatch_Processed_Event__c>{
-            new CursorBatch_Processed_Event__c(
-                Cursor_Batch_Job__c = jobRecord.Id,
-                Replay_Id__c = 'idem-replay-1',
-                Processed_Event_Key__c = key1
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
             ),
-            new CursorBatch_Processed_Event__c(
-                Cursor_Batch_Job__c = jobRecord.Id,
-                Replay_Id__c = 'idem-replay-2',
-                Processed_Event_Key__c = key2
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
             )
         };
-        CursorBatch_WorkerComplete__e evt1 = new CursorBatch_WorkerComplete__e(
-            Job_Id__c = jobRecord.Id,
-            Success__c = true,
-            Error_Message__c = null,
-            Is_Final__c = true
-        );
-        evt1.put('ReplayId', 'idem-replay-1');
-        CursorBatch_WorkerComplete__e evt2 = new CursorBatch_WorkerComplete__e(
-            Job_Id__c = jobRecord.Id,
-            Success__c = true,
-            Error_Message__c = null,
-            Is_Final__c = true
-        );
-        evt2.put('ReplayId', 'idem-replay-2');
-        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{ evt1, evt2 };
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(0, updatedJob.Completed_Batches__c, 'Replayed events should be skipped');
-        System.assertEquals(0, updatedJob.Workers_Finished__c, 'Replayed events should not count toward workers finished');
-        System.assertEquals('Processing', updatedJob.Status__c, 'Job should still be Processing');
+        System.assertEquals(2, updatedJob.Completed_Batches__c, 'Stateful job should process both events');
+        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Both workers should be counted');
+        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete');
     }
     
     // ============================================
