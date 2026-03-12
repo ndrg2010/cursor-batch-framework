@@ -161,7 +161,11 @@ public without sharing class CursorBatchCompletionHandler {
         }
         
         if (!processedEventsToInsert.isEmpty()) {
-            insert processedEventsToInsert;
+            try {
+                insert processedEventsToInsert;
+            } catch (Exception e) {
+                logger.logException('CursorBatchCompletionHandler: Failed to record processed events for idempotency', e);
+            }
         }
         
         if (!completedJobs.isEmpty()) {
@@ -169,7 +173,11 @@ public without sharing class CursorBatchCompletionHandler {
             for (CursorBatch_Job__c j : completedJobs) {
                 completedJobIds.add(j.Id);
             }
-            delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedJobIds];
+            try {
+                delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedJobIds];
+            } catch (Exception e) {
+                logger.logException('CursorBatchCompletionHandler: Failed to clean up processed events for completed jobs', e);
+            }
         }
         
         // Invoke callbacks for completed jobs using 4-path finish logic
