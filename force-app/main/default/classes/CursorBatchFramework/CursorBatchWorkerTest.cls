@@ -561,9 +561,8 @@ private without sharing class CursorBatchWorkerTest {
             new CursorBatchTestUtils.TestWorkerStateAccumulatorWorker();
         worker2.initialize(ctx2);
         
-        Test.startTest();
+        // Run 2 without startTest/stopTest (only one startTest per test method allowed)
         worker2.execute(null);
-        Test.stopTest();
         
         String stateAfterRun2 = CursorBatchTestUtils.testWorkerStateAccumulator_lastSerializedState;
         System.assert(String.isNotBlank(stateAfterRun2), 'Second run should set serialized worker state');

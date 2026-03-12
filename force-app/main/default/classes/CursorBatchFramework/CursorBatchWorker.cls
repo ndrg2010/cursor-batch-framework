@@ -142,10 +142,13 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
                         ') stopping - job was cancelled');
                     ctx.isFinal = true;
                     onComplete();
-                } else if (!Test.isRunningTest()) {
-                    // More pages to process - enqueue next page
-                    CursorBatchContext nextCtx = ctx.withNextPosition(newPosition, buildSerializedWorkerState());
-                    System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
+                } else {
+                    // More pages to process - build state for next run; enqueue only outside test
+                    String serializedState = buildSerializedWorkerState();
+                    if (!Test.isRunningTest()) {
+                        CursorBatchContext nextCtx = ctx.withNextPosition(newPosition, serializedState);
+                        System.enqueueJob(CursorBatchContext.createWorkerInstance(nextCtx.workerClassName, nextCtx));
+                    }
                 }
             } else {
                 // Final page - mark as complete
