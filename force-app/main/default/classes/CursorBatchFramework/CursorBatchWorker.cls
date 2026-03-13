@@ -78,6 +78,12 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         // Attach finalizer FIRST to catch uncatchable exceptions (permissions, limits, etc.)
         attachFinalizer();
         
+        if (ctx == null || String.isBlank(ctx.jobName)) {
+            logger.logError('CursorBatchWorker: context or job name is missing; cannot execute');
+            onComplete();
+            return;
+        }
+        
         try {
             if (ctx.cursor == null) {
                 logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
