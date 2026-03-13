@@ -16,7 +16,9 @@ public without sharing class CursorBatchProcessedEventCleanup implements Queueab
     
     /**
      * @description Creates a cleanup job for the given completed stateful job IDs.
-     *              Builds a cursor over processed-event records and stores its queryId for execute().
+     *              Builds a cursor over processed-event records using bind variables and stores
+     *              its queryId for execute(). Uses at most MAX_JOB_IDS_PER_QUERY job IDs per instance;
+     *              callers should enqueue one cleanup per chunk when jobIds exceeds that limit.
      * @param jobIds Set of CursorBatch_Job__c IDs whose processed-event records should be deleted
      */
     public CursorBatchProcessedEventCleanup(Set<Id> jobIds) {
@@ -33,9 +35,9 @@ public without sharing class CursorBatchProcessedEventCleanup implements Queueab
             }
             idList = chunk;
         }
-        String inClause = '\'' + String.join(idList, '\',\'') + '\'';
-        String soql = 'SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN (' + inClause + ')';
-        Database.Cursor cursor = Database.getCursor(soql);
+        String soql = 'SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :idList';
+        Map<String, Object> bindVars = new Map<String, Object>{ 'idList' => idList };
+        Database.Cursor cursor = Database.getCursorWithBinds(soql, bindVars, AccessLevel.SYSTEM_MODE);
         this.cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         this.position = 0;
     }
