@@ -41,10 +41,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(2, updatedJob.Completed_Batches__c, 'Should increment completed batch count');
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Should increment workers finished count');
-        System.assertEquals(0, updatedJob.Failed_Workers__c, 'Failed count should be 0');
-        System.assertEquals('Processing', updatedJob.Status__c, 'Status should still be Processing (not all complete)');
+        Assert.areEqual(2, updatedJob.Completed_Batches__c, 'Should increment completed batch count');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Should increment workers finished count');
+        Assert.areEqual(0, updatedJob.Failed_Workers__c, 'Failed count should be 0');
+        Assert.areEqual('Processing', updatedJob.Status__c, 'Status should still be Processing (not all complete)');
     }
     
     @IsTest
@@ -72,10 +72,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(0, updatedJob.Completed_Batches__c, 'Completed batch count should be 0');
-        System.assertEquals(0, updatedJob.Workers_Finished__c, 'Workers finished should be 0');
-        System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should increment failed count');
-        System.assertEquals('Test error message', updatedJob.Error_Message__c, 
+        Assert.areEqual(0, updatedJob.Completed_Batches__c, 'Completed batch count should be 0');
+        Assert.areEqual(0, updatedJob.Workers_Finished__c, 'Workers finished should be 0');
+        Assert.areEqual(1, updatedJob.Failed_Workers__c, 'Should increment failed count');
+        Assert.areEqual('Test error message', updatedJob.Error_Message__c, 
             'Should capture error message');
     }
     
@@ -116,10 +116,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(2, updatedJob.Completed_Batches__c, 'Should have 2 completed batches');
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
-        System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
-        System.assertEquals('Worker 2 failed', updatedJob.Error_Message__c, 
+        Assert.areEqual(2, updatedJob.Completed_Batches__c, 'Should have 2 completed batches');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
+        Assert.areEqual(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
+        Assert.areEqual('Worker 2 failed', updatedJob.Error_Message__c, 
             'Should capture first error');
     }
     
@@ -154,9 +154,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
-        System.assertEquals('Completed', updatedJob.Status__c, 'Status should be Completed');
-        System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Status should be Completed');
+        Assert.areNotEqual(null, updatedJob.Completed_At__c, 'Completed_At should be set');
     }
     
     @IsTest
@@ -190,10 +190,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Workers_Finished__c, 'Should have 1 worker finished');
-        System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
-        System.assertEquals('Completed with Errors', updatedJob.Status__c, 'Status should be Completed with Errors');
-        System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
+        Assert.areEqual(1, updatedJob.Workers_Finished__c, 'Should have 1 worker finished');
+        Assert.areEqual(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c, 'Status should be Completed with Errors');
+        Assert.areNotEqual(null, updatedJob.Completed_At__c, 'Completed_At should be set');
     }
     
     @IsTest
@@ -227,11 +227,11 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(0, updatedJob.Workers_Finished__c, 'Should have 0 workers finished');
-        System.assertEquals(2, updatedJob.Failed_Workers__c, 'Should have 2 failed');
-        System.assertEquals('Failed', updatedJob.Status__c, 'Status should be Failed when all workers fail');
-        System.assertEquals('Worker 1 failed', updatedJob.Error_Message__c, 'Should capture first error');
-        System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
+        Assert.areEqual(0, updatedJob.Workers_Finished__c, 'Should have 0 workers finished');
+        Assert.areEqual(2, updatedJob.Failed_Workers__c, 'Should have 2 failed');
+        Assert.areEqual('Failed', updatedJob.Status__c, 'Status should be Failed when all workers fail');
+        Assert.areEqual('Worker 1 failed', updatedJob.Error_Message__c, 'Should capture first error');
+        Assert.areNotEqual(null, updatedJob.Completed_At__c, 'Completed_At should be set');
     }
     
     @IsTest
@@ -260,7 +260,7 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert - Handler should complete without throwing exception and not create/modify any jobs
         Integer jobCountAfter = [SELECT COUNT() FROM CursorBatch_Job__c];
-        System.assertEquals(jobCountBefore, jobCountAfter, 
+        Assert.areEqual(jobCountBefore, jobCountAfter, 
             'No jobs should be created when handling events for non-existent job');
     }
     
@@ -299,8 +299,8 @@ private without sharing class CursorBatchCompletionHandlerTest {
         // Assert
         CursorBatch_Job__c updatedJob1 = CursorBatchSelector.getJobById(jobRecord1.Id);
         CursorBatch_Job__c updatedJob2 = CursorBatchSelector.getJobById(jobRecord2.Id);
-        System.assertEquals('Completed', updatedJob1.Status__c, 'Job 1 should be Completed');
-        System.assertEquals('Completed', updatedJob2.Status__c, 'Job 2 should be Completed');
+        Assert.areEqual('Completed', updatedJob1.Status__c, 'Job 1 should be Completed');
+        Assert.areEqual('Completed', updatedJob2.Status__c, 'Job 2 should be Completed');
     }
     
     @IsTest
@@ -328,7 +328,7 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete even with invalid coordinator class');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete even with invalid coordinator class');
     }
     
     @IsTest
@@ -356,7 +356,7 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should still complete with non-existent class');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should still complete with non-existent class');
     }
     
     @IsTest
@@ -400,11 +400,11 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(5, updatedJob.Total_Worker_Retries__c, 
+        Assert.areEqual(5, updatedJob.Total_Worker_Retries__c, 
             'Should aggregate retry counts (0 + 2 + 3 = 5)');
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
-        System.assertEquals(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
-        System.assertEquals('Completed with Errors', updatedJob.Status__c, 'Status should be Completed with Errors due to partial failure');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Should have 2 workers finished');
+        Assert.areEqual(1, updatedJob.Failed_Workers__c, 'Should have 1 failed');
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c, 'Status should be Completed with Errors due to partial failure');
     }
     
     @IsTest
@@ -440,9 +440,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Total_Worker_Retries__c, 
+        Assert.areEqual(1, updatedJob.Total_Worker_Retries__c, 
             'Should handle null retry counts gracefully (only count the 1)');
-        System.assertEquals('Completed', updatedJob.Status__c, 'Status should be Completed');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Status should be Completed');
     }
     
     @IsTest
@@ -481,9 +481,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(updatedJob.State_JSON__c);
-        System.assertEquals(7, ((Decimal) state.get('processedCount')).intValue(),
+        Assert.areEqual(7, ((Decimal) state.get('processedCount')).intValue(),
             'Reducer should merge page delta into the persisted state');
-        System.assertEquals(2, ((Decimal) state.get('pagesProcessed')).intValue(),
+        Assert.areEqual(2, ((Decimal) state.get('pagesProcessed')).intValue(),
             'Reducer should update page count in persisted state');
     }
     
@@ -524,10 +524,10 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert - worker count and completion status still updated; state update skipped
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Completed_Batches__c, 'Should count successful batch despite state reduction failure');
-        System.assertEquals(1, updatedJob.Workers_Finished__c, 'Should count worker finished');
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete and not stay stuck in Processing');
-        System.assertEquals(initialStateJson, updatedJob.State_JSON__c,
+        Assert.areEqual(1, updatedJob.Completed_Batches__c, 'Should count successful batch despite state reduction failure');
+        Assert.areEqual(1, updatedJob.Workers_Finished__c, 'Should count worker finished');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete and not stay stuck in Processing');
+        Assert.areEqual(initialStateJson, updatedJob.State_JSON__c,
             'State should be unchanged when reduceState throws (delta skipped)');
     }
     
@@ -559,14 +559,14 @@ private without sharing class CursorBatchCompletionHandlerTest {
         Test.stopTest();
         
         // Assert - Verify the events were published successfully and trigger fired
-        System.assertEquals(2, results.size(), 'Should have published 2 events');
-        System.assertEquals(true, results[0].isSuccess(), 'Event should have been published successfully');
-        System.assertEquals(true, results[1].isSuccess(), 'Event should have been published successfully');
+        Assert.areEqual(2, results.size(), 'Should have published 2 events');
+        Assert.areEqual(true, results[0].isSuccess(), 'Event should have been published successfully');
+        Assert.areEqual(true, results[1].isSuccess(), 'Event should have been published successfully');
         
         // The trigger should have fired and processed the events through the handler
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Trigger should have fired and handler should have processed both events');
-        System.assertEquals('Completed', updatedJob.Status__c, 'Status should be Completed');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Trigger should have fired and handler should have processed both events');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Status should be Completed');
     }
     
     // ============================================
@@ -599,7 +599,7 @@ private without sharing class CursorBatchCompletionHandlerTest {
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
         Integer remaining = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        System.assertEquals(0, remaining, 'Processed events for completed stateful job should be deleted');
+        Assert.areEqual(0, remaining, 'Processed events for completed stateful job should be deleted');
     }
     
     @IsTest
@@ -625,9 +625,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
         Integer count = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        System.assertEquals(0, count, 'Non-stateful job should have no processed-event records inserted or cleaned');
+        Assert.areEqual(0, count, 'Non-stateful job should have no processed-event records inserted or cleaned');
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should still complete normally');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should still complete normally');
     }
     
     @IsTest
@@ -657,9 +657,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(2, updatedJob.Completed_Batches__c, 'Stateful job should process both events');
-        System.assertEquals(2, updatedJob.Workers_Finished__c, 'Both workers should be counted');
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete');
+        Assert.areEqual(2, updatedJob.Completed_Batches__c, 'Stateful job should process both events');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Both workers should be counted');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete');
     }
     
     // ============================================
@@ -702,9 +702,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert - Status should remain Cancelled, not be overwritten to Completed
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Cancelled', updatedJob.Status__c, 
+        Assert.areEqual('Cancelled', updatedJob.Status__c, 
             'Cancelled status should be preserved, not overwritten');
-        System.assertEquals(cancelledAt, updatedJob.Completed_At__c, 
+        Assert.areEqual(cancelledAt, updatedJob.Completed_At__c, 
             'Completed_At should not be overwritten if already set');
     }
     
@@ -742,7 +742,7 @@ private without sharing class CursorBatchCompletionHandlerTest {
         
         // Assert - Status should remain Cancelled, not be changed to Failed
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Cancelled', updatedJob.Status__c, 
+        Assert.areEqual('Cancelled', updatedJob.Status__c, 
             'Cancelled status should be preserved even when all workers fail');
     }
     
@@ -776,9 +776,9 @@ private without sharing class CursorBatchCompletionHandlerTest {
         // Assert - Job should remain cancelled and handler should complete successfully
         // (No exception means finish callback was either skipped or handled gracefully)
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Cancelled', updatedJob.Status__c, 
+        Assert.areEqual('Cancelled', updatedJob.Status__c, 
             'Status should remain Cancelled after handling completion events');
-        System.assertEquals(1, updatedJob.Workers_Finished__c, 
+        Assert.areEqual(1, updatedJob.Workers_Finished__c, 
             'Worker completion should still be tracked');
     }
 }

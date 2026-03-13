@@ -30,17 +30,17 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(cursor, ctx.cursor, 'Cursor should be set');
-        System.assertEquals(startPosition, ctx.startPosition, 'Start position should be set');
-        System.assertEquals(endPosition, ctx.endPosition, 'End position should be set');
-        System.assertEquals(pageSize, ctx.pageSize, 'Page size should be set');
-        System.assertEquals(jobName, ctx.jobName, 'Job name should be set');
-        System.assertEquals(workerNum, ctx.workerNum, 'Worker number should be set');
-        System.assertEquals(jobRecordId, ctx.jobRecordId, 'Job record ID should be set');
-        System.assertEquals(workerClassName, ctx.workerClassName, 'Worker class name should be set');
-        System.assertEquals(0, ctx.retryCount, 'Retry count should default to 0');
-        System.assertEquals(null, ctx.cursorQueryId, 'Cursor query ID should default to null');
-        System.assertEquals(null, ctx.workerState, 'workerState should default to null');
+        Assert.areEqual(cursor, ctx.cursor, 'Cursor should be set');
+        Assert.areEqual(startPosition, ctx.startPosition, 'Start position should be set');
+        Assert.areEqual(endPosition, ctx.endPosition, 'End position should be set');
+        Assert.areEqual(pageSize, ctx.pageSize, 'Page size should be set');
+        Assert.areEqual(jobName, ctx.jobName, 'Job name should be set');
+        Assert.areEqual(workerNum, ctx.workerNum, 'Worker number should be set');
+        Assert.areEqual(jobRecordId, ctx.jobRecordId, 'Job record ID should be set');
+        Assert.areEqual(workerClassName, ctx.workerClassName, 'Worker class name should be set');
+        Assert.areEqual(0, ctx.retryCount, 'Retry count should default to 0');
+        Assert.areEqual(null, ctx.cursorQueryId, 'Cursor query ID should default to null');
+        Assert.areEqual(null, ctx.workerState, 'workerState should default to null');
     }
     
     @IsTest
@@ -60,8 +60,8 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(cursorQueryId, ctx.cursorQueryId, 'Cursor query ID should be set');
-        System.assertEquals(retryCount, ctx.retryCount, 'Retry count should be set');
+        Assert.areEqual(cursorQueryId, ctx.cursorQueryId, 'Cursor query ID should be set');
+        Assert.areEqual(retryCount, ctx.retryCount, 'Retry count should be set');
     }
     
     @IsTest
@@ -81,15 +81,15 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(nextPosition, newCtx.startPosition, 'Start position should be updated');
-        System.assertEquals(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
-        System.assertEquals(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
-        System.assertEquals(originalCtx.jobName, newCtx.jobName, 'Job name should remain same');
-        System.assertEquals(originalCtx.workerNum, newCtx.workerNum, 'Worker number should remain same');
-        System.assertEquals(originalCtx.cursor, newCtx.cursor, 'Cursor should remain same');
-        System.assertEquals(originalCtx.workerClassName, newCtx.workerClassName, 'Worker class name should remain same');
-        System.assertEquals(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
-        System.assertEquals(0, newCtx.retryCount, 'Retry count should be reset to 0 for next page');
+        Assert.areEqual(nextPosition, newCtx.startPosition, 'Start position should be updated');
+        Assert.areEqual(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
+        Assert.areEqual(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
+        Assert.areEqual(originalCtx.jobName, newCtx.jobName, 'Job name should remain same');
+        Assert.areEqual(originalCtx.workerNum, newCtx.workerNum, 'Worker number should remain same');
+        Assert.areEqual(originalCtx.cursor, newCtx.cursor, 'Cursor should remain same');
+        Assert.areEqual(originalCtx.workerClassName, newCtx.workerClassName, 'Worker class name should remain same');
+        Assert.areEqual(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
+        Assert.areEqual(0, newCtx.retryCount, 'Retry count should be reset to 0 for next page');
     }
     
     @IsTest
@@ -110,9 +110,9 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(nextPosition, newCtx.startPosition, 'Start position should be updated');
-        System.assertEquals(0, newCtx.retryCount, 'Retry count should be reset to 0 for next page');
-        System.assertEquals(workerStateForNextPage, newCtx.workerState, 'workerState should be set for next page');
+        Assert.areEqual(nextPosition, newCtx.startPosition, 'Start position should be updated');
+        Assert.areEqual(0, newCtx.retryCount, 'Retry count should be reset to 0 for next page');
+        Assert.areEqual(workerStateForNextPage, newCtx.workerState, 'workerState should be set for next page');
     }
     
     @IsTest
@@ -133,8 +133,8 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(nextPosition, newCtx.startPosition, 'Start position should be updated');
-        System.assertEquals('{"accumulated":10}', newCtx.workerState, 'workerState should be preserved via copy');
+        Assert.areEqual(nextPosition, newCtx.startPosition, 'Start position should be updated');
+        Assert.areEqual('{"accumulated":10}', newCtx.workerState, 'workerState should be preserved via copy');
     }
     
     @IsTest
@@ -154,15 +154,15 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(newRetryCount, newCtx.retryCount, 'Retry count should be updated');
-        System.assertEquals(originalCtx.startPosition, newCtx.startPosition, 'Start position should remain same');
-        System.assertEquals(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
-        System.assertEquals(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
-        System.assertEquals(originalCtx.jobName, newCtx.jobName, 'Job name should remain same');
-        System.assertEquals(originalCtx.workerNum, newCtx.workerNum, 'Worker number should remain same');
-        System.assertEquals(originalCtx.cursor, newCtx.cursor, 'Cursor should remain same');
-        System.assertEquals(originalCtx.workerClassName, newCtx.workerClassName, 'Worker class name should remain same');
-        System.assertEquals(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
+        Assert.areEqual(newRetryCount, newCtx.retryCount, 'Retry count should be updated');
+        Assert.areEqual(originalCtx.startPosition, newCtx.startPosition, 'Start position should remain same');
+        Assert.areEqual(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
+        Assert.areEqual(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
+        Assert.areEqual(originalCtx.jobName, newCtx.jobName, 'Job name should remain same');
+        Assert.areEqual(originalCtx.workerNum, newCtx.workerNum, 'Worker number should remain same');
+        Assert.areEqual(originalCtx.cursor, newCtx.cursor, 'Cursor should remain same');
+        Assert.areEqual(originalCtx.workerClassName, newCtx.workerClassName, 'Worker class name should remain same');
+        Assert.areEqual(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
     }
     
     @IsTest
@@ -183,8 +183,8 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(newRetryCount, newCtx.retryCount, 'Retry count should be updated');
-        System.assertEquals('{"retryState":true}', newCtx.workerState, 'workerState should be preserved via copy');
+        Assert.areEqual(newRetryCount, newCtx.retryCount, 'Retry count should be updated');
+        Assert.areEqual('{"retryState":true}', newCtx.workerState, 'workerState should be preserved via copy');
     }
     
     @IsTest
@@ -205,12 +205,12 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(cursor2, newCtx.cursor, 'Cursor should be updated');
-        System.assertEquals(originalCtx.startPosition, newCtx.startPosition, 'Start position should remain same');
-        System.assertEquals(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
-        System.assertEquals(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
-        System.assertEquals(originalCtx.retryCount, newCtx.retryCount, 'Retry count should remain same');
-        System.assertEquals(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
+        Assert.areEqual(cursor2, newCtx.cursor, 'Cursor should be updated');
+        Assert.areEqual(originalCtx.startPosition, newCtx.startPosition, 'Start position should remain same');
+        Assert.areEqual(originalCtx.endPosition, newCtx.endPosition, 'End position should remain same');
+        Assert.areEqual(originalCtx.pageSize, newCtx.pageSize, 'Page size should remain same');
+        Assert.areEqual(originalCtx.retryCount, newCtx.retryCount, 'Retry count should remain same');
+        Assert.areEqual(originalCtx.cursorQueryId, newCtx.cursorQueryId, 'Cursor query ID should remain same');
     }
     
     @IsTest
@@ -239,16 +239,16 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(cursor, ctx.cursor, 'Cursor should be set from parameter');
-        System.assertEquals(10, ctx.startPosition, 'Start position should be from event');
-        System.assertEquals(50, ctx.endPosition, 'End position should be from event');
-        System.assertEquals(20, ctx.pageSize, 'Page size should be from event');
-        System.assertEquals('TestJob', ctx.jobName, 'Job name should be from event');
-        System.assertEquals(3, ctx.workerNum, 'Worker number should be from event');
-        System.assertEquals(jobRecord.Id, ctx.jobRecordId, 'Job record ID should be from event');
-        System.assertEquals('CursorBatchTestUtils.TestCursorBatchWorker', ctx.workerClassName, 'Worker class should be from event');
-        System.assertEquals('TestQueryId', ctx.cursorQueryId, 'Cursor query ID should be from event');
-        System.assertEquals(1, ctx.retryCount, 'Retry count should be from event');
+        Assert.areEqual(cursor, ctx.cursor, 'Cursor should be set from parameter');
+        Assert.areEqual(10, ctx.startPosition, 'Start position should be from event');
+        Assert.areEqual(50, ctx.endPosition, 'End position should be from event');
+        Assert.areEqual(20, ctx.pageSize, 'Page size should be from event');
+        Assert.areEqual('TestJob', ctx.jobName, 'Job name should be from event');
+        Assert.areEqual(3, ctx.workerNum, 'Worker number should be from event');
+        Assert.areEqual(jobRecord.Id, ctx.jobRecordId, 'Job record ID should be from event');
+        Assert.areEqual('CursorBatchTestUtils.TestCursorBatchWorker', ctx.workerClassName, 'Worker class should be from event');
+        Assert.areEqual('TestQueryId', ctx.cursorQueryId, 'Cursor query ID should be from event');
+        Assert.areEqual(1, ctx.retryCount, 'Retry count should be from event');
     }
     
     @IsTest
@@ -277,7 +277,7 @@ private without sharing class CursorBatchContextTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(0, ctx.retryCount, 'Retry count should default to 0 when null');
+        Assert.areEqual(0, ctx.retryCount, 'Retry count should default to 0 when null');
     }
     
     @IsTest
@@ -298,9 +298,9 @@ private without sharing class CursorBatchContextTest {
         
         // Assert - String.valueOf() returns simple class name (Apex limitation)
         // The $ to . conversion is for cases where String.valueOf() might include $ (rare)
-        System.assertEquals('TestCursorBatchCoordinator', coordClassName, 
+        Assert.areEqual('TestCursorBatchCoordinator', coordClassName, 
             'Should return the simple coordinator class name (Apex String.valueOf limitation)');
-        System.assertEquals('TestCursorBatchWorker', workerClassName, 
+        Assert.areEqual('TestCursorBatchWorker', workerClassName, 
             'Should return the simple worker class name (Apex String.valueOf limitation)');
     }
 }

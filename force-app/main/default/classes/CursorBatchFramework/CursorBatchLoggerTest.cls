@@ -13,8 +13,8 @@ private without sharing class CursorBatchLoggerTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, logger, 'Should return a logger instance');
-        System.assert(logger instanceof CursorBatchLogger, 'Should return CursorBatchLogger instance');
+        Assert.areNotEqual(null, logger, 'Should return a logger instance');
+        Assert.isTrue(logger instanceof CursorBatchLogger, 'Should return CursorBatchLogger instance');
     }
     
     @IsTest
@@ -39,6 +39,6 @@ private without sharing class CursorBatchLoggerTest {
         
         // Assert - We can't easily verify System.debug output, 
         // but we can verify no exception was thrown
-        System.assert(true, 'All logging methods should complete without exception');
+        Assert.isTrue(true, 'All logging methods should complete without exception');
     }
 }

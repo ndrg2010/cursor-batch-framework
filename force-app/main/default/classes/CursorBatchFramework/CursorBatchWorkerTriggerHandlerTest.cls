@@ -21,7 +21,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         handler.handle(null);
         Test.stopTest();
         
-        System.assert(true, 'Handler should gracefully handle null events list');
+        Assert.isTrue(true, 'Handler should gracefully handle null events list');
     }
     
     @IsTest
@@ -35,7 +35,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         handler.handle(emptyEvents);
         Test.stopTest();
         
-        System.assert(true, 'Handler should gracefully handle empty events list');
+        Assert.isTrue(true, 'Handler should gracefully handle empty events list');
     }
     
     @IsTest
@@ -77,7 +77,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         
         // Assert - Handler should process the event and worker should run
         // In test context, workers execute synchronously
-        System.assert(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
+        Assert.isTrue(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
             'Handler should have processed the worker event');
     }
     
@@ -119,7 +119,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle invalid queryId without throwing
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should handle invalid queryId gracefully without throwing exception');
     }
     
@@ -162,7 +162,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle empty worker class
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should catch and handle missing worker class exception gracefully');
     }
     
@@ -205,7 +205,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle non-existent worker class
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should catch and handle invalid worker class exception gracefully');
     }
     
@@ -248,7 +248,7 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle worker class that doesn't extend CursorBatchWorker
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should handle invalid worker class type gracefully without throwing');
     }
     
@@ -291,8 +291,8 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         
         // Assert - Handler should process all 3 events
         // In test context, workers may or may not fully execute depending on queueable behavior
-        System.assertEquals(3, events.size(), 'Should have processed 3 events');
-        System.assert(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
+        Assert.areEqual(3, events.size(), 'Should have processed 3 events');
+        Assert.isTrue(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
             'Handler should have attempted to process worker events');
     }
     
@@ -341,10 +341,10 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should process both events using the same cursor
-        System.assertEquals(2, events.size(), 'Should have handled 2 events with same queryId');
+        Assert.areEqual(2, events.size(), 'Should have handled 2 events with same queryId');
         // The cursor caching is internal - we verify it worked by confirming no exception was thrown
         // and the handler completed successfully
-        System.assert(true, 'Handler should reuse reconstructed cursor across events with same queryId');
+        Assert.isTrue(true, 'Handler should reuse reconstructed cursor across events with same queryId');
     }
     
     @IsTest
@@ -360,8 +360,8 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, reconstructedCursor, 'Reconstructed cursor should not be null');
-        System.assertEquals(originalCount, reconstructedCursor.getNumRecords(), 
+        Assert.areNotEqual(null, reconstructedCursor, 'Reconstructed cursor should not be null');
+        Assert.areEqual(originalCount, reconstructedCursor.getNumRecords(), 
             'Reconstructed cursor should have same record count');
     }
     
@@ -401,10 +401,10 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Verify the events were published successfully and trigger fired
-        System.assertEquals(1, results.size(), 'Should have published 1 event');
-        System.assertEquals(true, results[0].isSuccess(), 'Event should have been published successfully');
+        Assert.areEqual(1, results.size(), 'Should have published 1 event');
+        Assert.areEqual(true, results[0].isSuccess(), 'Event should have been published successfully');
         // The trigger should have fired and processed the event through the handler
-        System.assert(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
+        Assert.isTrue(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
             'Trigger should have fired and handler should have processed the worker event');
     }
 }

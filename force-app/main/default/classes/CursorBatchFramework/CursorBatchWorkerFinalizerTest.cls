@@ -27,7 +27,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, finalizer, 'Finalizer should be instantiated');
+        Assert.areNotEqual(null, finalizer, 'Finalizer should be instantiated');
     }
     
     @IsTest
@@ -49,7 +49,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(0, mockLogger.errorMessages.size(), 
+        Assert.areEqual(0, mockLogger.errorMessages.size(), 
             'Should not log errors for successful execution');
     }
     
@@ -76,7 +76,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert - Should log error and attempt retry (retry scheduling may fail in test context)
-        System.assert(mockLogger.errorMessages.size() > 0 || mockLogger.infoMessages.size() > 0, 
+        Assert.isTrue(mockLogger.errorMessages.size() > 0 || mockLogger.infoMessages.size() > 0, 
             'Should log messages about failure or retry attempt');
     }
     
@@ -103,7 +103,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert - Should log error about max retries exhausted
-        System.assert(mockLogger.hasErrorContaining('max retries') || 
+        Assert.isTrue(mockLogger.hasErrorContaining('max retries') || 
                       mockLogger.hasErrorContaining('exhausted') ||
                       mockLogger.errorMessages.size() > 0, 
             'Should log error about max retries exhausted');
@@ -133,10 +133,10 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert - Finalizer should handle null exception gracefully
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Finalizer should handle null exception parameter without throwing');
         // Should still log an error about the failure (even without exception details)
-        System.assert(mockLogger.errorMessages.size() > 0 || mockLogger.infoMessages.size() > 0, 
+        Assert.isTrue(mockLogger.errorMessages.size() > 0 || mockLogger.infoMessages.size() > 0, 
             'Should log message about failure handling');
     }
     
@@ -162,7 +162,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.errorMessages.size() > 0 || 
+        Assert.isTrue(mockLogger.errorMessages.size() > 0 || 
                       mockLogger.loggedExceptions.size() > 0, 
             'Should log error for failed execution');
     }
@@ -189,7 +189,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, result.isSuccess(), 'Event should be published successfully');
+        Assert.areEqual(true, result.isSuccess(), 'Event should be published successfully');
     }
     
     @IsTest
@@ -214,7 +214,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         
         // Assert - The completion event should be published successfully
         // Note: We can't directly inspect the event in the test, but we verify no errors
-        System.assertEquals(0, mockLogger.errorMessages.size(), 
+        Assert.areEqual(0, mockLogger.errorMessages.size(), 
             'Should not log errors for successful completion with retry count');
     }
     
@@ -249,7 +249,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(updatedJob.State_JSON__c);
-        System.assertEquals(5, ((Decimal) state.get('processedCount')).intValue(),
+        Assert.areEqual(5, ((Decimal) state.get('processedCount')).intValue(),
             'Completion event should carry the reducer delta through to persisted state');
     }
     
@@ -278,7 +278,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert - Should log error or exception about failed retry
-        System.assert(mockLogger.errorMessages.size() > 0 || 
+        Assert.isTrue(mockLogger.errorMessages.size() > 0 || 
                       mockLogger.loggedExceptions.size() > 0 ||
                       mockLogger.exceptionMessages.size() > 0, 
             'Should log error about failed retry with invalid class');
@@ -309,7 +309,7 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Test.stopTest();
         
         // Assert - Should log error about failed cursor reconstruction
-        System.assert(mockLogger.errorMessages.size() > 0, 
+        Assert.isTrue(mockLogger.errorMessages.size() > 0, 
             'Should log error about failed cursor reconstruction');
     }
 }

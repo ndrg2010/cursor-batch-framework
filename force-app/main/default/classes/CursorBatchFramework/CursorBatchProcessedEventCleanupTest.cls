@@ -27,7 +27,7 @@ private without sharing class CursorBatchProcessedEventCleanupTest {
                 Processed_Event_Key__c = jobRecord.Id + '#replay-2'
             )
         };
-        System.assertEquals(2, [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id],
+        Assert.areEqual(2, [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id],
             'Setup: should have 2 processed events');
         
         Test.startTest();
@@ -35,7 +35,7 @@ private without sharing class CursorBatchProcessedEventCleanupTest {
         Test.stopTest();
         
         Integer remaining = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        System.assertEquals(0, remaining, 'Queueable should delete all processed events for the job');
+        Assert.areEqual(0, remaining, 'Queueable should delete all processed events for the job');
     }
     
     @IsTest
@@ -44,6 +44,6 @@ private without sharing class CursorBatchProcessedEventCleanupTest {
         System.enqueueJob(new CursorBatchProcessedEventCleanup(new Set<Id>()));
         Test.stopTest();
         // No exception; empty set is handled
-        System.assert(true, 'Empty job IDs should not throw');
+        Assert.isTrue(true, 'Empty job IDs should not throw');
     }
 }

@@ -163,7 +163,7 @@ private without sharing class CursorJobTest {
         
         // Assert - verify buildQuery() works (config was loaded)
         String query = cursorJob.buildQuery();
-        System.assertEquals(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
             'Should load config and build query');
     }
     
@@ -186,7 +186,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert - constructor should complete without error
-        System.assertNotEquals(null, cursorJob, 'CursorJob should be created');
+        Assert.areNotEqual(null, cursorJob, 'CursorJob should be created');
     }
     
     // ============================================
@@ -211,7 +211,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
             'Should return query from query builder');
     }
     
@@ -226,9 +226,9 @@ private without sharing class CursorJobTest {
         Test.startTest();
         try {
             cursorJob.buildQuery();
-            System.assert(false, 'Should throw exception for missing query builder config');
+            Assert.isTrue(false, 'Should throw exception for missing query builder config');
         } catch (CursorBatchCoordinator.CursorBatchException e) {
-            System.assert(e.getMessage().contains('Query_Builder_Class__c'), 
+            Assert.isTrue(e.getMessage().contains('Query_Builder_Class__c'), 
                 'Exception should mention missing Query_Builder_Class__c');
         }
         Test.stopTest();
@@ -250,9 +250,9 @@ private without sharing class CursorJobTest {
         Test.startTest();
         try {
             cursorJob.buildQuery();
-            System.assert(false, 'Should throw exception for missing class');
+            Assert.isTrue(false, 'Should throw exception for missing class');
         } catch (CursorBatchCoordinator.CursorBatchException e) {
-            System.assert(e.getMessage().contains('not found'), 
+            Assert.isTrue(e.getMessage().contains('not found'), 
                 'Exception should mention class not found');
         }
         Test.stopTest();
@@ -274,9 +274,9 @@ private without sharing class CursorJobTest {
         Test.startTest();
         try {
             cursorJob.buildQuery();
-            System.assert(false, 'Should throw exception when query builder returns null');
+            Assert.isTrue(false, 'Should throw exception when query builder returns null');
         } catch (CursorBatchCoordinator.CursorBatchException e) {
-            System.assert(e.getMessage().contains('returned null'), 
+            Assert.isTrue(e.getMessage().contains('returned null'), 
                 'Exception should mention null return');
         }
         Test.stopTest();
@@ -304,7 +304,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals('CursorJobTest.TestCursorJobWorker', workerClass, 
+        Assert.areEqual('CursorJobTest.TestCursorJobWorker', workerClass, 
             'Should return worker class from config');
     }
     
@@ -328,9 +328,9 @@ private without sharing class CursorJobTest {
         Test.startTest();
         try {
             cursorJob.getWorkerClassName();
-            System.assert(false, 'Should throw exception for missing worker class');
+            Assert.isTrue(false, 'Should throw exception for missing worker class');
         } catch (CursorBatchCoordinator.CursorBatchException e) {
-            System.assert(e.getMessage().contains('Worker_Class__c'), 
+            Assert.isTrue(e.getMessage().contains('Worker_Class__c'), 
                 'Exception should mention missing Worker_Class__c');
         }
         Test.stopTest();
@@ -362,9 +362,9 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.hasInfoContaining('TestOnComplete'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('TestOnComplete'), 
             'Should log job name');
-        System.assert(mockLogger.hasInfoContaining('completed worker fanout'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('completed worker fanout'), 
             'Should log fanout completion');
     }
     
@@ -389,7 +389,7 @@ private without sharing class CursorJobTest {
         
         // Assert - Job should be created
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestStaticRun');
-        System.assertEquals(1, jobs.size(), 'Should create job record');
+        Assert.areEqual(1, jobs.size(), 'Should create job record');
     }
     
     @IsTest
@@ -413,8 +413,8 @@ private without sharing class CursorJobTest {
         
         // Assert
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestStaticRunStateful');
-        System.assertEquals(1, jobs.size(), 'Should create a job record');
-        System.assert(String.isNotBlank(jobs[0].State_JSON__c), 'Should initialize reducer state on submit');
+        Assert.areEqual(1, jobs.size(), 'Should create a job record');
+        Assert.isTrue(String.isNotBlank(jobs[0].State_JSON__c), 'Should initialize reducer state on submit');
     }
     
     // ============================================
@@ -442,9 +442,9 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, workerFinishCalled, 
+        Assert.areEqual(true, workerFinishCalled, 
             'Worker finish() should be called');
-        System.assertEquals(job.Id, workerFinishJobRecord.Id, 
+        Assert.areEqual(job.Id, workerFinishJobRecord.Id, 
             'Should receive job record');
     }
     
@@ -468,7 +468,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.hasErrorContaining('not found'), 
+        Assert.isTrue(mockLogger.hasErrorContaining('not found'), 
             'Should log error for missing class');
     }
     
@@ -510,9 +510,9 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, chainableCallInvoked, 
+        Assert.areEqual(true, chainableCallInvoked, 
             'Chain class should be invoked');
-        System.assertEquals('submitJob', chainableCalledMethod, 
+        Assert.areEqual('submitJob', chainableCalledMethod, 
             'Should call specified method');
     }
     
@@ -551,7 +551,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, workerFinishCalled, 
+        Assert.areEqual(true, workerFinishCalled, 
             'Worker finish() should be called for CursorJob path');
     }
     
@@ -591,9 +591,9 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, CursorBatchTestUtils.testStatefulWorker_finishCalled,
+        Assert.areEqual(true, CursorBatchTestUtils.testStatefulWorker_finishCalled,
             'Stateful worker finish() should be called');
-        System.assertEquals(
+        Assert.areEqual(
             7,
             ((Decimal) CursorBatchTestUtils.testStatefulWorker_lastFinishedState.get('processedCount')).intValue(),
             'finish() should see the reduced final state'
@@ -629,7 +629,7 @@ private without sharing class CursorJobTest {
         
         // Assert - Job should be completed (coordinator finish path)
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(job.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 
+        Assert.areEqual('Completed', updatedJob.Status__c, 
             'Job should be completed via coordinator path');
     }
     
@@ -647,8 +647,8 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, logger, 'Should return a logger');
-        System.assert(logger instanceof CursorBatchLogger, 
+        Assert.areNotEqual(null, logger, 'Should return a logger');
+        Assert.isTrue(logger instanceof CursorBatchLogger, 
             'Should fall back to default CursorBatchLogger');
     }
     
@@ -662,7 +662,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, logger, 'Should return a logger');
+        Assert.areNotEqual(null, logger, 'Should return a logger');
     }
     
     // ============================================
@@ -688,7 +688,7 @@ private without sharing class CursorJobTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
             'Should load config after initializeJobName()');
     }
 }

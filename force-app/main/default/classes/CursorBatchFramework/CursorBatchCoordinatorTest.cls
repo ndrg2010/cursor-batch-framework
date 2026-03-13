@@ -28,7 +28,7 @@ private without sharing class CursorBatchCoordinatorTest {
         // Assert - In test context, the job executes synchronously
         // Verify job was created by checking for job records
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestJob');
-        System.assertEquals(1, jobs.size(), 'Should create one job record');
+        Assert.areEqual(1, jobs.size(), 'Should create one job record');
     }
     
     @IsTest
@@ -48,12 +48,12 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('CustomStatefulTestJob');
-        System.assertEquals(1, jobs.size(), 'Should create one job record');
-        System.assert(String.isNotBlank(jobs[0].State_JSON__c), 'Job should have initial State_JSON__c when config has reducer');
+        Assert.areEqual(1, jobs.size(), 'Should create one job record');
+        Assert.isTrue(String.isNotBlank(jobs[0].State_JSON__c), 'Job should have initial State_JSON__c when config has reducer');
         Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(jobs[0].State_JSON__c);
-        System.assertEquals(0, state.get('processedCount'), 'Initial state should have processedCount 0');
-        System.assertEquals(0, state.get('pagesProcessed'), 'Initial state should have pagesProcessed 0');
-        System.assertEquals('CustomStatefulTestJob', state.get('jobName'), 'Initial state should include job name');
+        Assert.areEqual(0, state.get('processedCount'), 'Initial state should have processedCount 0');
+        Assert.areEqual(0, state.get('pagesProcessed'), 'Initial state should have pagesProcessed 0');
+        Assert.areEqual('CustomStatefulTestJob', state.get('jobName'), 'Initial state should include job name');
     }
     
     @IsTest
@@ -69,7 +69,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - Job should not be enqueued due to duplicate check
-        System.assertEquals(false, coordinator.onCompleteCalled, 
+        Assert.areEqual(false, coordinator.onCompleteCalled, 
             'Job should not execute when duplicate check returns true');
     }
     
@@ -88,13 +88,13 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, coordinator.onCompleteCalled, 
+        Assert.areEqual(true, coordinator.onCompleteCalled, 
             'onComplete should be called after execution');
         
         // Verify job record was updated
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Processing', updatedJob.Status__c, 'Job should be in Processing status');
-        System.assert(updatedJob.Total_Workers__c > 0, 'Should have workers assigned');
+        Assert.areEqual('Processing', updatedJob.Status__c, 'Job should be in Processing status');
+        Assert.isTrue(updatedJob.Total_Workers__c > 0, 'Should have workers assigned');
     }
     
     @IsTest
@@ -114,8 +114,8 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Job should be Completed with 0 records
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 'Job should complete when query returns zero records');
-        System.assertEquals(0, updatedJob.Total_Records__c, 'Total_Records__c should be 0');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete when query returns zero records');
+        Assert.areEqual(0, updatedJob.Total_Records__c, 'Total_Records__c should be 0');
     }
     
     @IsTest
@@ -136,9 +136,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.startTest();
         try {
             coordinator.execute(null);
-            System.assert(false, 'Should throw exception for missing config');
+            Assert.isTrue(false, 'Should throw exception for missing config');
         } catch (CursorBatchCoordinator.CursorBatchException e) {
-            System.assert(e.getMessage().contains('No active config'), 
+            Assert.isTrue(e.getMessage().contains('No active config'), 
                 'Exception should mention missing config');
         }
         Test.stopTest();
@@ -163,9 +163,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.infoMessages.size() > 0, 'Should have logged info messages');
-        System.assert(mockLogger.hasInfoContaining('query'), 'Should log query');
-        System.assert(mockLogger.hasInfoContaining('totalRecords'), 'Should log total records');
+        Assert.isTrue(mockLogger.infoMessages.size() > 0, 'Should have logged info messages');
+        Assert.isTrue(mockLogger.hasInfoContaining('query'), 'Should log query');
+        Assert.isTrue(mockLogger.hasInfoContaining('totalRecords'), 'Should log total records');
     }
     
     @IsTest
@@ -194,7 +194,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, coordinator.onCompleteCalled, 
+        Assert.areEqual(true, coordinator.onCompleteCalled, 
             'Should complete with default values');
     }
     
@@ -211,10 +211,10 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, config, 'Should return config');
-        System.assertEquals('StaticTestJob', config.MasterLabel, 'Should have correct label');
-        System.assertEquals(10, config.Parallel_Count__c, 'Should have correct worker count');
-        System.assertEquals(25, config.Page_Size__c, 'Should have correct page size');
+        Assert.areNotEqual(null, config, 'Should return config');
+        Assert.areEqual('StaticTestJob', config.MasterLabel, 'Should have correct label');
+        Assert.areEqual(10, config.Parallel_Count__c, 'Should have correct worker count');
+        Assert.areEqual(25, config.Page_Size__c, 'Should have correct page size');
     }
     
     @IsTest
@@ -235,9 +235,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, coordinator.finishCalled, 
+        Assert.areEqual(true, coordinator.finishCalled, 
             'finish callback should be invoked');
-        System.assertEquals(jobRecord, coordinator.completedJobRecord, 
+        Assert.areEqual(jobRecord, coordinator.completedJobRecord, 
             'Should receive the job record');
     }
     
@@ -253,7 +253,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 'Should return default test query');
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 'Should return default test query');
     }
     
     @IsTest
@@ -272,7 +272,7 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assert(updatedJob.Total_Workers__c <= 3, 'Should not exceed requested worker count');
+        Assert.isTrue(updatedJob.Total_Workers__c <= 3, 'Should not exceed requested worker count');
     }
     
     @IsTest
@@ -293,14 +293,14 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.startTest();
         try {
             coordinator.execute(null);
-            System.assert(false, 'Should throw exception for invalid query');
+            Assert.isTrue(false, 'Should throw exception for invalid query');
         } catch (Exception e) {
             // Expected
         }
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.exceptionMessages.size() > 0 || 
+        Assert.isTrue(mockLogger.exceptionMessages.size() > 0 || 
                       mockLogger.loggedExceptions.size() > 0, 
             'Should log exception');
     }
@@ -321,8 +321,8 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Verify job record has cursor query ID
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertNotEquals(null, updatedJob.Cursor_Query_Id__c, 'Should have cursor query ID');
-        System.assert(updatedJob.Cursor_Query_Id__c.length() > 0, 'Cursor query ID should not be empty');
+        Assert.areNotEqual(null, updatedJob.Cursor_Query_Id__c, 'Should have cursor query ID');
+        Assert.isTrue(updatedJob.Cursor_Query_Id__c.length() > 0, 'Cursor query ID should not be empty');
     }
     
     @IsTest
@@ -346,9 +346,9 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert
         List<CursorBatch_Job__c> runningJobs = CursorBatchSelector.getRunningJobsByName('DuplicateTestJob');
-        System.assertEquals(1, runningJobs.size(), 
+        Assert.areEqual(1, runningJobs.size(), 
             'Should still have only the original running job record');
-        System.assertEquals(runningJob.Id, runningJobs[0].Id, 
+        Assert.areEqual(runningJob.Id, runningJobs[0].Id, 
             'Job should not execute when running job record exists');
     }
     
@@ -375,7 +375,7 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert
         List<CursorBatch_Job__c> newJobs = CursorBatchSelector.getRunningJobsByName('CompletedTestJob');
-        System.assertEquals(1, newJobs.size(), 
+        Assert.areEqual(1, newJobs.size(), 
             'Job should execute when no running job record exists');
     }
     
@@ -396,7 +396,7 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert
         List<CursorBatch_Job__c> newJobs = CursorBatchSelector.getRunningJobsByName('NewTestJob');
-        System.assertEquals(1, newJobs.size(), 
+        Assert.areEqual(1, newJobs.size(), 
             'Job should execute when no existing jobs');
     }
     
@@ -423,8 +423,8 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Should reuse existing job record
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(existingJob.Id);
-        System.assertEquals('Processing', updatedJob.Status__c, 'Job should be in Processing status');
-        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 'Retry count should be preserved');
+        Assert.areEqual('Processing', updatedJob.Status__c, 'Job should be in Processing status');
+        Assert.areEqual(1, updatedJob.Total_Cursor_Retries__c, 'Retry count should be preserved');
     }
     
     @IsTest
@@ -455,7 +455,7 @@ private without sharing class CursorBatchCoordinatorTest {
             // (In real scenario, the current job would be in AsyncApexJob, but our mock ID
             // doesn't exist in the table, so this just verifies the code path works)
             List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('ExcludeTestJob');
-            System.assertEquals(1, jobs.size(), 'Should create one job record when current job is excluded');
+            Assert.areEqual(1, jobs.size(), 'Should create one job record when current job is excluded');
         } finally {
             // Clean up
             CursorBatchCoordinator.currentAsyncJobId = null;
@@ -472,7 +472,7 @@ private without sharing class CursorBatchCoordinatorTest {
         coordinator.setJobRecordId(jobRecord.Id);
         
         // Verify currentAsyncJobId starts as null
-        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+        Assert.areEqual(null, CursorBatchCoordinator.currentAsyncJobId, 
             'currentAsyncJobId should be null before execute()');
         
         // Act
@@ -481,7 +481,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - currentAsyncJobId should be cleared in finally block
-        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+        Assert.areEqual(null, CursorBatchCoordinator.currentAsyncJobId, 
             'currentAsyncJobId should be null after execute() completes');
     }
     
@@ -505,7 +505,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - currentAsyncJobId should be cleared even after exception
-        System.assertEquals(null, CursorBatchCoordinator.currentAsyncJobId, 
+        Assert.areEqual(null, CursorBatchCoordinator.currentAsyncJobId, 
             'currentAsyncJobId should be null after execute() throws exception');
     }
     
@@ -530,8 +530,8 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - Both should return empty since no real async jobs exist in test context
-        System.assertEquals(0, jobsWithoutExclude.size(), 'Should return empty list without exclude');
-        System.assertEquals(0, jobsWithExclude.size(), 'Should return empty list with exclude');
+        Assert.areEqual(0, jobsWithoutExclude.size(), 'Should return empty list without exclude');
+        Assert.areEqual(0, jobsWithExclude.size(), 'Should return empty list with exclude');
     }
     
     @IsTest
@@ -543,8 +543,8 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(0, jobsNull.size(), 'Should return empty list for null className');
-        System.assertEquals(0, jobsEmpty.size(), 'Should return empty list for empty className');
+        Assert.areEqual(0, jobsNull.size(), 'Should return empty list for null className');
+        Assert.areEqual(0, jobsEmpty.size(), 'Should return empty list for empty className');
     }
     
     @IsTest
@@ -569,7 +569,7 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Should have 2 job records: original + new one (duplicate check skipped)
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('SkipDuplicateTestJob');
-        System.assertEquals(2, jobs.size(), 
+        Assert.areEqual(2, jobs.size(), 
             'Should create second job record when Skip_Duplicate_Check__c is enabled');
     }
     
@@ -595,9 +595,9 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Should still have only 1 job record (duplicate check blocked the new one)
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('NoSkipDuplicateTestJob');
-        System.assertEquals(1, jobs.size(), 
+        Assert.areEqual(1, jobs.size(), 
             'Should not create second job record when Skip_Duplicate_Check__c is disabled');
-        System.assertEquals(runningJob.Id, jobs[0].Id, 
+        Assert.areEqual(runningJob.Id, jobs[0].Id, 
             'Should still be the original job record');
     }
     
@@ -621,9 +621,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert - Should log that duplicate check was skipped
-        System.assert(mockLogger.hasInfoContaining('Skipping duplicate check'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('Skipping duplicate check'), 
             'Should log message about skipping duplicate check');
-        System.assert(mockLogger.hasInfoContaining('Skip_Duplicate_Check__c enabled'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('Skip_Duplicate_Check__c enabled'), 
             'Should mention Skip_Duplicate_Check__c in log message');
     }
     
@@ -649,7 +649,7 @@ private without sharing class CursorBatchCoordinatorTest {
         
         // Assert - Default behavior should block duplicates
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('DefaultSkipTestJob');
-        System.assertEquals(1, jobs.size(), 
+        Assert.areEqual(1, jobs.size(), 
             'Default config should block duplicate jobs (Skip_Duplicate_Check__c defaults to false)');
     }
     
@@ -663,7 +663,7 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'KillTestJob', 5, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
-        System.assertEquals('Processing', jobRecord.Status__c, 'Job should start in Processing status');
+        Assert.areEqual('Processing', jobRecord.Status__c, 'Job should start in Processing status');
         
         // Act
         Test.startTest();
@@ -671,10 +671,10 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, result, 'killJob should return true for running job');
+        Assert.areEqual(true, result, 'killJob should return true for running job');
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
-        System.assertNotEquals(null, updatedJob.Completed_At__c, 'Completed_At should be set');
+        Assert.areEqual('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
+        Assert.areNotEqual(null, updatedJob.Completed_At__c, 'Completed_At should be set');
     }
     
     @IsTest
@@ -688,7 +688,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'killJob should return false for non-existent job');
+        Assert.areEqual(false, result, 'killJob should return false for non-existent job');
     }
     
     @IsTest
@@ -707,9 +707,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'killJob should return false for completed job');
+        Assert.areEqual(false, result, 'killJob should return false for completed job');
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Completed', updatedJob.Status__c, 'Status should remain Completed');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Status should remain Completed');
     }
     
     @IsTest
@@ -728,7 +728,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'killJob should return false for failed job');
+        Assert.areEqual(false, result, 'killJob should return false for failed job');
     }
     
     @IsTest
@@ -747,7 +747,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'killJob should return false for already cancelled job');
+        Assert.areEqual(false, result, 'killJob should return false for already cancelled job');
     }
     
     @IsTest
@@ -763,9 +763,9 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, result, 'killJob should return true for preparing job');
+        Assert.areEqual(true, result, 'killJob should return true for preparing job');
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
+        Assert.areEqual('Cancelled', updatedJob.Status__c, 'Status should be Cancelled');
     }
     
     // ============================================
@@ -787,7 +787,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, result, 'Should return true for cancelled job');
+        Assert.areEqual(true, result, 'Should return true for cancelled job');
     }
     
     @IsTest
@@ -803,7 +803,7 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'Should return false for processing job');
+        Assert.areEqual(false, result, 'Should return false for processing job');
     }
     
     @IsTest
@@ -814,6 +814,6 @@ private without sharing class CursorBatchCoordinatorTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(false, result, 'Should return false for null job ID');
+        Assert.areEqual(false, result, 'Should return false for null job ID');
     }
 }

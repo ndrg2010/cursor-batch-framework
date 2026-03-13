@@ -32,7 +32,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         Test.stopTest();
         
         // Assert
-        System.assertNotEquals(null, finalizer, 'Finalizer should be instantiated');
+        Assert.areNotEqual(null, finalizer, 'Finalizer should be instantiated');
     }
     
     @IsTest
@@ -59,13 +59,13 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         Test.stopTest();
         
         // Assert - No errors should be logged, job unchanged
-        System.assertEquals(0, mockLogger.errorMessages.size(), 
+        Assert.areEqual(0, mockLogger.errorMessages.size(), 
             'Should not log errors for successful execution');
         
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Preparing', updatedJob.Status__c, 
+        Assert.areEqual('Preparing', updatedJob.Status__c, 
             'Status should remain unchanged on success');
-        System.assertEquals(0, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(0, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should remain 0 on success');
     }
     
@@ -100,15 +100,15 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should increment retry count and re-enqueue
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented to 1');
-        System.assertEquals('Preparing', updatedJob.Status__c, 
+        Assert.areEqual('Preparing', updatedJob.Status__c, 
             'Status should remain Preparing for retry');
-        System.assert(updatedJob.Error_Message__c.contains('Retry 1'), 
+        Assert.isTrue(updatedJob.Error_Message__c.contains('Retry 1'), 
             'Error message should indicate retry attempt');
         
         // Verify warn log was emitted
-        System.assert(mockLogger.hasInfoContaining('WARN') && mockLogger.hasInfoContaining('Cursor query failed'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('WARN') && mockLogger.hasInfoContaining('Cursor query failed'), 
             'Should log warning about cursor query failure');
     }
     
@@ -143,17 +143,17 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should mark as Failed
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Failed', updatedJob.Status__c, 
+        Assert.areEqual('Failed', updatedJob.Status__c, 
             'Status should be Failed when max retries exhausted');
-        System.assertEquals(2, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(2, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should not be incremented past max');
-        System.assert(updatedJob.Error_Message__c.contains('Max retries exhausted'), 
+        Assert.isTrue(updatedJob.Error_Message__c.contains('Max retries exhausted'), 
             'Error message should indicate max retries exhausted');
-        System.assertNotEquals(null, updatedJob.Completed_At__c, 
+        Assert.areNotEqual(null, updatedJob.Completed_At__c, 
             'Completed_At should be set');
         
         // Verify finish() callback was invoked
-        System.assert(mockLogger.hasInfoContaining('Invoked finish() callback'), 
+        Assert.isTrue(mockLogger.hasInfoContaining('Invoked finish() callback'), 
             'Should log that finish() callback was invoked');
     }
     
@@ -186,9 +186,9 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should handle null exception gracefully
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented even with null exception');
-        System.assert(updatedJob.Error_Message__c.contains('Unknown error'), 
+        Assert.isTrue(updatedJob.Error_Message__c.contains('Unknown error'), 
             'Error message should indicate unknown error');
     }
     
@@ -217,7 +217,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         Test.stopTest();
         
         // Assert - Should log error about missing job record
-        System.assert(mockLogger.hasErrorContaining('Could not find job record'), 
+        Assert.isTrue(mockLogger.hasErrorContaining('Could not find job record'), 
             'Should log error about missing job record');
     }
     
@@ -252,9 +252,9 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should mark as Failed when coordinator class not found
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Failed', updatedJob.Status__c, 
+        Assert.areEqual('Failed', updatedJob.Status__c, 
             'Status should be Failed when coordinator class not found');
-        System.assert(updatedJob.Error_Message__c.contains('Could not find coordinator class'), 
+        Assert.isTrue(updatedJob.Error_Message__c.contains('Could not find coordinator class'), 
             'Error message should mention coordinator class not found');
     }
     
@@ -286,7 +286,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - No changes on success
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals('Preparing', updatedJob.Status__c, 
+        Assert.areEqual('Preparing', updatedJob.Status__c, 
             'Status should remain Preparing on success');
     }
     
@@ -322,7 +322,7 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should retry
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(1, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(1, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented on failure');
     }
     
@@ -355,9 +355,9 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
         
         // Assert - Should retry (default max is 3, current is 2)
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        System.assertEquals(3, updatedJob.Total_Cursor_Retries__c, 
+        Assert.areEqual(3, updatedJob.Total_Cursor_Retries__c, 
             'Retry count should be incremented using default max retries');
-        System.assertEquals('Preparing', updatedJob.Status__c, 
+        Assert.areEqual('Preparing', updatedJob.Status__c, 
             'Status should remain Preparing (not Failed yet)');
     }
     
