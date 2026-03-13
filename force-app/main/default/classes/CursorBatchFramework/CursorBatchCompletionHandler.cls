@@ -61,6 +61,7 @@ public without sharing class CursorBatchCompletionHandler {
         Set<String> processedInThisBatch = new Set<String>();
         List<CursorBatch_Processed_Event__c> processedEventsToInsert = new List<CursorBatch_Processed_Event__c>();
         
+        // One entry per job Id (no duplicate job records in list).
         List<CursorBatch_Job__c> jobsToUpdate = new List<CursorBatch_Job__c>();
         List<CursorBatch_Job__c> completedJobs = new List<CursorBatch_Job__c>();
         Set<Id> completedStatefulJobIds = new Set<Id>();
@@ -101,7 +102,8 @@ public without sharing class CursorBatchCompletionHandler {
                                 job.State_JSON__c = newStateJson;
                             }
                         } catch (Exception e) {
-                            logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + ', skipping delta', e);
+                            String evtKey = getEventKey(evt);
+                            logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + (String.isNotBlank(evtKey) ? ', eventKey=' + evtKey : '') + ', skipping delta', e);
                         }
                     }
                     // Only count toward Workers_Finished if this is the final page
@@ -187,13 +189,22 @@ public without sharing class CursorBatchCompletionHandler {
         }
         
         // Clean up idempotency records for completed stateful jobs only. In test run inline delete
-        // so tests don't depend on async; otherwise enqueue Queueable to avoid governor/latency in handler.
+        // so tests don't depend on async; otherwise enqueue one Queueable per chunk of 200 job IDs
+        // (CursorBatchProcessedEventCleanup.MAX_JOB_IDS_PER_QUERY) to clean all completed jobs.
         if (!completedStatefulJobIds.isEmpty()) {
             try {
                 if (Test.isRunningTest()) {
                     delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedStatefulJobIds];
                 } else {
-                    System.enqueueJob(new CursorBatchProcessedEventCleanup(completedStatefulJobIds));
+                    List<Id> idList = new List<Id>(completedStatefulJobIds);
+                    Integer chunkSize = 200;
+                    for (Integer i = 0; i < idList.size(); i += chunkSize) {
+                        Set<Id> chunk = new Set<Id>();
+                        for (Integer j = i; j < Math.min(i + chunkSize, idList.size()); j++) {
+                            chunk.add(idList[j]);
+                        }
+                        System.enqueueJob(new CursorBatchProcessedEventCleanup(chunk));
+                    }
                 }
             } catch (Exception e) {
                 logger.logException('CursorBatchCompletionHandler: Failed to clean up processed events for completed jobs', e);
