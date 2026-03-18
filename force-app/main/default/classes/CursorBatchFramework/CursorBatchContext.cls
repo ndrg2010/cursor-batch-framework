@@ -16,6 +16,14 @@ public without sharing class CursorBatchContext {
     public String cursorQueryId { get; private set; }
     public Integer retryCount { get; private set; }
     public Boolean isFinal { get; set; }
+    /** Serialized shared-state delta for the current run only. Set by the framework from buildStateDelta() after successful process(); read by the finalizer and sent on the completion event. Not copied to the next queueable or retry context. */
+    public String stateDeltaJson { get; set; }
+    /**
+     * @description Optional serialized per-worker state carried across pages and retries.
+     *              Not sent on completion events; only on the context passed to the next queueable run.
+     *              Workers may set/read it; format and size are the worker's responsibility.
+     */
+    public String workerState { get; set; }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -53,11 +61,14 @@ public without sharing class CursorBatchContext {
         this.cursorQueryId = cursorQueryId;
         this.retryCount = retryCount != null ? retryCount : 0;
         this.isFinal = false;
+        this.stateDeltaJson = null;
+        this.workerState = null;
     }
     
     /**
-     * @description Creates a shallow copy of this context with all fields duplicated.
-     * @return New CursorBatchContext with identical field values
+     * @description Creates a shallow copy of this context. stateDeltaJson is not copied
+     *              (it is for the current run's completion event only, read by the finalizer).
+     * @return New CursorBatchContext with copied field values
      */
     private CursorBatchContext copy() {
         CursorBatchContext ctx = new CursorBatchContext(
@@ -66,6 +77,8 @@ public without sharing class CursorBatchContext {
             this.cursorQueryId, this.retryCount
         );
         ctx.isFinal = this.isFinal;
+        // stateDeltaJson is for current run only (finalizer publishes it); do not copy
+        ctx.workerState = this.workerState;
         return ctx;
     }
     
@@ -78,6 +91,22 @@ public without sharing class CursorBatchContext {
         CursorBatchContext ctx = copy();
         ctx.startPosition = nextPosition;
         ctx.retryCount = 0;  // Reset retry count for next page
+        return ctx;
+    }
+    
+    /**
+     * @description Creates a copy of this context with an updated start position and per-worker
+     *              state for the next page. Use when enqueueing the next page so the next run
+     *              receives the accumulated worker state.
+     * @param nextPosition New starting position for the next page
+     * @param workerStateForNextPage Serialized per-worker state to carry to the next run (may be null)
+     * @return New CursorBatchContext with updated startPosition, retryCount reset to 0, and workerState set
+     */
+    public CursorBatchContext withNextPosition(Integer nextPosition, String workerStateForNextPage) {
+        CursorBatchContext ctx = copy();
+        ctx.startPosition = nextPosition;
+        ctx.retryCount = 0;  // Reset retry count for next page
+        ctx.workerState = workerStateForNextPage;
         return ctx;
     }
     
@@ -135,6 +164,25 @@ public without sharing class CursorBatchContext {
     public static String getClassName(Object instance) {
         String className = String.valueOf(instance).substringBefore(':');
         return className.replace('$', '.');
+    }
+    
+    /**
+     * @description Extracts the queryId from a Database.Cursor for passing across transactions
+     *              (e.g. to a Queueable). Used with reconstructCursor to recreate the cursor later.
+     * @param cursor The Database.Cursor to extract queryId from
+     * @return The queryId string, or null if cursor is null or queryId cannot be extracted
+     */
+    public static String extractQueryId(Database.Cursor cursor) {
+        if (cursor == null) {
+            return null;
+        }
+        try {
+            String cursorJson = JSON.serialize(cursor);
+            Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
+            return (String) cursorMap.get('queryId');
+        } catch (Exception e) {
+            return null;
+        }
     }
     
     /**

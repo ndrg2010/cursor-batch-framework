@@ -44,7 +44,7 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     public CursorJob(String jobName) {
         super(jobName);
         loadConfig(jobName);
-        setLogger(resolveLogger(config?.Logger_Tag__c));
+        setLogger(CursorBatchLogger.resolveLogger(config?.Logger_Tag__c));
     }
     
     /**
@@ -85,7 +85,7 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     public override void initializeJobName(String jobName) {
         super.initializeJobName(jobName);
         loadConfig(jobName);
-        setLogger(resolveLogger(config?.Logger_Tag__c));
+        setLogger(CursorBatchLogger.resolveLogger(config?.Logger_Tag__c));
     }
     
     /**
@@ -156,29 +156,4 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
         logger.logInfo('[' + jobName + '] completed worker fanout');
     }
     
-    /**
-     * @description Resolves the logger implementation using convention-based discovery.
-     *              Looks for a class named 'CursorBatchLoggerAdapter' that implements ICursorBatchLogger.
-     *              Falls back to CursorBatchLogger (System.debug) if not found.
-     * @param tag Optional tag to apply to log entries
-     * @return ICursorBatchLogger instance
-     */
-    @TestVisible
-    private static ICursorBatchLogger resolveLogger(String tag) {
-        try {
-            Type adapterType = Type.forName('CursorBatchLoggerAdapter');
-            if (adapterType != null) {
-                Object instance = adapterType.newInstance();
-                if (instance instanceof ICursorBatchLogger) {
-                    if (String.isNotBlank(tag) && instance instanceof Callable) {
-                        ((Callable) instance).call('addTag', new Map<String, Object>{ 'tag' => tag });
-                    }
-                    return (ICursorBatchLogger) instance;
-                }
-            }
-        } catch (Exception e) {
-            // Class not found or instantiation failed - use default
-        }
-        return CursorBatchLogger.getDefault();
-    }
 }

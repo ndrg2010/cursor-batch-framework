@@ -33,7 +33,7 @@ private without sharing class CursorBatchWorkerTest {
         
         // Assert - Worker should be initialized
         // If we get here without exception, initialization succeeded
-        System.assertNotEquals(null, worker, 'Worker should be instantiated');
+        Assert.areNotEqual(null, worker, 'Worker should be instantiated');
     }
     
     @IsTest
@@ -59,11 +59,11 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(1, CursorBatchTestUtils.testWorker_processCallCount, 
+        Assert.areEqual(1, CursorBatchTestUtils.testWorker_processCallCount, 
             'Process should be called once');
-        System.assertEquals(10, CursorBatchTestUtils.testWorker_processedRecords.size(), 
+        Assert.areEqual(10, CursorBatchTestUtils.testWorker_processedRecords.size(), 
             'Should process 10 records');
-        System.assertEquals(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
+        Assert.areEqual(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
             'onComplete should be called');
     }
     
@@ -93,9 +93,9 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(0, CursorBatchTestUtils.testWorker_processCallCount, 
+        Assert.areEqual(0, CursorBatchTestUtils.testWorker_processCallCount, 
             'Process should not be called with null cursor');
-        System.assert(mockLogger.hasErrorContaining('no cursor'), 
+        Assert.isTrue(mockLogger.hasErrorContaining('no cursor'), 
             'Should log error about missing cursor');
     }
     
@@ -126,7 +126,7 @@ private without sharing class CursorBatchWorkerTest {
         
         // Assert - Worker will fetch records, but since newPosition (0 + fetched) >= endPosition (0), it completes
         // The coordinator should never create this scenario (start == end), but we test defensive handling
-        System.assertEquals(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
+        Assert.areEqual(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
             'Should complete when start equals end (no work to do)');
     }
     
@@ -154,9 +154,9 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert - In test context, re-enqueue is skipped but processing should occur
-        System.assertEquals(1, CursorBatchTestUtils.testWorker_processCallCount, 
+        Assert.areEqual(1, CursorBatchTestUtils.testWorker_processCallCount, 
             'Process should be called once per execution');
-        System.assertEquals(5, CursorBatchTestUtils.testWorker_processedRecords.size(), 
+        Assert.areEqual(5, CursorBatchTestUtils.testWorker_processedRecords.size(), 
             'Should process page size records');
     }
     
@@ -187,9 +187,109 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert
-        System.assert(mockLogger.infoMessages.size() > 0, 'Should log info messages');
-        System.assert(mockLogger.hasInfoContaining('processing'), 
+        Assert.isTrue(mockLogger.infoMessages.size() > 0, 'Should log info messages');
+        Assert.isTrue(mockLogger.hasInfoContaining('processing'), 
             'Should log processing message');
+    }
+    
+    @IsTest
+    static void testExecuteLoadsSharedStateAndCapturesDelta() {
+        // Arrange
+        CursorBatchTestUtils.resetStatefulWorker();
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        jobRecord.State_JSON__c = '{"processedCount":3,"pagesProcessed":1}';
+        update jobRecord;
+        
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulCursorJobWorker', null, 0
+        );
+        
+        CursorBatchTestUtils.TestStatefulCursorJobWorker worker =
+            new CursorBatchTestUtils.TestStatefulCursorJobWorker();
+        worker.initialize(ctx);
+        
+        // Act
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(
+            3,
+            ((Decimal) CursorBatchTestUtils.testStatefulWorker_lastSeenState.get('processedCount')).intValue(),
+            'Worker should read the latest persisted state snapshot before processing'
+        );
+        Assert.isTrue(String.isNotBlank(ctx.stateDeltaJson), 'Worker should capture a serialized reducer delta');
+    }
+    
+    @IsTest
+    static void testLazyGetCurrentState_statefulWorkerThatNeverReadsStateCompletesSuccessfully() {
+        // Stateful job (reducer configured) but worker never calls getCurrentState() in process().
+        // Verifies lazy load: no SOQL for state read on this page; worker still completes and emits delta.
+        CursorBatchTestUtils.resetStatefulWorker();
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulDeltaOnlyWorker', null, 0
+        );
+        CursorBatchTestUtils.TestStatefulDeltaOnlyWorker worker =
+            new CursorBatchTestUtils.TestStatefulDeltaOnlyWorker();
+        worker.initialize(ctx);
+        
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        
+        Assert.isTrue(CursorBatchTestUtils.testStatefulDeltaOnlyWorker_onCompleteCalled,
+            'Worker that never calls getCurrentState() should still complete and call onComplete()');
+        Assert.isTrue(String.isNotBlank(ctx.stateDeltaJson),
+            'Worker should still emit state delta via buildStateDelta()');
+    }
+    
+    @IsTest
+    static void testStateDeltaExceedsFieldLimitIsDiscardedAndLogged() {
+        // When buildStateDelta() produces a serialized delta longer than STATE_JSON_MAX_LENGTH,
+        // the worker must discard it and log an error so the finalizer does not publish and fail.
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta', null, 0
+        );
+        CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta worker =
+            new CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta();
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        worker.initialize(ctx);
+        worker.setLogger(mockLogger);
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        Assert.areEqual(null, worker.ctx.stateDeltaJson,
+            'Oversized delta must be discarded so finalizer does not publish it');
+        Assert.isTrue(mockLogger.hasErrorContaining('exceeds field limit') || mockLogger.hasErrorContaining('discarding'),
+            'Worker must log error when delta exceeds field limit');
     }
     
     @IsTest
@@ -218,7 +318,7 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
+        Assert.areEqual(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
             'onComplete should be called when work is done');
     }
     
@@ -251,7 +351,7 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert - Should handle gracefully (fetch at last position, then complete)
-        System.assertEquals(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
+        Assert.areEqual(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
             'Should complete when processing last record');
     }
     
@@ -272,9 +372,9 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert
-        System.assertEquals(5, CursorBatchTestUtils.testWorker_processedRecords.size(), 
+        Assert.areEqual(5, CursorBatchTestUtils.testWorker_processedRecords.size(), 
             'Process should add records to static list');
-        System.assertEquals(1, CursorBatchTestUtils.testWorker_processCallCount, 
+        Assert.areEqual(1, CursorBatchTestUtils.testWorker_processCallCount, 
             'Process call count should increment');
     }
     
@@ -310,11 +410,11 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert - Worker should successfully process remaining records
-        System.assertEquals(1, CursorBatchTestUtils.testWorker_processCallCount, 
+        Assert.areEqual(1, CursorBatchTestUtils.testWorker_processCallCount, 
             'Process should be called once');
-        System.assert(CursorBatchTestUtils.testWorker_processedRecords.size() <= 5, 
+        Assert.isTrue(CursorBatchTestUtils.testWorker_processedRecords.size() <= 5, 
             'Should process at most 5 records (remaining in range)');
-        System.assertEquals(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
+        Assert.areEqual(true, CursorBatchTestUtils.testWorker_onCompleteCalled, 
             'onComplete should be called');
     }
     
@@ -338,9 +438,9 @@ private without sharing class CursorBatchWorkerTest {
         Test.startTest();
         try {
             worker.execute(null);
-            System.assert(false, 'Should throw exception');
+            Assert.isTrue(false, 'Should throw exception');
         } catch (Exception e) {
-            System.assert(e.getMessage().contains('Test exception'), 
+            Assert.isTrue(e.getMessage().contains('Test exception'), 
                 'Should throw expected exception');
         }
         Test.stopTest();
@@ -376,8 +476,31 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert - Should log retry scheduling message
-        System.assert(mockLogger.hasInfoContaining('retry') || mockLogger.infoMessages.size() > 0, 
+        Assert.isTrue(mockLogger.hasInfoContaining('retry') || mockLogger.infoMessages.size() > 0, 
             'Should log retry scheduling message');
+    }
+    
+    @IsTest
+    static void testRetryExceptionClearsStaleStateDeltaJson() {
+        // When process() throws CursorBatchRetryException before setting stateDeltaJson, the run
+        // must not publish a stale delta (e.g. from a previous page). Clearing at start of try
+        // ensures finalizer sees stateDeltaJson = null.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0, 5, 5, 0);
+        ctx.stateDeltaJson = '{"processedCount":5}';  // Simulate stale value; finalizer must not publish it on retry
+        CursorBatchTestUtils.TestCursorBatchWorker worker = new CursorBatchTestUtils.TestCursorBatchWorker();
+        worker.shouldThrowRetryException = true;
+        worker.retryExceptionDelay = 1;
+        worker.initialize(ctx);
+        worker.setLogger(new CursorBatchTestUtils.MockCursorBatchLogger());
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        Assert.areEqual(null, worker.ctx.stateDeltaJson,
+            'stateDeltaJson must be null so finalizer does not publish stale delta on retry');
     }
     
     @IsTest
@@ -407,15 +530,15 @@ private without sharing class CursorBatchWorkerTest {
         Test.startTest();
         try {
             worker.execute(null);
-            System.assert(false, 'Should throw exception when max retries exhausted');
+            Assert.isTrue(false, 'Should throw exception when max retries exhausted');
         } catch (CursorBatchRetryException e) {
-            System.assert(e.getMessage().contains('retry'), 
+            Assert.isTrue(e.getMessage().contains('retry'), 
                 'Should throw CursorBatchRetryException');
         }
         Test.stopTest();
         
         // Assert - Should log max retries exhausted message
-        System.assert(mockLogger.hasErrorContaining('max retries') || 
+        Assert.isTrue(mockLogger.hasErrorContaining('max retries') || 
                       mockLogger.errorMessages.size() > 0, 
             'Should log max retries exhausted error');
     }
@@ -448,8 +571,55 @@ private without sharing class CursorBatchWorkerTest {
         Test.stopTest();
         
         // Assert - Should log retry info in processing message
-        System.assert(mockLogger.hasInfoContaining('retry 1') || 
+        Assert.isTrue(mockLogger.hasInfoContaining('retry 1') || 
                       CursorBatchTestUtils.testWorker_processCallCount == 1, 
             'Should process successfully even on retry');
+    }
+    
+    @IsTest
+    static void testBuildSerializedWorkerStateAccumulatesAcrossPages() {
+        // Simulate two page runs: first run processes 5 records and carries state; second run
+        // receives that state and processes 5 more, accumulating to 10.
+        Database.Cursor cursor1 = CursorBatchTestUtils.createTestCursor(10);
+        Database.Cursor cursor2 = CursorBatchTestUtils.createTestCursor(20);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        
+        // Run 1: start 0, end 10, pageSize 5 -> processes 5 records; more pages so buildSerializedWorkerState() is called
+        CursorBatchContext ctx1 = new CursorBatchContext(
+            cursor1, 0, 10, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestWorkerStateAccumulatorWorker', null, 0
+        );
+        CursorBatchTestUtils.TestWorkerStateAccumulatorWorker worker1 =
+            new CursorBatchTestUtils.TestWorkerStateAccumulatorWorker();
+        worker1.initialize(ctx1);
+        
+        Test.startTest();
+        worker1.execute(null);
+        Test.stopTest();
+        
+        String stateAfterRun1 = CursorBatchTestUtils.testWorkerStateAccumulator_lastSerializedState;
+        Assert.isTrue(String.isNotBlank(stateAfterRun1), 'First run should set serialized worker state');
+        Map<String, Object> parsed1 = (Map<String, Object>) JSON.deserializeUntyped(stateAfterRun1);
+        Assert.areEqual(5, parsed1.get('count'), 'First run should accumulate 5 records');
+        
+        // Run 2: context with workerState from run 1; start 5, end 20, pageSize 5 -> processes 5 records, then enqueues next page so buildSerializedWorkerState() is called
+        CursorBatchContext ctx2 = new CursorBatchContext(
+            cursor2, 5, 20, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestWorkerStateAccumulatorWorker', null, 0
+        );
+        ctx2.workerState = stateAfterRun1;
+        CursorBatchTestUtils.TestWorkerStateAccumulatorWorker worker2 =
+            new CursorBatchTestUtils.TestWorkerStateAccumulatorWorker();
+        worker2.initialize(ctx2);
+        
+        // Run 2 without startTest/stopTest (only one startTest per test method allowed)
+        worker2.execute(null);
+        
+        String stateAfterRun2 = CursorBatchTestUtils.testWorkerStateAccumulator_lastSerializedState;
+        Assert.isTrue(String.isNotBlank(stateAfterRun2), 'Second run should set serialized worker state');
+        Map<String, Object> parsed2 = (Map<String, Object>) JSON.deserializeUntyped(stateAfterRun2);
+        Assert.areEqual(10, parsed2.get('count'), 'Second run should accumulate 5+5=10 from carried workerState');
     }
 }

@@ -226,7 +226,7 @@ public without sharing class CursorBatchTestUtils {
      */
     public static CursorBatchContext createTestContext(Id jobRecordId, Integer retryCount) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -259,7 +259,7 @@ public without sharing class CursorBatchTestUtils {
         Integer retryCount
     ) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -313,7 +313,7 @@ public without sharing class CursorBatchTestUtils {
         Integer retryCount
     ) {
         Database.Cursor cursor = createTestCursor();
-        String cursorQueryId = extractQueryId(cursor);
+        String cursorQueryId = CursorBatchContext.extractQueryId(cursor);
         
         return new CursorBatchContext(
             cursor,
@@ -338,18 +338,6 @@ public without sharing class CursorBatchTestUtils {
      *              Used by test coordinators and cursor creation helpers.
      */
     public static final String DEFAULT_TEST_QUERY = 'SELECT Id, Name FROM Account ORDER BY Name';
-    
-    /**
-     * @description Extracts the queryId from a Database.Cursor for testing.
-     *              Used by trigger handler and finalizer tests for cursor reconstruction.
-     * @param cursor The Database.Cursor to extract queryId from
-     * @return The queryId string
-     */
-    public static String extractQueryId(Database.Cursor cursor) {
-        String cursorJson = JSON.serialize(cursor);
-        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
-        return (String) cursorMap.get('queryId');
-    }
     
     /**
      * @description Creates a Database.Cursor for testing using the default Account query.
@@ -520,6 +508,21 @@ public without sharing class CursorBatchTestUtils {
         testWorker_onCompleteCalled = false;
     }
     
+    // Static fields for reducer-state test helpers
+    public static Map<String, Object> testStatefulWorker_lastSeenState = null;
+    public static Map<String, Object> testStatefulWorker_lastFinishedState = null;
+    public static Boolean testStatefulWorker_finishCalled = false;
+    
+    /**
+     * @description Resets static reducer-state tracking between tests.
+     */
+    public static void resetStatefulWorker() {
+        testStatefulWorker_lastSeenState = null;
+        testStatefulWorker_lastFinishedState = null;
+        testStatefulWorker_finishCalled = false;
+        testStatefulDeltaOnlyWorker_onCompleteCalled = false;
+    }
+    
     /**
      * @description Concrete implementation of CursorBatchWorker for testing.
      */
@@ -547,6 +550,161 @@ public without sharing class CursorBatchTestUtils {
         public override void onComplete() {
             super.onComplete();
             testWorker_onCompleteCalled = true;
+        }
+    }
+    
+    /**
+     * @description Test reducer that stores simple aggregate counts in JSON.
+     */
+    public class TestStateReducer implements ICursorBatchStateReducer {
+        
+        public Object createInitialState(CursorBatch_Job__c jobRecord) {
+            return new Map<String, Object>{
+                'processedCount' => 0,
+                'pagesProcessed' => 0,
+                'jobName' => jobRecord != null ? jobRecord.Job_Name__c : null
+            };
+        }
+        
+        public Object reduce(Object currentState, Object delta, CursorBatch_Job__c jobRecord) {
+            Map<String, Object> state = currentState != null
+                ? (Map<String, Object>) currentState
+                : (Map<String, Object>) createInitialState(jobRecord);
+            Map<String, Object> deltaMap = delta != null
+                ? (Map<String, Object>) delta
+                : new Map<String, Object>();
+            
+            Integer processedCount = asInteger(state.get('processedCount')) + asInteger(deltaMap.get('processedCount'));
+            Integer pagesProcessed = asInteger(state.get('pagesProcessed')) + asInteger(deltaMap.get('pagesProcessed'));
+            
+            state.put('processedCount', processedCount);
+            state.put('pagesProcessed', pagesProcessed);
+            state.put('lastWorkerCount', deltaMap.get('processedCount'));
+            return state;
+        }
+        
+        public String serializeState(Object state) {
+            return state != null ? JSON.serialize(state) : null;
+        }
+        
+        public Object deserializeState(String stateJson) {
+            return String.isNotBlank(stateJson) ? JSON.deserializeUntyped(stateJson) : null;
+        }
+        
+        public String serializeDelta(Object delta) {
+            return delta != null ? JSON.serialize(delta) : null;
+        }
+        
+        public Object deserializeDelta(String deltaJson) {
+            return String.isNotBlank(deltaJson) ? JSON.deserializeUntyped(deltaJson) : null;
+        }
+        
+        private Integer asInteger(Object value) {
+            if (value == null) {
+                return 0;
+            }
+            if (value instanceof Integer) {
+                return (Integer) value;
+            }
+            if (value instanceof Decimal) {
+                return ((Decimal) value).intValue();
+            }
+            return Integer.valueOf(String.valueOf(value));
+        }
+    }
+    
+    /**
+     * @description Test worker that reads reducer state snapshots and emits deltas.
+     */
+    public class TestStatefulCursorJobWorker extends CursorBatchWorker {
+        
+        public override void process(List<SObject> records) {
+            testStatefulWorker_lastSeenState = (Map<String, Object>) getCurrentState();
+        }
+        
+        protected override Object buildStateDelta(List<SObject> records) {
+            return new Map<String, Object>{
+                'processedCount' => records != null ? records.size() : 0,
+                'pagesProcessed' => 1
+            };
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            testStatefulWorker_finishCalled = true;
+            testStatefulWorker_lastFinishedState = (Map<String, Object>) getCurrentState();
+        }
+    }
+    
+    /**
+     * @description Test worker for lazy getCurrentState(): stateful (emits deltas) but never
+     *              calls getCurrentState() in process(). Used to verify no SOQL runs when state is not read.
+     */
+    public static Boolean testStatefulDeltaOnlyWorker_onCompleteCalled = false;
+    
+    public class TestStatefulDeltaOnlyWorker extends CursorBatchWorker {
+        public override void process(List<SObject> records) {
+            // Intentionally do not call getCurrentState() - exercises lazy load opt-out
+        }
+        
+        protected override Object buildStateDelta(List<SObject> records) {
+            return new Map<String, Object>{
+                'processedCount' => records != null ? records.size() : 0,
+                'pagesProcessed' => 1
+            };
+        }
+        
+        public override void onComplete() {
+            testStatefulDeltaOnlyWorker_onCompleteCalled = true;
+        }
+    }
+    
+    /**
+     * @description Test worker that returns a delta whose serialized size exceeds STATE_JSON_MAX_LENGTH.
+     *              Used to verify the worker discards oversized deltas and logs an error.
+     */
+    public class TestStatefulWorkerWithOversizedDelta extends CursorBatchWorker {
+        public override void process(List<SObject> records) {
+            // No-op; delta is produced in buildStateDelta
+        }
+        protected override Object buildStateDelta(List<SObject> records) {
+            // Build string so serialized delta exceeds STATE_JSON_MAX_LENGTH (131072).
+            // {"data":"..."} adds 9 chars; we need total > 131072 so data length >= 131064.
+            Integer targetLen = CursorBatchStateManager.STATE_JSON_MAX_LENGTH - 8;
+            String chunk = 'xxxxxxxxxx';
+            String huge = '';
+            for (Integer i = 0; i < (targetLen / chunk.length()) + 1; i++) {
+                huge += chunk;
+            }
+            huge = huge.length() > targetLen ? huge.substring(0, targetLen) : huge;
+            return new Map<String, Object>{ 'data' => huge };
+        }
+    }
+    
+    /** Last value returned by TestWorkerStateAccumulatorWorker.buildSerializedWorkerState() for test assertions. */
+    public static String testWorkerStateAccumulator_lastSerializedState = null;
+    
+    /**
+     * @description Test worker that accumulates per-worker state across pages via ctx.workerState.
+     *              Used to verify buildSerializedWorkerState() and workerState carry-over.
+     */
+    public class TestWorkerStateAccumulatorWorker extends CursorBatchWorker {
+        private Integer recordsProcessedThisWorker = 0;
+        
+        public override void process(List<SObject> records) {
+            if (ctx != null && String.isNotBlank(ctx.workerState)) {
+                Map<String, Object> parsed = (Map<String, Object>) JSON.deserializeUntyped(ctx.workerState);
+                Object prev = parsed.get('count');
+                recordsProcessedThisWorker = prev != null ? Integer.valueOf(prev) : 0;
+            } else {
+                recordsProcessedThisWorker = 0;
+            }
+            recordsProcessedThisWorker += (records != null ? records.size() : 0);
+        }
+        
+        protected override String buildSerializedWorkerState() {
+            String json = JSON.serialize(new Map<String, Object>{ 'count' => recordsProcessedThisWorker });
+            testWorkerStateAccumulator_lastSerializedState = json;
+            return json;
         }
     }
     

@@ -21,7 +21,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         handler.handle(null);
         Test.stopTest();
         
-        System.assert(true, 'Handler should gracefully handle null events list');
+        Assert.isTrue(true, 'Handler should gracefully handle null events list');
     }
     
     @IsTest
@@ -35,7 +35,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         handler.handle(emptyEvents);
         Test.stopTest();
         
-        System.assert(true, 'Handler should gracefully handle empty events list');
+        Assert.isTrue(true, 'Handler should gracefully handle empty events list');
     }
     
     @IsTest
@@ -68,7 +68,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should process the event without throwing
-        System.assert(true, 'Handler should have processed the coordinator event');
+        Assert.isTrue(true, 'Handler should have processed the coordinator event');
     }
     
     @IsTest
@@ -101,7 +101,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should process the event with delay without throwing
-        System.assert(true, 'Handler should have processed the coordinator event with delay');
+        Assert.isTrue(true, 'Handler should have processed the coordinator event with delay');
     }
     
     @IsTest
@@ -135,7 +135,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle empty coordinator class
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should handle empty coordinator class gracefully without throwing exception');
     }
     
@@ -170,7 +170,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle non-existent coordinator class
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should handle non-existent coordinator class gracefully without throwing exception');
     }
     
@@ -205,7 +205,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should gracefully handle coordinator class that doesn't extend CursorBatchCoordinator
-        System.assertEquals(false, exceptionThrown, 
+        Assert.areEqual(false, exceptionThrown, 
             'Handler should handle invalid coordinator class type gracefully without throwing');
     }
     
@@ -240,8 +240,8 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should process all 3 events
-        System.assertEquals(3, events.size(), 'Should have processed 3 events');
-        System.assert(true, 'Handler should have processed all coordinator events');
+        Assert.areEqual(3, events.size(), 'Should have processed 3 events');
+        Assert.isTrue(true, 'Handler should have processed all coordinator events');
     }
     
     @IsTest
@@ -272,10 +272,10 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Verify the events were published successfully and trigger fired
-        System.assertEquals(1, results.size(), 'Should have published 1 event');
-        System.assertEquals(true, results[0].isSuccess(), 'Event should have been published successfully');
+        Assert.areEqual(1, results.size(), 'Should have published 1 event');
+        Assert.areEqual(true, results[0].isSuccess(), 'Event should have been published successfully');
         // The trigger should have fired and processed the event through the handler
-        System.assert(true, 'Trigger should have fired and handler should have processed the coordinator event');
+        Assert.isTrue(true, 'Trigger should have fired and handler should have processed the coordinator event');
     }
     
     @IsTest
@@ -308,6 +308,6 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
         
         // Assert - Handler should process the event without delay (0 treated as no delay)
-        System.assert(true, 'Handler should have processed the coordinator event with zero delay');
+        Assert.isTrue(true, 'Handler should have processed the coordinator event with zero delay');
     }
 }

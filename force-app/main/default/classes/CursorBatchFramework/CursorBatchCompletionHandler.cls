@@ -1,6 +1,8 @@
 /**
  * @description Handles CursorBatch_WorkerComplete__e Platform Events. Updates job tracking
  *              records and invokes coordinator callbacks when all workers have completed.
+ *              Idempotency (processed-event insert, lookup, and cleanup) runs only for jobs
+ *              that have a state reducer configured; non-stateful jobs do not use idempotency tracking.
  * @group CursorBatchFramework
  * @see CursorBatchWorkerFinalizer
  * @see CursorBatchCoordinator
@@ -18,7 +20,14 @@ public without sharing class CursorBatchCompletionHandler {
     
     /**
      * @description Handles worker completion events by updating tracking records and invoking
-     *              callbacks when all workers finish.
+     *              callbacks when all workers finish. Idempotency runs only for stateful jobs
+     *              (insert per event, lookup, delete on completion); non-stateful jobs have no
+     *              processed-event DML or idempotency SOQL.
+     *              Job updates are committed before inserting processed-event records so that
+     *              transient insert failures do not roll back the critical job state. If the
+     *              insert fails, a replayed event may apply the same delta again; reducer
+     *              authors should design for occasional double-application (e.g. idempotent
+     *              or commutative reducers).
      * @param events CursorBatch_WorkerComplete__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_WorkerComplete__e> events) {
@@ -39,8 +48,28 @@ public without sharing class CursorBatchCompletionHandler {
         // Query job records
         Map<Id, CursorBatch_Job__c> jobsMap = CursorBatchSelector.getJobsByIds(eventsByJob.keySet());
         
+        // Idempotency: already-processed (Job, ReplayId) from previous transactions. Only for
+        // stateful jobs (reducer configured) to protect shared state from replay; no insert/cleanup for non-stateful jobs.
+        Set<String> statefulEventKeysInBatch = new Set<String>();
+        for (Id jobId : eventsByJob.keySet()) {
+            CursorBatch_Job__c job = jobsMap.get(jobId);
+            if (job != null && CursorBatchStateManager.getReducer(job.Job_Name__c) != null) {
+                for (CursorBatch_WorkerComplete__e evt : eventsByJob.get(jobId)) {
+                    String key = getEventKey(evt);
+                    if (String.isNotBlank(key)) {
+                        statefulEventKeysInBatch.add(key);
+                    }
+                }
+            }
+        }
+        Set<String> alreadyProcessedKeys = getAlreadyProcessedEventKeys(statefulEventKeysInBatch);
+        Set<String> processedInThisBatch = new Set<String>();
+        List<CursorBatch_Processed_Event__c> processedEventsToInsert = new List<CursorBatch_Processed_Event__c>();
+        
+        // One entry per job Id (no duplicate job records in list).
         List<CursorBatch_Job__c> jobsToUpdate = new List<CursorBatch_Job__c>();
         List<CursorBatch_Job__c> completedJobs = new List<CursorBatch_Job__c>();
+        Set<Id> completedStatefulJobIds = new Set<Id>();
         
         for (Id jobId : eventsByJob.keySet()) {
             CursorBatch_Job__c job = jobsMap.get(jobId);
@@ -48,6 +77,7 @@ public without sharing class CursorBatchCompletionHandler {
                 logger.logError('CursorBatchCompletionHandler: Job not found: ' + jobId);
                 continue;
             }
+            Boolean isStatefulJob = CursorBatchStateManager.getReducer(job.Job_Name__c) != null;
             
             List<CursorBatch_WorkerComplete__e> jobEvents = eventsByJob.get(jobId);
             Integer batchSuccessCount = 0;  // Tracks page/batch completions
@@ -56,6 +86,11 @@ public without sharing class CursorBatchCompletionHandler {
             Integer totalRetries = 0;
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
+                String eventKey = isStatefulJob ? getEventKey(evt) : null;
+                if (String.isNotBlank(eventKey) && (alreadyProcessedKeys.contains(eventKey) || processedInThisBatch.contains(eventKey))) {
+                    continue; // Replay or duplicate in same batch: skip
+                }
+                
                 // Aggregate worker retry counts
                 if (evt.Retry_Count__c != null && evt.Retry_Count__c > 0) {
                     totalRetries += Integer.valueOf(evt.Retry_Count__c);
@@ -63,6 +98,19 @@ public without sharing class CursorBatchCompletionHandler {
                 
                 if (evt.Success__c) {
                     batchSuccessCount++;
+                    if (String.isNotBlank(evt.State_Delta__c)) {
+                        try {
+                            String newStateJson = CursorBatchStateManager.reduceState(job, evt.State_Delta__c);
+                            if (newStateJson != null && newStateJson.length() > CursorBatchStateManager.STATE_JSON_MAX_LENGTH) {
+                                logger.logError('CursorBatchCompletionHandler: State exceeded field limit for job ' + job.Job_Name__c + ', skipping delta');
+                            } else {
+                                job.State_JSON__c = newStateJson;
+                            }
+                        } catch (Exception e) {
+                            String evtKey = getEventKey(evt);
+                            logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + (String.isNotBlank(evtKey) ? ', eventKey=' + evtKey : '') + ', skipping delta', e);
+                        }
+                    }
                     // Only count toward Workers_Finished if this is the final page
                     if (evt.Is_Final__c == true) {
                         workersFinishedCount++;
@@ -75,6 +123,15 @@ public without sharing class CursorBatchCompletionHandler {
                     }
                     logger.logError('CursorBatchCompletionHandler: Worker failed for job ' + 
                         job.Job_Name__c + ': ' + evt.Error_Message__c);
+                }
+                
+                if (String.isNotBlank(eventKey)) {
+                    processedInThisBatch.add(eventKey);
+                    processedEventsToInsert.add(new CursorBatch_Processed_Event__c(
+                        Cursor_Batch_Job__c = jobId,
+                        Replay_Id__c = getReplayIdString(evt),
+                        Processed_Event_Key__c = eventKey
+                    ));
                 }
             }
             
@@ -113,6 +170,9 @@ public without sharing class CursorBatchCompletionHandler {
                     job.Completed_At__c = System.now();
                 }
                 completedJobs.add(job);
+                if (isStatefulJob) {
+                    completedStatefulJobIds.add(job.Id);
+                }
                 logger.logInfo('CursorBatchCompletionHandler: Job ' + job.Job_Name__c + ' completed. ' +
                     'Status: ' + job.Status__c + ', Workers Finished: ' + job.Workers_Finished__c + ', Failed: ' + job.Failed_Workers__c);
             }
@@ -124,6 +184,38 @@ public without sharing class CursorBatchCompletionHandler {
             update jobsToUpdate;
         }
         
+        // Idempotency DML: insert processed-event records (stateful jobs only); wrapped so failure does not roll back job updates
+        if (!processedEventsToInsert.isEmpty()) {
+            try {
+                insert processedEventsToInsert;
+            } catch (Exception e) {
+                logger.logException('CursorBatchCompletionHandler: Failed to record processed events for idempotency', e);
+            }
+        }
+        
+        // Clean up idempotency records for completed stateful jobs only. In test run inline delete
+        // so tests don't depend on async; otherwise enqueue one Queueable per chunk of 200 job IDs
+        // (CursorBatchProcessedEventCleanup.MAX_JOB_IDS_PER_QUERY) to clean all completed jobs.
+        if (!completedStatefulJobIds.isEmpty()) {
+            try {
+                if (Test.isRunningTest()) {
+                    delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedStatefulJobIds];
+                } else {
+                    List<Id> idList = new List<Id>(completedStatefulJobIds);
+                    Integer chunkSize = 200;
+                    for (Integer i = 0; i < idList.size(); i += chunkSize) {
+                        Set<Id> chunk = new Set<Id>();
+                        for (Integer j = i; j < Math.min(i + chunkSize, idList.size()); j++) {
+                            chunk.add(idList[j]);
+                        }
+                        System.enqueueJob(new CursorBatchProcessedEventCleanup(chunk));
+                    }
+                }
+            } catch (Exception e) {
+                logger.logException('CursorBatchCompletionHandler: Failed to clean up processed events for completed jobs', e);
+            }
+        }
+        
         // Invoke callbacks for completed jobs using 4-path finish logic
         // Skip callbacks for cancelled jobs (kill switch activated)
         for (CursorBatch_Job__c job : completedJobs) {
@@ -133,6 +225,39 @@ public without sharing class CursorBatchCompletionHandler {
                 logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
             }
         }
+    }
+    
+    private static String getEventKey(CursorBatch_WorkerComplete__e evt) {
+        Id jobId = evt.Job_Id__c;
+        String replayIdStr = getReplayIdString(evt);
+        if (jobId == null || String.isBlank(replayIdStr)) {
+            return null;
+        }
+        return jobId + '#' + replayIdStr;
+    }
+    
+    private static String getReplayIdString(CursorBatch_WorkerComplete__e evt) {
+        Object replayId = evt.get('ReplayId');
+        return replayId != null ? String.valueOf(replayId) : null;
+    }
+    
+    private static Set<String> getAlreadyProcessedEventKeys(Set<String> eventKeys) {
+        if (eventKeys == null || eventKeys.isEmpty()) {
+            return new Set<String>();
+        }
+        List<String> keyList = new List<String>(eventKeys);
+        List<CursorBatch_Processed_Event__c> existing = [
+            SELECT Processed_Event_Key__c
+            FROM CursorBatch_Processed_Event__c
+            WHERE Processed_Event_Key__c IN :keyList
+        ];
+        Set<String> result = new Set<String>();
+        for (CursorBatch_Processed_Event__c pe : existing) {
+            if (String.isNotBlank(pe.Processed_Event_Key__c)) {
+                result.add(pe.Processed_Event_Key__c);
+            }
+        }
+        return result;
     }
     
     /**

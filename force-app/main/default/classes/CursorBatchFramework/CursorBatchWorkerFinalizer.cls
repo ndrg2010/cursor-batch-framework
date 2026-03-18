@@ -109,7 +109,8 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             Success__c = success,
             Error_Message__c = errorMessage,
             Retry_Count__c = ctx.retryCount,
-            Is_Final__c = isFinal
+            Is_Final__c = isFinal,
+            State_Delta__c = success ? ctx.stateDeltaJson : null
         );
         
         Database.SaveResult result = EventBus.publish(evt);

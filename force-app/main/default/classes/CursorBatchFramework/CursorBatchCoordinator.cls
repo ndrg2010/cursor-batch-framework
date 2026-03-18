@@ -205,7 +205,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
             
             // Extract queryId from cursor for cross-transaction access
-            String cursorQueryId = extractCursorQueryId(dbCursor);
+            String cursorQueryId = CursorBatchContext.extractQueryId(dbCursor);
             logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
             
             // Fan out workers and get accurate counts (calculated during actual worker assignment)
@@ -243,6 +243,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Coordinator_Class__c = CursorBatchContext.getClassName(this),
             Started_At__c = System.now(),
             Query__c = buildQuery(),
+            State_JSON__c = getInitialJobStateJson(),
             Total_Cursor_Retries__c = 0,
             Total_Workers__c = 0,
             Total_Batches__c = 0,
@@ -254,6 +255,30 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         insert job;
         this.jobRecordId = job.Id;
         logger.logInfo('CursorBatchCoordinator created job record in submit: ' + job.Id);
+    }
+    
+    /**
+     * @description Returns the initial shared state JSON for a new job record.
+     *              When the job's CursorBatch_Config__mdt has State_Reducer_Class__c set,
+     *              initial state is created via the configured reducer (for both custom
+     *              coordinators and CursorJob). Override to supply custom initial state.
+     * @return Serialized initial state JSON, or null when no reducer is configured
+     */
+    protected virtual String getInitialJobStateJson() {
+        if (String.isBlank(jobName)) {
+            return null;
+        }
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        if (config == null || String.isBlank(config.State_Reducer_Class__c)) {
+            return null;
+        }
+        // Job is not inserted yet; reducer.createInitialState() will receive a record with no Id.
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
+            Job_Name__c = jobName,
+            Coordinator_Class__c = CursorBatchContext.getClassName(this),
+            Status__c = 'Preparing'
+        );
+        return CursorBatchStateManager.initializeState(jobName, job);
     }
     
     /**
@@ -306,18 +331,6 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         jobRecord.Status__c = 'Processing';
         update jobRecord;
         logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
-    }
-    
-    /**
-     * @description Extracts the queryId from a Database.Cursor for cross-transaction storage.
-     *              The queryId can be used to reconstruct the cursor via JSON deserialization.
-     * @param cursor The Database.Cursor to extract the queryId from
-     * @return The queryId string that uniquely identifies this cursor
-     */
-    private String extractCursorQueryId(Database.Cursor cursor) {
-        String cursorJson = JSON.serialize(cursor);
-        Map<String, Object> cursorMap = (Map<String, Object>) JSON.deserializeUntyped(cursorJson);
-        return (String) cursorMap.get('queryId');
     }
     
     /**

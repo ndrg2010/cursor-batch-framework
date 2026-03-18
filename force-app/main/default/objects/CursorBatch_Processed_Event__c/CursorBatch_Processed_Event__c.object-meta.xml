@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>Stores (Job, ReplayId) for idempotent processing of CursorBatch_WorkerComplete__e events. Cleaned up when the job completes.</description>
+    <label>Cursor Batch Processed Event</label>
+    <nameField>
+        <displayFormat>CBPE-{0000000}</displayFormat>
+        <label>Processed Event Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>Cursor Batch Processed Events</pluralLabel>
+    <sharingModel>ControlledByParent</sharingModel>
+</CustomObject>
