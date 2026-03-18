@@ -11,6 +11,7 @@ private without sharing class CursorJobTest {
     @TestVisible private static Boolean chainableCallInvoked = false;
     @TestVisible private static String chainableCalledMethod = null;
     @TestVisible private static Map<String, Object> chainableCalledArgs = null;
+    @TestVisible private static String coordinatorFinishMetadata = null;
     
     @TestSetup
     static void setup() {
@@ -26,6 +27,7 @@ private without sharing class CursorJobTest {
         chainableCallInvoked = false;
         chainableCalledMethod = null;
         chainableCalledArgs = null;
+        coordinatorFinishMetadata = null;
     }
     
     // ============================================
@@ -79,6 +81,51 @@ private without sharing class CursorJobTest {
             CursorJobTest.chainableCalledMethod = action;
             CursorJobTest.chainableCalledArgs = args;
             return null;
+        }
+    }
+    
+    /**
+     * @description Test coordinator that captures this.metadataJson in finish()
+     *              to verify invokeFinishCallback() restores metadata on the instance.
+     */
+    public class TestMetadataAwareCoordinator extends CursorBatchCoordinator {
+        
+        public TestMetadataAwareCoordinator() {
+            super();
+        }
+        
+        public override String buildQuery() {
+            return CursorBatchTestUtils.DEFAULT_TEST_QUERY;
+        }
+        
+        public override String getWorkerClassName() {
+            return 'CursorJobTest.TestCursorJobWorker';
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            CursorJobTest.coordinatorFinishMetadata = this.metadataJson;
+        }
+    }
+    
+    /**
+     * @description Test implementation of ICursorBatchMetadataQueryBuilder for metadata-aware query building.
+     */
+    public class TestMetadataQueryBuilder implements ICursorBatchMetadataQueryBuilder {
+        public String buildQuery(String methodName, String metadataJson) {
+            switch on methodName {
+                when 'getAccountsByIdQuery' {
+                    if (String.isBlank(metadataJson)) {
+                        return CursorBatchTestUtils.DEFAULT_TEST_QUERY;
+                    }
+                    Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
+                    String accountId = (String) meta.get('accountId');
+                    return 'SELECT Id, Name FROM Account WHERE Id = \'' +
+                           String.escapeSingleQuotes(accountId) + '\'';
+                }
+                when else {
+                    return null;
+                }
+            }
         }
     }
     
@@ -696,5 +743,350 @@ private without sharing class CursorJobTest {
         // Assert
         Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query, 
             'Should load config after initializeJobName()');
+    }
+    
+    // ============================================
+    // Metadata Tests
+    // ============================================
+    
+    @IsTest
+    static void testRunWithMetadataStoresOnJobRecord() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestMetadataRun',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        String metadataJson = '{"accountId":"001000000000001"}';
+        
+        // Act
+        Test.startTest();
+        CursorJob.run('TestMetadataRun', metadataJson);
+        Test.stopTest();
+        
+        // Assert
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestMetadataRun');
+        Assert.areEqual(1, jobs.size(), 'Should create job record');
+        Assert.areEqual(metadataJson, jobs[0].Metadata_JSON__c,
+            'Metadata should be persisted on the job record');
+    }
+    
+    @IsTest
+    static void testRunWithoutMetadataLeavesFieldNull() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestNoMetadata',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        // Act
+        Test.startTest();
+        CursorJob.run('TestNoMetadata');
+        Test.stopTest();
+        
+        // Assert
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestNoMetadata');
+        Assert.areEqual(1, jobs.size(), 'Should create job record');
+        Assert.isNull(jobs[0].Metadata_JSON__c,
+            'Metadata should be null when not provided');
+    }
+    
+    @IsTest
+    static void testRunWithDelayAndMetadata() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestMetadataDelay',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        String metadataJson = '{"recordId":"001000000000002"}';
+        
+        // Act
+        Test.startTest();
+        CursorJob.runWithDelay('TestMetadataDelay', 5, metadataJson);
+        Test.stopTest();
+        
+        // Assert
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestMetadataDelay');
+        Assert.areEqual(1, jobs.size(), 'Should create job record');
+        Assert.areEqual(metadataJson, jobs[0].Metadata_JSON__c,
+            'Metadata should be persisted on delayed job');
+    }
+    
+    @IsTest
+    static void testBuildQueryDispatchesToMetadataInterface() {
+        // Arrange
+        Account testAccount = [SELECT Id FROM Account LIMIT 1];
+        String metadataJson = '{"accountId":"' + testAccount.Id + '"}';
+        
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestMetadataBuilder',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        CursorJob cursorJob = new CursorJob('TestMetadataBuilder', metadataJson);
+        
+        // Act
+        Test.startTest();
+        String query = cursorJob.buildQuery();
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(query.contains(testAccount.Id),
+            'Metadata query builder should incorporate the account ID into the query');
+    }
+    
+    @IsTest
+    static void testBuildQueryFallsBackToNonMetadataInterface() {
+        // Arrange - use the original TestQueryBuilder (implements ICursorBatchQueryBuilder, not metadata version)
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestFallbackBuilder',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        CursorJob cursorJob = new CursorJob('TestFallbackBuilder', '{"someKey":"someValue"}');
+        
+        // Act
+        Test.startTest();
+        String query = cursorJob.buildQuery();
+        Test.stopTest();
+        
+        // Assert - should fall back to ICursorBatchQueryBuilder and still work
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query,
+            'Should fall back to ICursorBatchQueryBuilder when metadata interface not implemented');
+    }
+    
+    @IsTest
+    static void testBuildQueryMetadataBuilderWithNullMetadata() {
+        // Arrange - metadata-aware builder should handle null metadata gracefully
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestNullMetaBuilder',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        CursorJob cursorJob = new CursorJob('TestNullMetaBuilder');
+        
+        // Act
+        Test.startTest();
+        String query = cursorJob.buildQuery();
+        Test.stopTest();
+        
+        // Assert - should return default query when metadata is null
+        Assert.areEqual(CursorBatchTestUtils.DEFAULT_TEST_QUERY, query,
+            'Metadata query builder should handle null metadata gracefully');
+    }
+    
+    @IsTest
+    static void testContextCopyPreservesMetadata() {
+        // Arrange
+        String metadataJson = '{"accountId":"001000000000003"}';
+        CursorBatchContext ctx = new CursorBatchContext(
+            null, 0, 100, 20, 'TestJob', 1, null,
+            'CursorJobTest.TestCursorJobWorker', 'testQueryId', 0, metadataJson
+        );
+        
+        // Act
+        Test.startTest();
+        CursorBatchContext nextCtx = ctx.withNextPosition(20);
+        CursorBatchContext retryCtx = ctx.withRetry(1);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(metadataJson, nextCtx.metadataJson,
+            'withNextPosition() should preserve metadata');
+        Assert.areEqual(metadataJson, retryCtx.metadataJson,
+            'withRetry() should preserve metadata');
+    }
+    
+    @IsTest
+    static void testCustomCoordinatorWithMetadata() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestCoordMeta', 5, 20);
+        String metadataJson = '{"customParam":"value123"}';
+        
+        CursorBatchTestUtils.TestCursorBatchCoordinator coord =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestCoordMeta');
+        coord.setMetadata(metadataJson);
+        
+        // Act
+        Test.startTest();
+        coord.submit();
+        Test.stopTest();
+        
+        // Assert
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestCoordMeta');
+        Assert.areEqual(1, jobs.size(), 'Should create job record');
+        Assert.areEqual(metadataJson, jobs[0].Metadata_JSON__c,
+            'Custom coordinator metadata should be persisted on job record');
+    }
+    
+    // ============================================
+    // setMetadata() Validation Tests
+    // ============================================
+    
+    @IsTest
+    static void testSetMetadataRejectsInvalidJson() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestInvalidMeta', 5, 20);
+        CursorBatchTestUtils.TestCursorBatchCoordinator coord =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestInvalidMeta');
+        
+        // Act & Assert
+        Test.startTest();
+        try {
+            coord.setMetadata('{not valid json}');
+            Assert.isTrue(false, 'Should throw exception for invalid JSON');
+        } catch (CursorBatchCoordinator.CursorBatchException e) {
+            Assert.isTrue(e.getMessage().contains('not valid JSON'),
+                'Exception should indicate invalid JSON: ' + e.getMessage());
+        }
+        Test.stopTest();
+    }
+    
+    @IsTest
+    static void testSetMetadataRejectsOversizedJson() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestOversized', 5, 20);
+        CursorBatchTestUtils.TestCursorBatchCoordinator coord =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestOversized');
+        
+        // Build a valid JSON string exceeding the 131,072 char limit
+        String bigValue = ''.leftPad(CursorBatchCoordinator.METADATA_JSON_MAX_LENGTH, 'x');
+        String oversizedJson = '{"d":"' + bigValue + '"}';
+        
+        // Act & Assert
+        Test.startTest();
+        try {
+            coord.setMetadata(oversizedJson);
+            Assert.isTrue(false, 'Should throw exception for oversized JSON');
+        } catch (CursorBatchCoordinator.CursorBatchException e) {
+            Assert.isTrue(e.getMessage().contains('exceeds maximum length'),
+                'Exception should indicate size limit: ' + e.getMessage());
+        }
+        Test.stopTest();
+    }
+    
+    @IsTest
+    static void testSetMetadataAcceptsNullAndBlank() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestNullMeta', 5, 20);
+        CursorBatchTestUtils.TestCursorBatchCoordinator coord =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestNullMeta');
+        
+        // Act & Assert - none of these should throw
+        Test.startTest();
+        coord.setMetadata(null);
+        coord.setMetadata('');
+        coord.setMetadata('  ');
+        Test.stopTest();
+    }
+    
+    // ============================================
+    // Metadata Propagation Path Tests
+    // ============================================
+    
+    @IsTest
+    static void testMetadataRestoredDuringExecute() {
+        // Arrange - simulate the coordinator PE path where the coordinator is
+        // created via reflection without metadata on the instance
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestMetaRestore',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        String metadataJson = '{"accountId":"001000000000004"}';
+        
+        CursorBatch_Job__c job = new CursorBatch_Job__c(
+            Job_Name__c = 'TestMetaRestore',
+            Status__c = 'Preparing',
+            Coordinator_Class__c = 'CursorJob',
+            Query__c = CursorBatchTestUtils.DEFAULT_TEST_QUERY,
+            Metadata_JSON__c = metadataJson,
+            Started_At__c = System.now(),
+            Total_Cursor_Retries__c = 0,
+            Total_Workers__c = 0,
+            Total_Batches__c = 0,
+            Completed_Batches__c = 0,
+            Workers_Finished__c = 0,
+            Failed_Workers__c = 0,
+            Total_Worker_Retries__c = 0
+        );
+        insert job;
+        
+        CursorJob cursorJob = new CursorJob();
+        cursorJob.initializeJobName('TestMetaRestore');
+        cursorJob.setJobRecordId(job.Id);
+        
+        // Act
+        Test.startTest();
+        cursorJob.execute(null);
+        Test.stopTest();
+        
+        // Assert - job transitions to Processing (metadata was restored and workers fanned out)
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(job.Id);
+        Assert.areEqual('Processing', updatedJob.Status__c,
+            'Job should transition to Processing after execute()');
+        Assert.areEqual(metadataJson, updatedJob.Metadata_JSON__c,
+            'Metadata should be preserved on the job record');
+    }
+    
+    @IsTest
+    static void testWithCursorPreservesMetadata() {
+        // Arrange
+        String metadataJson = '{"key":"value"}';
+        CursorBatchContext ctx = new CursorBatchContext(
+            null, 0, 100, 20, 'TestJob', 1, null,
+            'CursorJobTest.TestCursorJobWorker', 'testQueryId', 0, metadataJson
+        );
+        
+        // Act
+        Test.startTest();
+        CursorBatchContext cursorCtx = ctx.withCursor(null);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(metadataJson, cursorCtx.metadataJson,
+            'withCursor() should preserve metadata');
+    }
+    
+    @IsTest
+    static void testCoordinatorFinishReceivesMetadata() {
+        // Arrange - verify that invokeFinishCallback() restores metadata on the
+        // coordinator instance before calling finish()
+        resetTestState();
+        
+        String metadataJson = '{"finishParam":"xyz"}';
+        CursorBatch_Job__c job = CursorBatchTestUtils.createTestJobRecord(
+            'TestFinishMeta', 1, 'CursorJobTest.TestMetadataAwareCoordinator'
+        );
+        job.Status__c = 'Completed';
+        job.Metadata_JSON__c = metadataJson;
+        update job;
+        
+        // Act
+        Test.startTest();
+        CursorBatchCoordinator.invokeFinishCallback(
+            'CursorJobTest.TestMetadataAwareCoordinator',
+            'TestFinishMeta',
+            job,
+            CursorBatchLogger.getDefault()
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(metadataJson, coordinatorFinishMetadata,
+            'Coordinator finish() should have access to metadata via this.metadataJson');
     }
 }

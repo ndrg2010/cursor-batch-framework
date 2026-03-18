@@ -24,6 +24,8 @@ public without sharing class CursorBatchContext {
      *              Workers may set/read it; format and size are the worker's responsibility.
      */
     public String workerState { get; set; }
+    /** Optional JSON metadata from job invocation. Available to workers via ctx.metadataJson. */
+    public String metadataJson { get; private set; }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -50,6 +52,37 @@ public without sharing class CursorBatchContext {
         String cursorQueryId,
         Integer retryCount
     ) {
+        this(cursor, startPosition, endPosition, pageSize, jobName, workerNum,
+             jobRecordId, workerClassName, cursorQueryId, retryCount, null);
+    }
+    
+    /**
+     * @description Constructs a CursorBatchContext with all parameters including metadata.
+     * @param cursor Database cursor for record fetching
+     * @param startPosition Starting cursor position for this worker
+     * @param endPosition Ending cursor position (exclusive) for this worker
+     * @param pageSize Number of records to fetch per page
+     * @param jobName Job identifier for logging and configuration
+     * @param workerNum Worker number for tracking
+     * @param jobRecordId ID of the CursorBatch_Job__c tracking record
+     * @param workerClassName Fully qualified API name of the worker class
+     * @param cursorQueryId The queryId for cursor reconstruction in finalizers
+     * @param retryCount Current retry attempt count (0 for first attempt)
+     * @param metadataJson Optional JSON metadata from job invocation
+     */
+    public CursorBatchContext(
+        Database.Cursor cursor,
+        Integer startPosition,
+        Integer endPosition,
+        Integer pageSize,
+        String jobName,
+        Integer workerNum,
+        Id jobRecordId,
+        String workerClassName,
+        String cursorQueryId,
+        Integer retryCount,
+        String metadataJson
+    ) {
         this.cursor = cursor;
         this.startPosition = startPosition;
         this.endPosition = endPosition;
@@ -63,6 +96,7 @@ public without sharing class CursorBatchContext {
         this.isFinal = false;
         this.stateDeltaJson = null;
         this.workerState = null;
+        this.metadataJson = metadataJson;
     }
     
     /**
@@ -74,7 +108,7 @@ public without sharing class CursorBatchContext {
         CursorBatchContext ctx = new CursorBatchContext(
             this.cursor, this.startPosition, this.endPosition, this.pageSize,
             this.jobName, this.workerNum, this.jobRecordId, this.workerClassName,
-            this.cursorQueryId, this.retryCount
+            this.cursorQueryId, this.retryCount, this.metadataJson
         );
         ctx.isFinal = this.isFinal;
         // stateDeltaJson is for current run only (finalizer publishes it); do not copy
@@ -151,7 +185,8 @@ public without sharing class CursorBatchContext {
             evt.Job_Record_Id__c,
             evt.Worker_Class__c,
             evt.Cursor_Query_Id__c,
-            retryCount
+            retryCount,
+            evt.Metadata_JSON__c
         );
     }
     

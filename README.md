@@ -40,6 +40,7 @@ Traditional Salesforce batch processing has limitations:
   - [Job Chaining](#job-chaining)
   - [Worker finish() Method](#worker-finish-method)
   - [Reducer-Based Shared State](#reducer-based-shared-state)
+  - [Job Invocation Metadata](#job-invocation-metadata)
   - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
   - [Kill Switch (Cancelling Jobs)](#kill-switch-cancelling-jobs)
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
@@ -217,6 +218,9 @@ CursorJob.run('MyDataProcessingJob');
 
 // Or with a delay (1-10 minutes)
 CursorJob.runWithDelay('MyDataProcessingJob', 5);
+
+// Or with runtime metadata (e.g., a record ID for the query builder or worker)
+CursorJob.run('MyDataProcessingJob', '{"accountId": "001xx0000012345"}');
 ```
 
 **That's it!** No coordinator class needed.
@@ -733,6 +737,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Worker_Processing_Time_Min__c` | Formula | Estimated worker processing time in minutes |
 | `Error_Message__c` | Long Text | Error details if failed |
 | `State_JSON__c` | Long Text | Serialized reducer-managed shared state for stateful `CursorJob` runs |
+| `Metadata_JSON__c` | Long Text | Optional JSON metadata passed at job invocation time (runtime parameters for query builders and workers) |
 | `Started_At__c` | DateTime | Job start time |
 | `Completed_At__c` | DateTime | Job completion time |
 
@@ -964,6 +969,126 @@ public class RecurringSyncCoordinator extends CursorBatchCoordinator {
 | **Stopping condition** | Include logic to stop the chain (e.g., no records, error threshold, time window) |
 | **Duplicate prevention** | The framework's built-in duplicate detection prevents overlapping runs |
 | **Monitoring** | Each cycle creates a new `CursorBatch_Job__c` record for tracking |
+
+### Job Invocation Metadata
+
+Pass runtime parameters (record IDs, flags, contextual data) to jobs at invocation time. Metadata is persisted on the `CursorBatch_Job__c` record and automatically carried to every worker via Platform Events.
+
+#### Invoking with Metadata
+
+```apex
+// Pass metadata as a JSON string
+CursorJob.run('Process Account Children', JSON.serialize(new Map<String, Object>{
+    'accountId' => parentAccountId,
+    'source' => 'nightly-sync'
+}));
+
+// With a delay
+CursorJob.runWithDelay('Sync Records', 5, JSON.serialize(new Map<String, Object>{
+    'batchId' => myBatchId
+}));
+
+// Custom coordinator with metadata
+MyCoordinator coord = new MyCoordinator();
+coord.setMetadata('{"recordId": "001xx0000012345"}');
+coord.submit();
+```
+
+#### Metadata-Aware Query Builders
+
+When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of (or in addition to) `ICursorBatchQueryBuilder`:
+
+```apex
+public class ContactsByAccountSelector implements ICursorBatchMetadataQueryBuilder {
+    
+    public String buildQuery(String methodName, String metadataJson) {
+        // metadataJson can be null — always guard before deserializing
+        if (String.isBlank(metadataJson)) {
+            return null;
+        }
+        Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
+        String accountId = (String) meta.get('accountId');
+        
+        switch on methodName {
+            when 'buildContactsForAccountQuery' {
+                return 'SELECT Id, Name FROM Contact WHERE AccountId = \'' +
+                       String.escapeSingleQuotes(accountId) + '\'';
+            }
+            when else { return null; }
+        }
+    }
+}
+```
+
+The framework automatically detects which interface your query builder implements. Existing `ICursorBatchQueryBuilder` implementations continue to work unchanged — the framework checks for the metadata interface first and falls back automatically.
+
+#### Accessing Metadata in Workers
+
+Workers access metadata via `ctx.metadataJson`. Metadata is automatically preserved across pages and retries:
+
+```apex
+public class MyWorker extends CursorBatchWorker {
+    
+    public override void process(List<SObject> records) {
+        if (String.isNotBlank(ctx.metadataJson)) {
+            Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(ctx.metadataJson);
+            Id targetId = (Id) meta.get('recordId');
+            // Use targetId during processing...
+        }
+        
+        // Process records...
+    }
+}
+```
+
+#### How Metadata Flows
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Metadata Propagation Flow                            │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+  CursorJob.run(name, metadataJson)
+       │
+       ▼
+  ┌──────────────────────┐
+  │ CursorBatch_Job__c   │
+  │ Metadata_JSON__c     │ ← persisted for auditing & coordinator retries
+  └──────────────────────┘
+       │
+       ▼
+  ┌──────────────────────┐
+  │ ICursorBatch         │
+  │ MetadataQueryBuilder │ ← buildQuery(methodName, metadataJson)
+  │ .buildQuery()        │
+  └──────────────────────┘
+       │
+       ▼
+  ┌──────────────────────┐
+  │ CursorBatch_Worker__e│
+  │ Metadata_JSON__c     │ ← carried to workers via Platform Event
+  └──────────────────────┘
+       │
+       ▼
+  ┌──────────────────────┐
+  │ CursorBatchContext   │
+  │ ctx.metadataJson     │ ← available in process(), preserved across retries
+  └──────────────────────┘
+```
+
+| Stage | How Metadata Is Available |
+|-------|---------------------------|
+| **Query Builder** | Passed as the second argument to `buildQuery(methodName, metadataJson)` |
+| **Worker `process()`** | Via `ctx.metadataJson` on the `CursorBatchContext` |
+| **Worker `finish()`** | Via the `CursorBatch_Job__c.Metadata_JSON__c` field on the job record |
+| **Coordinator retries** | Restored from `CursorBatch_Job__c.Metadata_JSON__c` |
+
+#### Backward Compatibility
+
+- Invoking `CursorJob.run('JobName')` without metadata continues to work — metadata is simply `null`
+- Query builders implementing only `ICursorBatchQueryBuilder` are unaffected
+- Workers that don't reference `ctx.metadataJson` are unaffected
+- Custom coordinators that don't call `setMetadata()` behave exactly as before
 
 ### Preventing Duplicate Jobs
 
@@ -1856,6 +1981,7 @@ Chain_To_Method__c: run
 | `CursorBatchLogger` | Default `System.debug` logger implementation |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
+| `ICursorBatchMetadataQueryBuilder` | Interface for query builders that receive runtime metadata JSON (extends query builder pattern with a second argument) |
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
 | `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
@@ -1868,7 +1994,7 @@ Chain_To_Method__c: run
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
 | `CursorBatch_Processed_Event__c` | Custom Object | Idempotency tracking for stateful jobs — stores (Job, ReplayId) pairs to detect replayed Platform Events. Master-Detail to `CursorBatch_Job__c` with cascade delete |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
-| `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
+| `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count, metadata JSON) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state) |
 
 ### New Metadata Fields (v0.11)

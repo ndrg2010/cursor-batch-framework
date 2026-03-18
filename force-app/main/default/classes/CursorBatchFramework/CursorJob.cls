@@ -48,11 +48,31 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     }
     
     /**
+     * @description Constructs a CursorJob with runtime metadata. The metadata JSON is
+     *              persisted on the job record and made available to query builders and workers.
+     * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
+     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     */
+    public CursorJob(String jobName, String metadataJson) {
+        this(jobName);
+        setMetadata(metadataJson);
+    }
+    
+    /**
      * @description Runs the specified job immediately.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      */
     public static void run(String jobName) {
         new CursorJob(jobName).submit();
+    }
+    
+    /**
+     * @description Runs the specified job immediately with runtime metadata.
+     * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
+     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     */
+    public static void run(String jobName, String metadataJson) {
+        new CursorJob(jobName, metadataJson).submit();
     }
     
     /**
@@ -62,6 +82,16 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
      */
     public static void runWithDelay(String jobName, Integer delayMinutes) {
         new CursorJob(jobName).submitWithDelay(delayMinutes);
+    }
+    
+    /**
+     * @description Runs the specified job with a delay and runtime metadata.
+     * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
+     * @param delayMinutes Number of minutes to delay before execution (1-10)
+     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     */
+    public static void runWithDelay(String jobName, Integer delayMinutes, String metadataJson) {
+        new CursorJob(jobName, metadataJson).submitWithDelay(delayMinutes);
     }
     
     /**
@@ -108,14 +138,17 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
             }
             
             Object instance = builderType.newInstance();
-            if (!(instance instanceof ICursorBatchQueryBuilder)) {
+            
+            String query;
+            if (instance instanceof ICursorBatchMetadataQueryBuilder) {
+                query = ((ICursorBatchMetadataQueryBuilder) instance).buildQuery(queryBuilderMethod, metadataJson);
+            } else if (instance instanceof ICursorBatchQueryBuilder) {
+                query = ((ICursorBatchQueryBuilder) instance).buildQuery(queryBuilderMethod);
+            } else {
                 throw new CursorBatchException(
-                    'Query builder class ' + queryBuilderClass + ' must implement ICursorBatchQueryBuilder'
+                    'Query builder class ' + queryBuilderClass + ' must implement ICursorBatchQueryBuilder or ICursorBatchMetadataQueryBuilder'
                 );
             }
-            
-            ICursorBatchQueryBuilder queryBuilder = (ICursorBatchQueryBuilder) instance;
-            String query = queryBuilder.buildQuery(queryBuilderMethod);
             
             if (String.isBlank(query)) {
                 throw new CursorBatchException(

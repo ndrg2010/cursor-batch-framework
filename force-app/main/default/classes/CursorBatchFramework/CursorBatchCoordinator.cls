@@ -18,6 +18,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     private static final Integer DEFAULT_WORKER_COUNT = 50;
     private static final Integer DEFAULT_PAGE_SIZE = 20;
     private static final Integer PE_BATCH_SIZE = 200;
+    @TestVisible
+    private static final Integer METADATA_JSON_MAX_LENGTH = 131072;
     
     // Shared constants for retry logic
     public static final Integer DEFAULT_COORDINATOR_MAX_RETRIES = 3;
@@ -34,6 +36,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     private static Id currentAsyncJobId;
     
     protected String jobName;
+    protected String metadataJson;
     protected ICursorBatchLogger logger;
     
     /**
@@ -86,6 +89,29 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     @TestVisible
     protected void setLogger(ICursorBatchLogger logger) {
         this.logger = logger;
+    }
+    
+    /**
+     * @description Sets optional JSON metadata for this job invocation. The metadata is
+     *              persisted on the CursorBatch_Job__c record and carried to workers via
+     *              platform events. Use for runtime parameters such as record IDs.
+     * @param metadataJson Serialized JSON string of invocation parameters
+     */
+    public void setMetadata(String metadataJson) {
+        if (String.isNotBlank(metadataJson)) {
+            if (metadataJson.length() > METADATA_JSON_MAX_LENGTH) {
+                throw new CursorBatchException(
+                    'Metadata JSON exceeds maximum length of ' + METADATA_JSON_MAX_LENGTH +
+                    ' characters (actual: ' + metadataJson.length() + ')'
+                );
+            }
+            try {
+                JSON.deserializeUntyped(metadataJson);
+            } catch (JSONException e) {
+                throw new CursorBatchException('Metadata JSON is not valid JSON: ' + e.getMessage());
+            }
+        }
+        this.metadataJson = metadataJson;
     }
     
     /**
@@ -154,6 +180,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobRecordId);
             if (jobRecord == null) {
                 throw new CursorBatchException('Job record not found: ' + jobRecordId);
+            }
+            
+            // Restore metadata from job record (needed for retry path and coordinator PE path
+            // where the coordinator instance is created via reflection without metadata)
+            if (String.isBlank(this.metadataJson) && String.isNotBlank(jobRecord.Metadata_JSON__c)) {
+                this.metadataJson = jobRecord.Metadata_JSON__c;
             }
             
             CursorBatch_Config__mdt config = getConfig(jobName);
@@ -244,6 +276,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Started_At__c = System.now(),
             Query__c = buildQuery(),
             State_JSON__c = getInitialJobStateJson(),
+            Metadata_JSON__c = metadataJson,
             Total_Cursor_Retries__c = 0,
             Total_Workers__c = 0,
             Total_Batches__c = 0,
@@ -388,7 +421,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 Page_Size__c = pageSize,
                 Worker_Number__c = workerNum,
                 Job_Record_Id__c = jobRecordId,
-                Worker_Class__c = getWorkerClassName()
+                Worker_Class__c = getWorkerClassName(),
+                Metadata_JSON__c = metadataJson
             ));
         }
         
@@ -643,6 +677,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             
             CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
             coordinator.initializeJobName(jobName);
+            if (String.isNotBlank(jobRecord.Metadata_JSON__c)) {
+                coordinator.setMetadata(jobRecord.Metadata_JSON__c);
+            }
             coordinator.finish(jobRecord);
             
         } catch (Exception e) {

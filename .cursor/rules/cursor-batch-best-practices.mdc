@@ -203,6 +203,72 @@ public class AccountSelector implements ICursorBatchQueryBuilder {
 
 ---
 
+## Job Invocation Metadata
+
+Pass runtime parameters (record IDs, flags, context) to jobs via metadata JSON. The metadata is persisted on the `CursorBatch_Job__c` record and carried to every worker.
+
+```apex
+// ✅ Invoke with metadata
+CursorJob.run('Process Account Children', JSON.serialize(new Map<String, Object>{
+    'accountId' => parentAccountId
+}));
+
+// With delay
+CursorJob.runWithDelay('Sync Records', 5, JSON.serialize(new Map<String, Object>{
+    'batchId' => myBatchId
+}));
+
+// Custom coordinator with metadata
+MyCoordinator coord = new MyCoordinator('Job Name');
+coord.setMetadata('{"recordId": "001xxx"}');
+coord.submit();
+```
+
+### Metadata-Aware Query Builder
+
+When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of `ICursorBatchQueryBuilder`:
+
+```apex
+public class ContactsByAccountSelector implements ICursorBatchMetadataQueryBuilder {
+    public String buildQuery(String methodName, String metadataJson) {
+        if (String.isBlank(metadataJson)) {
+            return null; // metadataJson can be null — always guard before deserializing
+        }
+        Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
+        String accountId = (String) meta.get('accountId');
+
+        switch on methodName {
+            when 'getContactsByAccount' {
+                return 'SELECT Id, Name FROM Contact WHERE AccountId = \'' +
+                       String.escapeSingleQuotes(accountId) + '\'';
+            }
+            when else { return null; }
+        }
+    }
+}
+```
+
+Existing query builders implementing `ICursorBatchQueryBuilder` continue to work unchanged — the framework checks for the metadata interface first and falls back automatically.
+
+### Accessing Metadata in Workers
+
+Workers read metadata from `ctx.metadataJson`:
+
+```apex
+public class MyWorker extends CursorBatchWorker {
+    public override void process(List<SObject> records) {
+        if (String.isNotBlank(ctx.metadataJson)) {
+            Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(ctx.metadataJson);
+            Id targetId = (Id) meta.get('recordId');
+        }
+    }
+}
+```
+
+Metadata is automatically preserved across pages and retries — no extra work needed.
+
+---
+
 ## Parent/Child Pattern (Avoid Record Locks)
 
 When processing child records, query **parents** to avoid `UNABLE_TO_LOCK_ROW`:
