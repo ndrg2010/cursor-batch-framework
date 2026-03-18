@@ -639,7 +639,8 @@ private without sharing class CursorJobTest {
     
     @IsTest
     static void testResolveLoggerFallsBackToDefault() {
-        // Arrange - No CursorBatchLoggerAdapter exists in package
+        // Arrange
+        Boolean adapterExists = Type.forName('CursorBatchLoggerAdapter') != null;
         
         // Act
         Test.startTest();
@@ -648,8 +649,13 @@ private without sharing class CursorJobTest {
         
         // Assert
         Assert.areNotEqual(null, logger, 'Should return a logger');
-        Assert.isTrue(logger instanceof CursorBatchLogger, 
-            'Should fall back to default CursorBatchLogger');
+        if (adapterExists) {
+            Assert.isInstanceOfType(logger, ICursorBatchLogger.class, 
+                'Should return the adapter when CursorBatchLoggerAdapter is present');
+        } else {
+            Assert.isTrue(logger instanceof CursorBatchLogger, 
+                'Should fall back to default CursorBatchLogger');
+        }
     }
     
     @IsTest

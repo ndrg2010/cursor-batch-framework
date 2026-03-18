@@ -24,6 +24,7 @@ Traditional Salesforce batch processing has limitations:
 - 🎛️ **Caller-Controlled Retry** — Throw `CursorBatchRetryException` to explicitly request page retry
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
 - 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
+- 📦 **Reducer-Based Shared State** — Optional shared state across parallel workers with snapshot reads, delta emission, and centralized reduction
 
 ## Table of Contents
 
@@ -1179,6 +1180,46 @@ public class MyStatefulWorker extends CursorBatchWorker {
 - Reducers should be deterministic, preferably idempotent, and commutative (order of delta application must not affect the final result) because event delivery order across batches is not guaranteed
 - If recording the processed event fails after state has been updated, a replayed event may apply the same delta again; design reducers for occasional double-application (e.g. idempotent or commutative)
 - The final reduced state is persisted on `CursorBatch_Job__c.State_JSON__c` and is available to `worker.finish()`
+- State reads are lazy — SOQL only runs when the worker calls `getCurrentState()`, so pages that only emit deltas incur zero read overhead
+- Serialized state and deltas are validated against the 131,072-character field limit; oversized values are discarded with an error log
+- Idempotency tracking (via `CursorBatch_Processed_Event__c`) runs only for stateful jobs; non-stateful jobs have zero overhead
+- Processed event records are cleaned up asynchronously via `CursorBatchProcessedEventCleanup` when a stateful job completes
+
+#### Per-Worker Page-to-Page State
+
+Workers processing multi-page ranges can accumulate local state across pages without reading shared state. Override `buildSerializedWorkerState()` to carry serialized state through `ctx.workerState`:
+
+```apex
+public class MyAccumulatingWorker extends CursorBatchWorker {
+    private Integer recordsProcessedThisWorker = 0;
+    
+    public override void process(List<SObject> records) {
+        // Restore accumulated state from previous page
+        if (ctx != null && String.isNotBlank(ctx.workerState)) {
+            Map<String, Object> prev = (Map<String, Object>) JSON.deserializeUntyped(ctx.workerState);
+            recordsProcessedThisWorker = (Integer) prev.get('count');
+        }
+        recordsProcessedThisWorker += records.size();
+    }
+    
+    protected override String buildSerializedWorkerState() {
+        return JSON.serialize(new Map<String, Object>{ 'count' => recordsProcessedThisWorker });
+    }
+    
+    protected override Object buildStateDelta(List<SObject> records) {
+        // Only flush to shared state on the final page to avoid double-counting
+        if (ctx.isFinal) {
+            return new Map<String, Object>{ 'processedCount' => recordsProcessedThisWorker };
+        }
+        return null;
+    }
+}
+```
+
+**Key points:**
+- `workerState` is carried across pages and retries via the context, not sent on completion events
+- Format and size are the worker's responsibility
+- Use this to accumulate per-worker metrics and flush to shared state once on the final page
 
 #### Custom Duplicate Detection
 
@@ -1817,6 +1858,7 @@ Chain_To_Method__c: run
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
+| `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
 
 ### Custom Objects
 
@@ -1824,11 +1866,12 @@ Chain_To_Method__c: run
 |--------|------|-------------|
 | `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings, CursorJob settings) |
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
+| `CursorBatch_Processed_Event__c` | Custom Object | Idempotency tracking for stateful jobs — stores (Job, ReplayId) pairs to detect replayed Platform Events. Master-Detail to `CursorBatch_Job__c` with cascade delete |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count) |
-| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag for final page tracking) |
+| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state) |
 
-### New Metadata Fields (v0.10)
+### New Metadata Fields (v0.11)
 
 | Field | Type | Description |
 |-------|------|-------------|
