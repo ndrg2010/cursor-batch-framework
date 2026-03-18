@@ -17,7 +17,7 @@
  * @see CursorBatchRetryException
  */
 public abstract without sharing class CursorBatchWorker implements Queueable, Database.AllowsCallouts {
-    
+    @TestVisible
     protected CursorBatchContext ctx;
     protected ICursorBatchLogger logger;
     protected Object currentState;
@@ -85,6 +85,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         }
         
         try {
+            ctx.stateDeltaJson = null;  // Per-page only; set below after successful process()
             if (ctx.cursor == null) {
                 logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
                     ') has no cursor available');
@@ -117,6 +118,10 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
             
             process(scope);
             ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta(scope));
+            if (ctx.stateDeltaJson != null && ctx.stateDeltaJson.length() > CursorBatchStateManager.STATE_JSON_MAX_LENGTH) {
+                logger.logError('CursorBatchWorker: State delta exceeds field limit for job ' + ctx.jobName + ', discarding');
+                ctx.stateDeltaJson = null;
+            }
             
             Integer newPosition = ctx.startPosition + scope.size();
             

@@ -658,6 +658,28 @@ public without sharing class CursorBatchTestUtils {
         }
     }
     
+    /**
+     * @description Test worker that returns a delta whose serialized size exceeds STATE_JSON_MAX_LENGTH.
+     *              Used to verify the worker discards oversized deltas and logs an error.
+     */
+    public class TestStatefulWorkerWithOversizedDelta extends CursorBatchWorker {
+        public override void process(List<SObject> records) {
+            // No-op; delta is produced in buildStateDelta
+        }
+        protected override Object buildStateDelta(List<SObject> records) {
+            // Build string so serialized delta exceeds STATE_JSON_MAX_LENGTH (131072).
+            // {"data":"..."} adds 9 chars; we need total > 131072 so data length >= 131064.
+            Integer targetLen = CursorBatchStateManager.STATE_JSON_MAX_LENGTH - 8;
+            String chunk = 'xxxxxxxxxx';
+            String huge = '';
+            for (Integer i = 0; i < (targetLen / chunk.length()) + 1; i++) {
+                huge += chunk;
+            }
+            huge = huge.length() > targetLen ? huge.substring(0, targetLen) : huge;
+            return new Map<String, Object>{ 'data' => huge };
+        }
+    }
+    
     /** Last value returned by TestWorkerStateAccumulatorWorker.buildSerializedWorkerState() for test assertions. */
     public static String testWorkerStateAccumulator_lastSerializedState = null;
     

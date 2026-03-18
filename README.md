@@ -1176,7 +1176,8 @@ public class MyStatefulWorker extends CursorBatchWorker {
 - Workers read a **snapshot** of `State_JSON__c` at page start; concurrent workers may see slightly stale state
 - Workers do **not** write shared state directly; they emit deltas that are merged later in `CursorBatchCompletionHandler`
 - Deltas are only applied after a page succeeds and its completion event is processed
-- Reducers should be deterministic and preferably idempotent because event delivery or retries can still be retried at the platform level
+- Reducers should be deterministic, preferably idempotent, and commutative (order of delta application must not affect the final result) because event delivery order across batches is not guaranteed
+- If recording the processed event fails after state has been updated, a replayed event may apply the same delta again; design reducers for occasional double-application (e.g. idempotent or commutative)
 - The final reduced state is persisted on `CursorBatch_Job__c.State_JSON__c` and is available to `worker.finish()`
 
 #### Custom Duplicate Detection

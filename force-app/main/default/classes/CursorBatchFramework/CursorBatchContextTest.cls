@@ -93,6 +93,34 @@ private without sharing class CursorBatchContextTest {
     }
     
     @IsTest
+    static void testWithNextPositionDoesNotCopyStateDeltaJson() {
+        // stateDeltaJson is per-page transient; copy() must not carry it to the next page
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatchContext originalCtx = new CursorBatchContext(
+            cursor, 0, 100, 20, 'TestJob', 1, null,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            'TestQueryId', 0
+        );
+        originalCtx.stateDeltaJson = '{"processedCount":5}';
+        CursorBatchContext newCtx = originalCtx.withNextPosition(20);
+        Assert.areEqual(null, newCtx.stateDeltaJson, 'stateDeltaJson must not be copied to next page context');
+    }
+    
+    @IsTest
+    static void testWithRetryDoesNotCopyStateDeltaJson() {
+        // stateDeltaJson is per-page transient; copy() must not carry it on retry context
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatchContext originalCtx = new CursorBatchContext(
+            cursor, 0, 100, 20, 'TestJob', 1, null,
+            'CursorBatchTestUtils.TestCursorBatchWorker',
+            'TestQueryId', 0
+        );
+        originalCtx.stateDeltaJson = '{"processedCount":5}';
+        CursorBatchContext retryCtx = originalCtx.withRetry(1);
+        Assert.areEqual(null, retryCtx.stateDeltaJson, 'stateDeltaJson must not be copied to retry context');
+    }
+    
+    @IsTest
     static void testWithNextPositionAndWorkerState() {
         // Arrange
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();

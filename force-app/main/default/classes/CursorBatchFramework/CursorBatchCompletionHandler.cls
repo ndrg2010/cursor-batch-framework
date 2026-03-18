@@ -23,6 +23,11 @@ public without sharing class CursorBatchCompletionHandler {
      *              callbacks when all workers finish. Idempotency runs only for stateful jobs
      *              (insert per event, lookup, delete on completion); non-stateful jobs have no
      *              processed-event DML or idempotency SOQL.
+     *              Job updates are committed before inserting processed-event records so that
+     *              transient insert failures do not roll back the critical job state. If the
+     *              insert fails, a replayed event may apply the same delta again; reducer
+     *              authors should design for occasional double-application (e.g. idempotent
+     *              or commutative reducers).
      * @param events CursorBatch_WorkerComplete__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_WorkerComplete__e> events) {

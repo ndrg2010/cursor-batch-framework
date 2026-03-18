@@ -66,8 +66,9 @@ public without sharing class CursorBatchContext {
     }
     
     /**
-     * @description Creates a shallow copy of this context with all fields duplicated.
-     * @return New CursorBatchContext with identical field values
+     * @description Creates a shallow copy of this context. stateDeltaJson is not copied
+     *              (per-page transient); all other fields are duplicated.
+     * @return New CursorBatchContext with copied field values
      */
     private CursorBatchContext copy() {
         CursorBatchContext ctx = new CursorBatchContext(
@@ -76,7 +77,7 @@ public without sharing class CursorBatchContext {
             this.cursorQueryId, this.retryCount
         );
         ctx.isFinal = this.isFinal;
-        ctx.stateDeltaJson = this.stateDeltaJson;
+        // stateDeltaJson is per-page transient; do not copy across pages or retries
         ctx.workerState = this.workerState;
         return ctx;
     }

@@ -263,6 +263,36 @@ private without sharing class CursorBatchWorkerTest {
     }
     
     @IsTest
+    static void testStateDeltaExceedsFieldLimitIsDiscardedAndLogged() {
+        // When buildStateDelta() produces a serialized delta longer than STATE_JSON_MAX_LENGTH,
+        // the worker must discard it and log an error so the finalizer does not publish and fail.
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor(5);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorJob'
+        );
+        CursorBatchContext ctx = new CursorBatchContext(
+            cursor, 0, 5, 5, 'TestJob', 1, jobRecord.Id,
+            'CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta', null, 0
+        );
+        CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta worker =
+            new CursorBatchTestUtils.TestStatefulWorkerWithOversizedDelta();
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        worker.initialize(ctx);
+        worker.setLogger(mockLogger);
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        Assert.areEqual(null, worker.ctx.stateDeltaJson,
+            'Oversized delta must be discarded so finalizer does not publish it');
+        Assert.isTrue(mockLogger.hasErrorContaining('exceeds field limit') || mockLogger.hasErrorContaining('discarding'),
+            'Worker must log error when delta exceeds field limit');
+    }
+    
+    @IsTest
     static void testOnCompleteCallback() {
         // Arrange
         CursorBatchTestUtils.resetTestWorker();
@@ -448,6 +478,29 @@ private without sharing class CursorBatchWorkerTest {
         // Assert - Should log retry scheduling message
         Assert.isTrue(mockLogger.hasInfoContaining('retry') || mockLogger.infoMessages.size() > 0, 
             'Should log retry scheduling message');
+    }
+    
+    @IsTest
+    static void testRetryExceptionClearsStaleStateDeltaJson() {
+        // When process() throws CursorBatchRetryException before setting stateDeltaJson, the run
+        // must not publish a stale delta (e.g. from a previous page). Clearing at start of try
+        // ensures finalizer sees stateDeltaJson = null.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0, 5, 5, 0);
+        ctx.stateDeltaJson = '{"processedCount":5}';  // Simulate stale carry-over from previous page
+        CursorBatchTestUtils.TestCursorBatchWorker worker = new CursorBatchTestUtils.TestCursorBatchWorker();
+        worker.shouldThrowRetryException = true;
+        worker.retryExceptionDelay = 1;
+        worker.initialize(ctx);
+        worker.setLogger(new CursorBatchTestUtils.MockCursorBatchLogger());
+        Test.startTest();
+        worker.execute(null);
+        Test.stopTest();
+        Assert.areEqual(null, worker.ctx.stateDeltaJson,
+            'stateDeltaJson must be null so finalizer does not publish stale delta on retry');
     }
     
     @IsTest

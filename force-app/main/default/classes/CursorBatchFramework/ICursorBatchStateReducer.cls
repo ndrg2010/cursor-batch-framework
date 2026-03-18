@@ -1,6 +1,9 @@
 /**
  * @description Interface for reducer-based shared state in metadata-driven CursorJob batches.
  *              Implementations own the state shape, delta shape, and serialization strategy.
+ *              Reducers should be commutative: the order in which deltas are applied must not
+ *              affect the final result, because Platform Event delivery order across batches
+ *              is not guaranteed.
  * @group CursorBatchFramework
  */
 public interface ICursorBatchStateReducer {
@@ -16,6 +19,8 @@ public interface ICursorBatchStateReducer {
     
     /**
      * @description Merges a worker-produced delta into the current shared state.
+     *              Implementations should be commutative so that applying deltas in any
+     *              order yields the same final state.
      * @param currentState The current state object deserialized from the job record
      * @param delta The delta object deserialized from the worker completion event
      * @param jobRecord The job record being updated

@@ -488,6 +488,48 @@ private without sharing class CursorBatchCompletionHandlerTest {
     }
     
     @IsTest
+    static void testHandleMultipleDeltasSameJobInSameBatch() {
+        // Two completion events for the same job in one batch; both deltas must be applied.
+        // Verifies reducer is applied per event and order does not break correctness (commutative).
+        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
+        config.Query_Builder_Class__c = 'CursorJobTest.TestQueryBuilder';
+        config.Worker_Class__c = 'CursorBatchTestUtils.TestStatefulCursorJobWorker';
+        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
+        CursorBatchCoordinator.testConfig = config;
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorJob'
+        );
+        jobRecord.State_JSON__c = '{"processedCount":0,"pagesProcessed":0,"jobName":"TestJob"}';
+        update jobRecord;
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true,
+                State_Delta__c = '{"processedCount":3,"pagesProcessed":1}'
+            ),
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true,
+                State_Delta__c = '{"processedCount":5,"pagesProcessed":1}'
+            )
+        };
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Map<String, Object> state = (Map<String, Object>) JSON.deserializeUntyped(updatedJob.State_JSON__c);
+        Assert.areEqual(8, ((Decimal) state.get('processedCount')).intValue(),
+            'Reducer should apply both deltas (3 + 5 = 8)');
+        Assert.areEqual(2, ((Decimal) state.get('pagesProcessed')).intValue(),
+            'Reducer should apply both page counts (1 + 1 = 2)');
+    }
+    
+    @IsTest
     static void testHandleStateReductionFailureContinuesProcessing() {
         // When reduceState throws (e.g. malformed delta JSON), handler should log, skip the state update,
         // and still apply worker counts and completion status so the job does not get stuck.
