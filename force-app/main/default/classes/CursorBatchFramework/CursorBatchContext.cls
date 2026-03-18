@@ -16,7 +16,7 @@ public without sharing class CursorBatchContext {
     public String cursorQueryId { get; private set; }
     public Integer retryCount { get; private set; }
     public Boolean isFinal { get; set; }
-    /** Serialized shared-state delta sent with the completion event; set by framework from buildStateDelta(). Worker decides when to contribute (per-page, final page only, or not at all). */
+    /** Serialized shared-state delta for the current run only. Set by the framework from buildStateDelta() after successful process(); read by the finalizer and sent on the completion event. Not copied to the next queueable or retry context. */
     public String stateDeltaJson { get; set; }
     /**
      * @description Optional serialized per-worker state carried across pages and retries.
@@ -67,7 +67,7 @@ public without sharing class CursorBatchContext {
     
     /**
      * @description Creates a shallow copy of this context. stateDeltaJson is not copied
-     *              (per-page transient); all other fields are duplicated.
+     *              (it is for the current run's completion event only, read by the finalizer).
      * @return New CursorBatchContext with copied field values
      */
     private CursorBatchContext copy() {
@@ -77,7 +77,7 @@ public without sharing class CursorBatchContext {
             this.cursorQueryId, this.retryCount
         );
         ctx.isFinal = this.isFinal;
-        // stateDeltaJson is per-page transient; do not copy across pages or retries
+        // stateDeltaJson is for current run only (finalizer publishes it); do not copy
         ctx.workerState = this.workerState;
         return ctx;
     }

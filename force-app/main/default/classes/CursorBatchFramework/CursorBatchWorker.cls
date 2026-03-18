@@ -85,7 +85,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         }
         
         try {
-            ctx.stateDeltaJson = null;  // Per-page only; set below after successful process()
+            ctx.stateDeltaJson = null;  // Current run only; set below after successful process(); finalizer reads it for completion event
             if (ctx.cursor == null) {
                 logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
                     ') has no cursor available');

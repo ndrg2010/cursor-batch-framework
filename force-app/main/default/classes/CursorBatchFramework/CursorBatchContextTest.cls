@@ -94,7 +94,7 @@ private without sharing class CursorBatchContextTest {
     
     @IsTest
     static void testWithNextPositionDoesNotCopyStateDeltaJson() {
-        // stateDeltaJson is per-page transient; copy() must not carry it to the next page
+        // stateDeltaJson is for current run's completion event only; copy() must not carry it
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
         CursorBatchContext originalCtx = new CursorBatchContext(
             cursor, 0, 100, 20, 'TestJob', 1, null,
@@ -108,7 +108,7 @@ private without sharing class CursorBatchContextTest {
     
     @IsTest
     static void testWithRetryDoesNotCopyStateDeltaJson() {
-        // stateDeltaJson is per-page transient; copy() must not carry it on retry context
+        // stateDeltaJson is for current run's completion event only; copy() must not carry it on retry
         Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
         CursorBatchContext originalCtx = new CursorBatchContext(
             cursor, 0, 100, 20, 'TestJob', 1, null,

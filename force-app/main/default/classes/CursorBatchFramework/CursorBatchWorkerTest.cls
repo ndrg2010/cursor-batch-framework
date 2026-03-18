@@ -490,7 +490,7 @@ private without sharing class CursorBatchWorkerTest {
             'TestJob', 1, 'TestCoordinator'
         );
         CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0, 5, 5, 0);
-        ctx.stateDeltaJson = '{"processedCount":5}';  // Simulate stale carry-over from previous page
+        ctx.stateDeltaJson = '{"processedCount":5}';  // Simulate stale value; finalizer must not publish it on retry
         CursorBatchTestUtils.TestCursorBatchWorker worker = new CursorBatchTestUtils.TestCursorBatchWorker();
         worker.shouldThrowRetryException = true;
         worker.retryExceptionDelay = 1;
