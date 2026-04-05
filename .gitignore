@@ -62,9 +62,6 @@ manifest/
 package.json
 *.iml
 
-# Cursor skills (private)
-.cursor/skills/
-
 # misc
 deploy_from_sha.txt
 destructiveChanges/

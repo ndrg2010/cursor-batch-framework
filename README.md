@@ -1,6 +1,6 @@
 # CursorBatch Framework
 
-A high-performance parallel batch processing framework for Salesforce that leverages `Database.Cursor`, Platform Events and Queueables to overcome governor limits and achieve massive parallelization. Process SOQL result sets **or CSV files up to 2 GB** with the same coordinator/worker architecture.
+A high-performance parallel batch processing framework for Salesforce that leverages `Database.Cursor`, Platform Events and Queueables to overcome governor limits and achieve massive parallelization.
 
 ## Why CursorBatch?
 
@@ -25,7 +25,6 @@ Traditional Salesforce batch processing has limitations:
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
 - 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
 - 📦 **Reducer-Based Shared State** — Optional shared state across parallel workers with snapshot reads, delta emission, and centralized reduction
-- 📄 **CSV File Processing** — Parse and process CSV files up to 2 GB via an external cursor middleware, using the same parallel worker architecture
 
 ## Table of Contents
 
@@ -47,7 +46,6 @@ Traditional Salesforce batch processing has limitations:
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
   - [Pluggable Logging](#pluggable-logging)
   - [Convention-Based Logger Discovery](#convention-based-logger-discovery)
-  - [CSV File Processing](#csv-file-processing)
 - [Migration Guide](#migration-guide)
 - [Governor Limits & Best Practices](#governor-limits--best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -69,13 +67,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H589AAC) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H589AAC) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000FcHtAAK) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000FcHtAAK) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000H589AAC --target-org your-org --wait 10
+sf package install --package 04tfj000000FcHtAAK --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -1758,118 +1756,6 @@ The framework logs key events at each stage:
 | Errors | ERROR | `CursorBatchCoordinator error for MyJob: INVALID_QUERY...` |
 | Exceptions | ERROR | Full stack trace included via `logException()` |
 
-### CSV File Processing
-
-The framework can process CSV files up to 2 GB by offloading parsing to an external cursor middleware. The middleware indexes the file and exposes a cursor-style API, allowing the same parallel-worker fan-out used for SOQL batches to operate on CSV row ranges.
-
-#### How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                        CSV Processing Flow                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
-
-  Your code calls
-  CsvCursorClient.initSession(contentVersionId)
-       │
-       ▼
-  ┌──────────────────────┐
-  │ Middleware downloads  │
-  │ & indexes CSV file    │
-  │ (async, returns       │
-  │  csvQueryId)          │
-  └──────────────────────┘
-       │
-       ▼  Middleware publishes CursorBatch_Coordinator__e
-  ┌──────────────────────┐
-  │ CSV_Ready (Queueable)│
-  │ Queries middleware    │
-  │ status endpoint       │
-  └──────────────────────┘
-       │
-       ├── status == "ready"  → onReady(status)
-       │     └── status.rowCount, status.headers available
-       │         Fan out workers using row ranges
-       │
-       └── status == "error"  → onError(status)
-             └── status.error.message for diagnostics
-```
-
-#### Prerequisites
-
-1. **Named Credential**: Create a Named Credential called `CSV_Middleware` pointing to your middleware instance. The External Credential must supply the `X-API-Key` header.
-
-2. **Job_Record_Id__c field**: Already extended to 40 characters in this release to hold `csvQueryId` session identifiers.
-
-#### Components
-
-| Class | Description |
-|-------|-------------|
-| `CsvCursorClient` | HTTP client for the middleware — `initSession()`, `getStatus()`, `getRows()`, `getMeta()`, `deleteSession()` |
-| `CSV_Ready` | Platform Event callback handler — receives the PE when the middleware finishes indexing, queries status, invokes `onReady()` / `onError()` hooks |
-
-#### CsvCursorClient API
-
-| Method | Description |
-|--------|-------------|
-| `initSession(contentVersionId)` | Starts a new session; middleware downloads and indexes the file asynchronously. Returns `InitResult` with `csvQueryId` |
-| `getStatus(csvQueryId)` | Polls session status (`preparing`, `ready`, `error`). When `ready`, returns `rowCount`, `headers`, `columnTypes` |
-| `getRows(csvQueryId, start, count)` | Fetches a page of rows (max 2000). Returns `RowResult` with `List<Map<String, Object>>` rows |
-| `getMeta(csvQueryId)` | Retrieves session metadata (headers, types, row count) |
-| `deleteSession(csvQueryId)` | Deletes the session, releasing middleware resources. Call from `finish()` |
-
-#### Implementing a CSV Processor
-
-Subclass `CSV_Ready` and override `onReady()` to fan out workers:
-
-```apex
-public class MyCsvProcessor extends CSV_Ready {
-
-    protected override void onReady(CsvCursorClient.StatusResult status) {
-        Integer rowCount = status.rowCount;
-        Integer pageSize = 2000;
-        Integer workerCount = (Integer) Math.ceil((Decimal) rowCount / pageSize);
-
-        // Create a job record, calculate ranges, publish worker PEs
-        // Workers call CsvCursorClient.getRows(csvQueryId, start, count)
-    }
-
-    protected override void onError(CsvCursorClient.StatusResult status) {
-        // Handle error — log, notify, update tracking record
-    }
-}
-```
-
-Workers fetch rows using the client:
-
-```apex
-public class MyCsvWorker extends CursorBatchWorker {
-
-    public override void process(List<SObject> records) {
-        // For CSV workers, use CsvCursorClient instead of cursor fetch
-        String csvQueryId = ctx.metadataJson; // or however you pass it
-        CsvCursorClient.RowResult page = CsvCursorClient.getRows(csvQueryId, startRow, pageSize);
-
-        for (Map<String, Object> row : page.rows) {
-            String name = (String) row.get('Name');
-            String amount = (String) row.get('Amount');
-            // Process each row...
-        }
-    }
-}
-```
-
-#### Trigger Handler Routing
-
-The `CursorBatchCoordinatorTriggerHandler` now supports two routing flows via the same `CursorBatch_Coordinator__e` Platform Event:
-
-| PE Class Type | Routing |
-|---------------|---------|
-| Extends `CursorBatchCoordinator` | Standard path — `initializeJobName()`, `setJobRecordId()`, enqueue with optional delay |
-| Implements `Queueable` (+ optionally `Callable`) | Callback path — PE fields passed via `Callable.call()`, enqueued immediately |
-
-`CSV_Ready` uses the callback path: the middleware publishes the PE with `Job_Record_Id__c = csvQueryId` and `Coordinator_Class__c = 'CSV_Ready'`, and the trigger handler routes it accordingly.
-
 ## Migration Guide
 
 ### Migrating from Custom Coordinators to CursorJob
@@ -2084,7 +1970,7 @@ Chain_To_Method__c: run
 | `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code |
 | `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
-| `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that routes coordinator and callback handler Queueables from `CursorBatch_Coordinator__e` events |
+| `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that enqueues coordinator Queueable from submit() |
 | `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages. Includes `finish()` virtual method for completion logic |
 | `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
 | `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
@@ -2099,8 +1985,6 @@ Chain_To_Method__c: run
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
 | `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
-| `CsvCursorClient` | HTTP client for the CSV cursor middleware — session init, status polling, row fetching, metadata, and session cleanup |
-| `CSV_Ready` | Platform Event callback handler for CSV middleware — receives readiness notification, queries status, invokes `onReady()`/`onError()` hooks for subclass processing |
 
 ### Custom Objects
 

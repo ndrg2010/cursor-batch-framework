@@ -186,7 +186,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
             new CursorBatch_Coordinator__e(
                 Job_Name__c = 'TestJob',
-                Coordinator_Class__c = 'String',  // String class exists but doesn't extend CursorBatchCoordinator or implement Queueable
+                Coordinator_Class__c = 'String',  // String class exists but doesn't extend CursorBatchCoordinator
                 Job_Record_Id__c = jobRecord.Id,
                 Delay_Minutes__c = null
             )
@@ -204,8 +204,9 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         }
         Test.stopTest();
         
+        // Assert - Handler should gracefully handle coordinator class that doesn't extend CursorBatchCoordinator
         Assert.areEqual(false, exceptionThrown, 
-            'Handler should handle invalid class type gracefully without throwing');
+            'Handler should handle invalid coordinator class type gracefully without throwing');
     }
     
     @IsTest
@@ -275,35 +276,6 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Assert.areEqual(true, results[0].isSuccess(), 'Event should have been published successfully');
         // The trigger should have fired and processed the event through the handler
         Assert.isTrue(true, 'Trigger should have fired and handler should have processed the coordinator event');
-    }
-    
-    @IsTest
-    static void testHandleWithCallbackHandler() {
-        // Arrange - CSV_Ready is a Queueable + Callable, not a CursorBatchCoordinator.
-        // The trigger handler should route it through the callback path.
-        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
-            new CursorBatch_Coordinator__e(
-                Job_Name__c = '068XXXXXXXXXXXX',
-                Coordinator_Class__c = 'CSV_Ready',
-                Job_Record_Id__c = 'cq_a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4',
-                Delay_Minutes__c = null
-            )
-        };
-        
-        CursorBatchCoordinatorTriggerHandler handler = new CursorBatchCoordinatorTriggerHandler();
-        
-        // Act - Should not throw; handler routes to callback path instead of coordinator path
-        Boolean exceptionThrown = false;
-        Test.startTest();
-        try {
-            handler.handle(events);
-        } catch (Exception e) {
-            exceptionThrown = true;
-        }
-        Test.stopTest();
-        
-        Assert.areEqual(false, exceptionThrown,
-            'Handler should route CSV_Ready through callback path without throwing');
     }
     
     @IsTest

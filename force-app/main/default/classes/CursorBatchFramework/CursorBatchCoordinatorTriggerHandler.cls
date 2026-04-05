@@ -33,52 +33,29 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
     }
     
     /**
-     * @description Processes a single event by instantiating and enqueueing a handler.
-     *              Supports two flows:
-     *              1. Standard coordinators (extends CursorBatchCoordinator) -- initialized
-     *                 with job name and record ID, then enqueued with optional delay.
-     *              2. External callback handlers (implements Queueable but not a coordinator)
-     *                 -- PE fields passed via Callable interface, then enqueued immediately.
-     *                 Used by CSV_Ready for middleware Platform Event callbacks.
-     * @param evt CursorBatch_Coordinator__e event containing handler parameters
+     * @description Processes a single event by instantiating and enqueueing a coordinator.
+     * @param evt CursorBatch_Coordinator__e event containing coordinator parameters
      */
     private void processEvent(CursorBatch_Coordinator__e evt) {
         try {
-            String handlerClassName = evt.Coordinator_Class__c;
+            String coordinatorClassName = evt.Coordinator_Class__c;
             
-            if (String.isBlank(handlerClassName)) {
+            if (String.isBlank(coordinatorClassName)) {
                 logger.logError('CursorBatchCoordinatorTriggerHandler: Coordinator class name not specified for job "' + evt.Job_Name__c + '"');
                 return;
             }
             
-            Type handlerType = Type.forName(handlerClassName);
-            if (handlerType == null) {
-                logger.logError('CursorBatchCoordinatorTriggerHandler: Class not found: ' + handlerClassName);
+            CursorBatchCoordinator coordinator = createCoordinatorInstance(
+                coordinatorClassName, 
+                evt.Job_Name__c, 
+                evt.Job_Record_Id__c
+            );
+            
+            if (coordinator == null) {
                 return;
             }
             
-            Object instance = handlerType.newInstance();
-            
-            if (instance instanceof CursorBatchCoordinator) {
-                CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
-                coordinator.initializeJobName(evt.Job_Name__c);
-                coordinator.setJobRecordId(Id.valueOf(evt.Job_Record_Id__c));
-                enqueueCoordinator(coordinator, evt);
-            } else if (instance instanceof Queueable) {
-                if (instance instanceof Callable) {
-                    ((Callable) instance).call('handlePlatformEvent', new Map<String, Object>{
-                        'Job_Record_Id__c' => evt.Job_Record_Id__c,
-                        'Job_Name__c' => evt.Job_Name__c,
-                        'Coordinator_Class__c' => evt.Coordinator_Class__c
-                    });
-                }
-                enqueueCallbackHandler((Queueable) instance, handlerClassName);
-            } else {
-                logger.logError(
-                    'CursorBatchCoordinatorTriggerHandler: Class "' + handlerClassName +
-                    '" must extend CursorBatchCoordinator or implement Queueable'
-                );
-            }
+            enqueueCoordinator(coordinator, evt);
             
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinatorTriggerHandler: Error processing event for job "' + evt.Job_Name__c + '"', e);
@@ -86,15 +63,30 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
     }
     
     /**
-     * @description Enqueues an external callback handler (non-coordinator Queueable).
-     * @param handler Queueable instance with PE data already set via Callable
-     * @param className Class name for logging
+     * @description Creates a coordinator instance via reflection and initializes it with job context.
+     * @param className Fully qualified API name of the coordinator class
+     * @param jobName Job name for initialization
+     * @param jobRecordId ID of the pre-created job record
+     * @return Initialized CursorBatchCoordinator instance, or null on error
      */
-    private void enqueueCallbackHandler(Queueable handler, String className) {
-        if (!Test.isRunningTest()) {
-            System.enqueueJob(handler);
-            logger.logInfo('CursorBatchCoordinatorTriggerHandler: Enqueued callback handler ' + className);
+    private CursorBatchCoordinator createCoordinatorInstance(String className, String jobName, String jobRecordId) {
+        Type coordinatorType = Type.forName(className);
+        if (coordinatorType == null) {
+            logger.logError('CursorBatchCoordinatorTriggerHandler: Coordinator class not found: ' + className);
+            return null;
         }
+        
+        Object instance = coordinatorType.newInstance();
+        if (!(instance instanceof CursorBatchCoordinator)) {
+            logger.logError('CursorBatchCoordinatorTriggerHandler: Class "' + className + '" must extend CursorBatchCoordinator');
+            return null;
+        }
+        
+        CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
+        coordinator.initializeJobName(jobName);
+        coordinator.setJobRecordId(Id.valueOf(jobRecordId));
+        
+        return coordinator;
     }
     
     /**
