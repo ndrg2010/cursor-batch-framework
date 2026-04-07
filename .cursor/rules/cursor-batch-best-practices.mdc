@@ -208,17 +208,17 @@ public class AccountSelector implements ICursorBatchQueryBuilder {
 Pass runtime parameters (record IDs, flags, context) to jobs via metadata JSON. The metadata is persisted on the `CursorBatch_Job__c` record and carried to every worker.
 
 ```apex
-// ✅ Invoke with metadata
-CursorJob.run('Process Account Children', JSON.serialize(new Map<String, Object>{
+// ✅ Invoke with metadata — serialized to JSON internally
+CursorJob.run('Process Account Children', new Map<String, Object>{
     'accountId' => parentAccountId
-}));
+});
 
 // With delay
-CursorJob.runWithDelay('Sync Records', 5, JSON.serialize(new Map<String, Object>{
+CursorJob.runWithDelay('Sync Records', 5, new Map<String, Object>{
     'batchId' => myBatchId
-}));
+});
 
-// Custom coordinator with metadata
+// Custom coordinator with metadata (setMetadata accepts a JSON string)
 MyCoordinator coord = new MyCoordinator('Job Name');
 coord.setMetadata('{"recordId": "001xxx"}');
 coord.submit();
@@ -226,19 +226,18 @@ coord.submit();
 
 ### Metadata-Aware Query Builder
 
-When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of `ICursorBatchQueryBuilder`:
+When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of `ICursorBatchQueryBuilder`. The framework deserializes the metadata JSON once and passes a ready-to-use `Map<String, Object>` (empty map when no metadata, never null):
 
 ```apex
 public class ContactsByAccountSelector implements ICursorBatchMetadataQueryBuilder {
-    public String buildQuery(String methodName, String metadataJson) {
-        if (String.isBlank(metadataJson)) {
-            return null; // metadataJson can be null — always guard before deserializing
-        }
-        Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
-        String accountId = (String) meta.get('accountId');
+    public String buildQuery(String methodName, Map<String, Object> metadata) {
+        String accountId = (String) metadata.get('accountId');
 
         switch on methodName {
             when 'getContactsByAccount' {
+                if (String.isBlank(accountId)) {
+                    return null;
+                }
                 return 'SELECT Id, Name FROM Contact WHERE AccountId = \'' +
                        String.escapeSingleQuotes(accountId) + '\'';
             }

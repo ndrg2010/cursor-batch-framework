@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.21",
-      "versionNumber": "0.21.0.NEXT",
+      "versionName": "ver 0.22",
+      "versionNumber": "0.22.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "CSV file processing, built-in counter reducer, metadata query builders, cleaner buildStateDelta API",
+      "versionDescription": "Map-based metadata API: CursorJob.run() and ICursorBatchMetadataQueryBuilder now accept Map<String, Object> instead of raw JSON strings",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -40,7 +40,8 @@
     "CursorBatchFramework@0.14.0-1": "04tfj000000EfEbAAK",
     "CursorBatchFramework@0.15.0-1": "04tfj000000FcGHAA0",
     "CursorBatchFramework@0.15.0-2": "04tfj000000FcHtAAK",
-    "CursorBatchFramework@0.21.0-1": "04tfj000000H9wXAAS"
+    "CursorBatchFramework@0.21.0-1": "04tfj000000H9wXAAS",
+    "CursorBatchFramework@0.22.0-1": "04tfj000000HBFBAA4"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

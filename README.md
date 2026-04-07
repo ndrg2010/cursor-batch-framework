@@ -69,13 +69,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H9wXAAS) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H9wXAAS) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HBFBAA4) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HBFBAA4) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000H9wXAAS --target-org your-org --wait 10
+sf package install --package 04tfj000000HBFBAA4 --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -223,7 +223,9 @@ CursorJob.run('MyDataProcessingJob');
 CursorJob.runWithDelay('MyDataProcessingJob', 5);
 
 // Or with runtime metadata (e.g., a record ID for the query builder or worker)
-CursorJob.run('MyDataProcessingJob', '{"accountId": "001xx0000012345"}');
+CursorJob.run('MyDataProcessingJob', new Map<String, Object>{
+    'accountId' => '001xx0000012345'
+});
 ```
 
 **That's it!** No coordinator class needed.
@@ -409,7 +411,9 @@ Update the Named Credential URL to point at your middleware instance.
 #### 4. Run
 
 ```apex
-CursorJob.run('Lead CSV Import', '{"contentVersionId": "068xx..."}');
+CursorJob.run('Lead CSV Import', new Map<String, Object>{
+    'contentVersionId' => '068xx...'
+});
 ```
 
 The `contentVersionId` is the Salesforce `ContentVersion` ID of the uploaded CSV file. The framework handles everything else: middleware session init, callback, fan-out, parallel processing, retry, completion, and chaining.
@@ -1043,18 +1047,18 @@ Pass runtime parameters (record IDs, flags, contextual data) to jobs at invocati
 #### Invoking with Metadata
 
 ```apex
-// Pass metadata as a JSON string
-CursorJob.run('Process Account Children', JSON.serialize(new Map<String, Object>{
+// Pass metadata as a map — serialized to JSON internally
+CursorJob.run('Process Account Children', new Map<String, Object>{
     'accountId' => parentAccountId,
     'source' => 'nightly-sync'
-}));
+});
 
 // With a delay
-CursorJob.runWithDelay('Sync Records', 5, JSON.serialize(new Map<String, Object>{
+CursorJob.runWithDelay('Sync Records', 5, new Map<String, Object>{
     'batchId' => myBatchId
-}));
+});
 
-// Custom coordinator with metadata
+// Custom coordinator with metadata (setMetadata accepts a JSON string)
 MyCoordinator coord = new MyCoordinator();
 coord.setMetadata('{"recordId": "001xx0000012345"}');
 coord.submit();
@@ -1062,21 +1066,19 @@ coord.submit();
 
 #### Metadata-Aware Query Builders
 
-When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of (or in addition to) `ICursorBatchQueryBuilder`:
+When the query needs runtime parameters, implement `ICursorBatchMetadataQueryBuilder` instead of (or in addition to) `ICursorBatchQueryBuilder`. The framework deserializes the metadata JSON once and passes a ready-to-use `Map<String, Object>` (empty map when no metadata, never null):
 
 ```apex
 public class ContactsByAccountSelector implements ICursorBatchMetadataQueryBuilder {
     
-    public String buildQuery(String methodName, String metadataJson) {
-        // metadataJson can be null — always guard before deserializing
-        if (String.isBlank(metadataJson)) {
-            return null;
-        }
-        Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
-        String accountId = (String) meta.get('accountId');
+    public String buildQuery(String methodName, Map<String, Object> metadata) {
+        String accountId = (String) metadata.get('accountId');
         
         switch on methodName {
             when 'buildContactsForAccountQuery' {
+                if (String.isBlank(accountId)) {
+                    return null;
+                }
                 return 'SELECT Id, Name FROM Contact WHERE AccountId = \'' +
                        String.escapeSingleQuotes(accountId) + '\'';
             }
@@ -1116,7 +1118,7 @@ public class MyWorker extends CursorBatchWorker {
 │                        Metadata Propagation Flow                            │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-  CursorJob.run(name, metadataJson)
+  CursorJob.run(name, metadata)
        │
        ▼
   ┌──────────────────────┐
@@ -1127,7 +1129,7 @@ public class MyWorker extends CursorBatchWorker {
        ▼
   ┌──────────────────────┐
   │ ICursorBatch         │
-  │ MetadataQueryBuilder │ ← buildQuery(methodName, metadataJson)
+  │ MetadataQueryBuilder │ ← buildQuery(methodName, metadata)
   │ .buildQuery()        │
   └──────────────────────┘
        │
@@ -1146,14 +1148,14 @@ public class MyWorker extends CursorBatchWorker {
 
 | Stage | How Metadata Is Available |
 |-------|---------------------------|
-| **Query Builder** | Passed as the second argument to `buildQuery(methodName, metadataJson)` |
+| **Query Builder** | Passed as the second argument to `buildQuery(methodName, metadata)` as a pre-parsed `Map<String, Object>` |
 | **Worker `process()`** | Via `getMetadata()` (or `ctx.metadataJson` for the raw JSON string) |
 | **Worker `finish()`** | Via `getMetadata()` (reads from `CursorBatch_Job__c.Metadata_JSON__c`) |
 | **Coordinator retries** | Restored from `CursorBatch_Job__c.Metadata_JSON__c` |
 
 #### Backward Compatibility
 
-- Invoking `CursorJob.run('JobName')` without metadata continues to work — metadata is simply `null`
+- Invoking `CursorJob.run('JobName')` without metadata continues to work — `ICursorBatchMetadataQueryBuilder` receives an empty map (never null), and worker `getMetadata()` returns `null`
 - Query builders implementing only `ICursorBatchQueryBuilder` are unaffected
 - Workers that don't reference `ctx.metadataJson` are unaffected
 - Custom coordinators that don't call `setMetadata()` behave exactly as before
@@ -1298,9 +1300,9 @@ public class OrderSumWorker extends CursorBatchWorker {
 Launched with:
 
 ```apex
-CursorJob.run('Order Sum Job', JSON.serialize(new Map<String, Object>{
+CursorJob.run('Order Sum Job', new Map<String, Object>{
     'opportunityId' => someOppId
-}));
+});
 ```
 
 **Example: Conditional chaining based on job results**
@@ -2100,7 +2102,7 @@ Chain_To_Method__c: run
 | `CursorBatchLogger` | Default `System.debug` logger implementation |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
-| `ICursorBatchMetadataQueryBuilder` | Interface for query builders that receive runtime metadata JSON (extends query builder pattern with a second argument) |
+| `ICursorBatchMetadataQueryBuilder` | Interface for query builders that receive pre-parsed runtime metadata as `Map<String, Object>` (extends query builder pattern with a second argument) |
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
 | `CursorBatchCounterReducer` | Built-in reducer for additive numeric counters — enables shared state with just a checkbox toggle (`Enable_State_Reducer__c`), no custom reducer class needed |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |

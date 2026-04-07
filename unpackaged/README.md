@@ -198,10 +198,14 @@ The CSV samples demonstrate file-based processing using the same framework featu
 
 ```apex
 // Process a CSV file
-CursorJob.run('SampleCsvLeadJob', '{"contentVersionId": "068xx..."}');
+CursorJob.run('SampleCsvLeadJob', new Map<String, Object>{
+    'contentVersionId' => '068xx...'
+});
 
 // CSV job with stateful reducer
-CursorJob.run('SampleCsvStatefulJob', '{"contentVersionId": "068xx..."}');
+CursorJob.run('SampleCsvStatefulJob', new Map<String, Object>{
+    'contentVersionId' => '068xx...'
+});
 ```
 
 **Setup Required:**

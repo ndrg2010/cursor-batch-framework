@@ -48,14 +48,15 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     }
     
     /**
-     * @description Constructs a CursorJob with runtime metadata. The metadata JSON is
-     *              persisted on the job record and made available to query builders and workers.
+     * @description Constructs a CursorJob with runtime metadata. The metadata is serialized
+     *              internally, persisted on the job record, and made available to query builders
+     *              and workers.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
-     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     * @param metadata Runtime parameters (e.g., record IDs) — serialized to JSON internally
      */
-    public CursorJob(String jobName, String metadataJson) {
+    public CursorJob(String jobName, Map<String, Object> metadata) {
         this(jobName);
-        setMetadata(metadataJson);
+        setMetadata(metadata != null ? JSON.serialize(metadata) : null);
     }
     
     /**
@@ -69,10 +70,10 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     /**
      * @description Runs the specified job immediately with runtime metadata.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
-     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     * @param metadata Runtime parameters (e.g., record IDs) — serialized to JSON internally
      */
-    public static void run(String jobName, String metadataJson) {
-        new CursorJob(jobName, metadataJson).submit();
+    public static void run(String jobName, Map<String, Object> metadata) {
+        new CursorJob(jobName, metadata).submit();
     }
     
     /**
@@ -88,10 +89,10 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
      * @description Runs the specified job with a delay and runtime metadata.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      * @param delayMinutes Number of minutes to delay before execution (1-10)
-     * @param metadataJson Serialized JSON string of invocation parameters (e.g., record IDs)
+     * @param metadata Runtime parameters (e.g., record IDs) — serialized to JSON internally
      */
-    public static void runWithDelay(String jobName, Integer delayMinutes, String metadataJson) {
-        new CursorJob(jobName, metadataJson).submitWithDelay(delayMinutes);
+    public static void runWithDelay(String jobName, Integer delayMinutes, Map<String, Object> metadata) {
+        new CursorJob(jobName, metadata).submitWithDelay(delayMinutes);
     }
     
     /**
@@ -208,7 +209,10 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
             
             String query;
             if (instance instanceof ICursorBatchMetadataQueryBuilder) {
-                query = ((ICursorBatchMetadataQueryBuilder) instance).buildQuery(queryBuilderMethod, metadataJson);
+                Map<String, Object> metadata = String.isBlank(metadataJson)
+                    ? new Map<String, Object>()
+                    : (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
+                query = ((ICursorBatchMetadataQueryBuilder) instance).buildQuery(queryBuilderMethod, metadata);
             } else if (instance instanceof ICursorBatchQueryBuilder) {
                 query = ((ICursorBatchQueryBuilder) instance).buildQuery(queryBuilderMethod);
             } else {

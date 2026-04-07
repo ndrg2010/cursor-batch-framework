@@ -111,14 +111,13 @@ private without sharing class CursorJobTest {
      * @description Test implementation of ICursorBatchMetadataQueryBuilder for metadata-aware query building.
      */
     public class TestMetadataQueryBuilder implements ICursorBatchMetadataQueryBuilder {
-        public String buildQuery(String methodName, String metadataJson) {
+        public String buildQuery(String methodName, Map<String, Object> metadata) {
             switch on methodName {
                 when 'getAccountsByIdQuery' {
-                    if (String.isBlank(metadataJson)) {
+                    String accountId = (String) metadata.get('accountId');
+                    if (String.isBlank(accountId)) {
                         return CursorBatchTestUtils.DEFAULT_TEST_QUERY;
                     }
-                    Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
-                    String accountId = (String) meta.get('accountId');
                     return 'SELECT Id, Name FROM Account WHERE Id = \'' +
                            String.escapeSingleQuotes(accountId) + '\'';
                 }
@@ -758,17 +757,19 @@ private without sharing class CursorJobTest {
             'getAccountsQuery',
             'CursorJobTest.TestCursorJobWorker'
         );
-        String metadataJson = '{"accountId":"001000000000001"}';
+        Map<String, Object> metadata = new Map<String, Object>{
+            'accountId' => '001000000000001'
+        };
         
         // Act
         Test.startTest();
-        CursorJob.run('TestMetadataRun', metadataJson);
+        CursorJob.run('TestMetadataRun', metadata);
         Test.stopTest();
         
         // Assert
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestMetadataRun');
         Assert.areEqual(1, jobs.size(), 'Should create job record');
-        Assert.areEqual(metadataJson, jobs[0].Metadata_JSON__c,
+        Assert.areEqual(JSON.serialize(metadata), jobs[0].Metadata_JSON__c,
             'Metadata should be persisted on the job record');
     }
     
@@ -803,17 +804,19 @@ private without sharing class CursorJobTest {
             'getAccountsQuery',
             'CursorJobTest.TestCursorJobWorker'
         );
-        String metadataJson = '{"recordId":"001000000000002"}';
+        Map<String, Object> metadata = new Map<String, Object>{
+            'recordId' => '001000000000002'
+        };
         
         // Act
         Test.startTest();
-        CursorJob.runWithDelay('TestMetadataDelay', 5, metadataJson);
+        CursorJob.runWithDelay('TestMetadataDelay', 5, metadata);
         Test.stopTest();
         
         // Assert
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestMetadataDelay');
         Assert.areEqual(1, jobs.size(), 'Should create job record');
-        Assert.areEqual(metadataJson, jobs[0].Metadata_JSON__c,
+        Assert.areEqual(JSON.serialize(metadata), jobs[0].Metadata_JSON__c,
             'Metadata should be persisted on delayed job');
     }
     
@@ -821,7 +824,9 @@ private without sharing class CursorJobTest {
     static void testBuildQueryDispatchesToMetadataInterface() {
         // Arrange
         Account testAccount = [SELECT Id FROM Account LIMIT 1];
-        String metadataJson = '{"accountId":"' + testAccount.Id + '"}';
+        Map<String, Object> metadata = new Map<String, Object>{
+            'accountId' => testAccount.Id
+        };
         
         CursorBatchCoordinator.testConfig = createCursorJobConfig(
             'TestMetadataBuilder',
@@ -830,7 +835,7 @@ private without sharing class CursorJobTest {
             'CursorJobTest.TestCursorJobWorker'
         );
         
-        CursorJob cursorJob = new CursorJob('TestMetadataBuilder', metadataJson);
+        CursorJob cursorJob = new CursorJob('TestMetadataBuilder', metadata);
         
         // Act
         Test.startTest();
@@ -852,7 +857,9 @@ private without sharing class CursorJobTest {
             'CursorJobTest.TestCursorJobWorker'
         );
         
-        CursorJob cursorJob = new CursorJob('TestFallbackBuilder', '{"someKey":"someValue"}');
+        CursorJob cursorJob = new CursorJob('TestFallbackBuilder', new Map<String, Object>{
+            'someKey' => 'someValue'
+        });
         
         // Act
         Test.startTest();

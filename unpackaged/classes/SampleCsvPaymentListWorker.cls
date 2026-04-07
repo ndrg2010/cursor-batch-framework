@@ -24,9 +24,9 @@
  *   Active__c             = true
  *
  * EXECUTION:
- *   CursorJob.run('Process CSV Payment List', JSON.serialize(new Map<String, Object>{
+ *   CursorJob.run('Process CSV Payment List', new Map<String, Object>{
  *       'recordId' => 'a0Bxx0000012345AAA'
- *   }));
+ *   });
  *
  * @group CursorBatchFramework Samples
  * @see CursorBatchCsvWorker

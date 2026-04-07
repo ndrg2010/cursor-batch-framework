@@ -3,7 +3,7 @@
  *              and scopes the cursor query to that list's payments.
  *
  *              Implements ICursorBatchMetadataQueryBuilder (not ICursorBatchQueryBuilder)
- *              so the framework passes the metadataJson from CursorJob.run() as the
+ *              so the framework passes pre-parsed metadata from CursorJob.run() as the
  *              second argument to buildQuery(). This is how you inject runtime values
  *              into a Database.Cursor query (which does not support bind variables).
  *
@@ -16,9 +16,9 @@
  * - Set Active__c = true
  *
  * EXECUTION:
- * CursorJob.run('Process Payment List', JSON.serialize(new Map<String, Object>{
+ * CursorJob.run('Process Payment List', new Map<String, Object>{
  *     'paymentListId' => 'a00xx0000012345AAA'
- * }));
+ * });
  *
  * NOTE: This sample uses Opportunity as a stand-in for a Payment custom object.
  *       Replace Opportunity / CloseDate with your custom object and fields
@@ -33,15 +33,16 @@ public class SampleMetadataPaymentQueryBuilder implements ICursorBatchMetadataQu
 
     /**
      * @description Routes the method name from CursorBatch_Config__mdt.Query_Builder_Method__c
-     *              to the actual builder, passing the runtime metadata JSON.
+     *              to the actual builder, passing the pre-parsed runtime metadata.
      * @param methodName Method name configured in metadata
-     * @param metadataJson JSON from CursorJob.run(name, metadataJson), or null
+     * @param metadata Deserialized runtime parameters from CursorJob.run() (empty map when none provided)
      * @return SOQL query string with inlined values (no bind variables)
      */
-    public String buildQuery(String methodName, String metadataJson) {
+    public String buildQuery(String methodName, Map<String, Object> metadata) {
         switch on methodName {
             when 'buildPaymentsForListQuery' {
-                return buildPaymentsForListQuery(metadataJson);
+                Id paymentListId = (Id) metadata.get('paymentListId');
+                return buildPaymentsForListQuery(paymentListId);
             }
             when else {
                 return null;
@@ -49,21 +50,14 @@ public class SampleMetadataPaymentQueryBuilder implements ICursorBatchMetadataQu
         }
     }
 
-    private String buildPaymentsForListQuery(String metadataJson) {
-        if (String.isBlank(metadataJson)) {
-            return null;
-        }
-
-        Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(metadataJson);
-        String paymentListId = (String) meta.get('paymentListId');
-
-        if (String.isBlank(paymentListId)) {
+    private String buildPaymentsForListQuery(Id paymentListId) {
+        if (paymentListId == null) {
             return null;
         }
 
         return 'SELECT Id, Name, CloseDate, Amount, StageName, AccountId ' +
                'FROM Opportunity ' +
-               'WHERE AccountId = \'' + String.escapeSingleQuotes(paymentListId) + '\' ' +
+               'WHERE AccountId = \'' + paymentListId + '\' ' +
                'ORDER BY CloseDate ASC';
     }
 }
