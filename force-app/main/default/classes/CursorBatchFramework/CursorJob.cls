@@ -62,27 +62,30 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     /**
      * @description Runs the specified job immediately.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public static void run(String jobName) {
-        new CursorJob(jobName).submit();
+    public static Id run(String jobName) {
+        return new CursorJob(jobName).submit();
     }
     
     /**
      * @description Runs the specified job immediately with runtime metadata.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      * @param metadata Runtime parameters (e.g., record IDs) — serialized to JSON internally
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public static void run(String jobName, Map<String, Object> metadata) {
-        new CursorJob(jobName, metadata).submit();
+    public static Id run(String jobName, Map<String, Object> metadata) {
+        return new CursorJob(jobName, metadata).submit();
     }
     
     /**
      * @description Runs the specified job with a delay.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      * @param delayMinutes Number of minutes to delay before execution (1-10)
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public static void runWithDelay(String jobName, Integer delayMinutes) {
-        new CursorJob(jobName).submitWithDelay(delayMinutes);
+    public static Id runWithDelay(String jobName, Integer delayMinutes) {
+        return new CursorJob(jobName).submitWithDelay(delayMinutes);
     }
     
     /**
@@ -90,9 +93,10 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      * @param delayMinutes Number of minutes to delay before execution (1-10)
      * @param metadata Runtime parameters (e.g., record IDs) — serialized to JSON internally
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public static void runWithDelay(String jobName, Integer delayMinutes, Map<String, Object> metadata) {
-        new CursorJob(jobName, metadata).submitWithDelay(delayMinutes);
+    public static Id runWithDelay(String jobName, Integer delayMinutes, Map<String, Object> metadata) {
+        return new CursorJob(jobName, metadata).submitWithDelay(delayMinutes);
     }
     
     /**

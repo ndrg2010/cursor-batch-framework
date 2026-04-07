@@ -121,24 +121,30 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              dedicated trigger user. This is required for cursor access by workers.
      *              By default, checks both CursorBatch_Job__c records and AsyncApexJob to prevent 
      *              duplicate jobs. Override isJobAlreadyRunning() to customize duplicate detection logic.
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public void submit() {
+    public Id submit() {
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(null);
+            return this.jobRecordId;
         }
+        return null;
     }
     
     /**
      * @description Submits the coordinator job with a delay. Creates the job record and publishes a
      *              Platform Event to route execution through the trigger with the specified delay.
      * @param delayMinutes Number of minutes to delay before execution (1-10 supported by platform)
+     * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
-    public void submitWithDelay(Integer delayMinutes) {
+    public Id submitWithDelay(Integer delayMinutes) {
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(delayMinutes);
+            return this.jobRecordId;
         }
+        return null;
     }
     
     /**
