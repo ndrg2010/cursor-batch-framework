@@ -117,7 +117,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
                 scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
             
             process(scope);
-            ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta(scope));
+            ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta());
             if (ctx.stateDeltaJson != null && ctx.stateDeltaJson.length() > CursorBatchStateManager.STATE_JSON_MAX_LENGTH) {
                 logger.logError('CursorBatchWorker: State delta exceeds field limit for job ' + ctx.jobName + ', discarding');
                 ctx.stateDeltaJson = null;
@@ -271,10 +271,9 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
      *              the completion handler does not double-count; accumulated per-worker state
      *              should be flushed to shared state at most once (e.g. in this method on the
      *              final page only).
-     * @param records Records that were processed successfully
      * @return Delta object to serialize and publish, or null
      */
-    protected virtual Object buildStateDelta(List<SObject> records) {
+    protected virtual Object buildStateDelta() {
         return null;
     }
     

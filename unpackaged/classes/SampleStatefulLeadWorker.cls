@@ -43,10 +43,9 @@ public class SampleStatefulLeadWorker extends CursorBatchWorker {
     
     /**
      * @description Returns a reducer delta for this successfully processed page.
-     * @param records Current page of Lead records
      * @return Delta map to merge into the job state
      */
-    protected override Object buildStateDelta(List<SObject> records) {
+    protected override Object buildStateDelta() {
         return new Map<String, Object>{
             'processedCount' => lastProcessedCount,
             'contactedCount' => lastProcessedCount,

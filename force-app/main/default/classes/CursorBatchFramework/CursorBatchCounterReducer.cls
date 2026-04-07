@@ -8,7 +8,7 @@
  *              This reducer is used automatically when Enable_State_Reducer__c is checked
  *              on the CursorBatch_Config__mdt and no custom State_Reducer_Class__c is set.
  *              Workers emit deltas via buildStateDelta():
- *                return new Map<String, Object>{ 'processedCount' => records.size(), 'errorCount' => 2 };
+ *                return new Map<String, Object>{ 'processedCount' => lastPageSize, 'errorCount' => 2 };
  *
  * @group CursorBatchFramework
  * @see ICursorBatchStateReducer

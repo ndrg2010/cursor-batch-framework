@@ -1278,15 +1278,17 @@ Workers can read the current snapshot with `getCurrentState()` and emit a delta 
 
 ```apex
 public class MyStatefulWorker extends CursorBatchWorker {
+    private Integer lastPageSize = 0;
     
     public override void process(List<SObject> records) {
         Map<String, Object> state = (Map<String, Object>) getCurrentState();
         // Use the current snapshot while processing this page
+        lastPageSize = records.size();
     }
     
-    protected override Object buildStateDelta(List<SObject> records) {
+    protected override Object buildStateDelta() {
         return new Map<String, Object>{
-            'processedCount' => records.size()
+            'processedCount' => lastPageSize
         };
     }
     
@@ -1331,7 +1333,7 @@ public class MyAccumulatingWorker extends CursorBatchWorker {
         return JSON.serialize(new Map<String, Object>{ 'count' => recordsProcessedThisWorker });
     }
     
-    protected override Object buildStateDelta(List<SObject> records) {
+    protected override Object buildStateDelta() {
         // Only flush to shared state on the final page to avoid double-counting
         if (ctx.isFinal) {
             return new Map<String, Object>{ 'processedCount' => recordsProcessedThisWorker };

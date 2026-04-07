@@ -617,14 +617,16 @@ public without sharing class CursorBatchTestUtils {
      * @description Test worker that reads reducer state snapshots and emits deltas.
      */
     public class TestStatefulCursorJobWorker extends CursorBatchWorker {
+        private Integer lastPageSize = 0;
         
         public override void process(List<SObject> records) {
             testStatefulWorker_lastSeenState = (Map<String, Object>) getCurrentState();
+            lastPageSize = records != null ? records.size() : 0;
         }
         
-        protected override Object buildStateDelta(List<SObject> records) {
+        protected override Object buildStateDelta() {
             return new Map<String, Object>{
-                'processedCount' => records != null ? records.size() : 0,
+                'processedCount' => lastPageSize,
                 'pagesProcessed' => 1
             };
         }
@@ -642,13 +644,16 @@ public without sharing class CursorBatchTestUtils {
     public static Boolean testStatefulDeltaOnlyWorker_onCompleteCalled = false;
     
     public class TestStatefulDeltaOnlyWorker extends CursorBatchWorker {
+        private Integer lastPageSize = 0;
+
         public override void process(List<SObject> records) {
             // Intentionally do not call getCurrentState() - exercises lazy load opt-out
+            lastPageSize = records != null ? records.size() : 0;
         }
         
-        protected override Object buildStateDelta(List<SObject> records) {
+        protected override Object buildStateDelta() {
             return new Map<String, Object>{
-                'processedCount' => records != null ? records.size() : 0,
+                'processedCount' => lastPageSize,
                 'pagesProcessed' => 1
             };
         }
@@ -664,9 +669,8 @@ public without sharing class CursorBatchTestUtils {
      */
     public class TestStatefulWorkerWithOversizedDelta extends CursorBatchWorker {
         public override void process(List<SObject> records) {
-            // No-op; delta is produced in buildStateDelta
         }
-        protected override Object buildStateDelta(List<SObject> records) {
+        protected override Object buildStateDelta() {
             // Build string so serialized delta exceeds STATE_JSON_MAX_LENGTH (131072).
             // {"data":"..."} adds 9 chars; we need total > 131072 so data length >= 131064.
             Integer targetLen = CursorBatchStateManager.STATE_JSON_MAX_LENGTH - 8;
