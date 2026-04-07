@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Enable_State_Reducer__c</fullName>
+    <defaultValue>false</defaultValue>
+    <description>When checked and State_Reducer_Class__c is blank, the framework uses the built-in CursorBatchCounterReducer for shared state. When a custom State_Reducer_Class__c is specified, the custom class is always used regardless of this checkbox.</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Check this to enable the built-in counter reducer for shared state (additive numeric counters). Leave unchecked if the job does not need shared state.</inlineHelpText>
+    <label>Enable Built-in State Reducer</label>
+    <type>Checkbox</type>
+</CustomField>

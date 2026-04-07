@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ListView xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>All_Configs</fullName>
+    <columns>MasterLabel</columns>
+    <columns>DeveloperName</columns>
+    <columns>Active__c</columns>
+    <columns>Worker_Class__c</columns>
+    <columns>Enable_State_Reducer__c</columns>
+    <columns>State_Reducer_Class__c</columns>
+    <columns>Parallel_Count__c</columns>
+    <columns>Page_Size__c</columns>
+    <columns>Chain_To_Job__c</columns>
+    <filterScope>Everything</filterScope>
+    <label>All Configs</label>
+</ListView>

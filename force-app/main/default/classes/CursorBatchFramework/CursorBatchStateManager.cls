@@ -83,22 +83,28 @@ public without sharing class CursorBatchStateManager {
         }
         
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(jobName);
-        if (config == null || String.isBlank(config.State_Reducer_Class__c)) {
-            reducerCache.put(jobName, null);
-            return null;
+        String reducerClassName = config?.State_Reducer_Class__c;
+        
+        if (String.isBlank(reducerClassName)) {
+            if (config != null && config.Enable_State_Reducer__c == true) {
+                reducerClassName = 'CursorBatchCounterReducer';
+            } else {
+                reducerCache.put(jobName, null);
+                return null;
+            }
         }
         
-        Type reducerType = Type.forName(config.State_Reducer_Class__c);
+        Type reducerType = Type.forName(reducerClassName);
         if (reducerType == null) {
             throw new CursorBatchCoordinator.CursorBatchException(
-                'State reducer class not found: ' + config.State_Reducer_Class__c
+                'State reducer class not found: ' + reducerClassName
             );
         }
         
         Object instance = reducerType.newInstance();
         if (!(instance instanceof ICursorBatchStateReducer)) {
             throw new CursorBatchCoordinator.CursorBatchException(
-                'State reducer class "' + config.State_Reducer_Class__c +
+                'State reducer class "' + reducerClassName +
                 '" must implement ICursorBatchStateReducer'
             );
         }
