@@ -69,13 +69,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HBFBAA4) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HBFBAA4) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HDDlAAO) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HDDlAAO) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000HBFBAA4 --target-org your-org --wait 10
+sf package install --package 04tfj000000HDDlAAO --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -217,18 +217,19 @@ Create a `CursorBatch_Config__mdt` record:
 #### 4. Execute
 
 ```apex
-CursorJob.run('MyDataProcessingJob');
+// Returns the CursorBatch_Job__c record Id (or null if a duplicate was already running)
+Id jobId = CursorJob.run('MyDataProcessingJob');
 
 // Or with a delay (1-10 minutes)
-CursorJob.runWithDelay('MyDataProcessingJob', 5);
+Id jobId = CursorJob.runWithDelay('MyDataProcessingJob', 5);
 
 // Or with runtime metadata (e.g., a record ID for the query builder or worker)
-CursorJob.run('MyDataProcessingJob', new Map<String, Object>{
+Id jobId = CursorJob.run('MyDataProcessingJob', new Map<String, Object>{
     'accountId' => '001xx0000012345'
 });
 ```
 
-**That's it!** No coordinator class needed.
+**That's it!** No coordinator class needed. All `run()` and `runWithDelay()` overloads return the `CursorBatch_Job__c` record `Id`, letting callers immediately track, query, or link to the job. Returns `null` when duplicate detection prevents submission.
 
 ---
 
@@ -353,7 +354,8 @@ Create a `CursorBatch_Config__mdt` record:
 #### 4. Execute
 
 ```apex
-new MyDataProcessingCoordinator().submit();
+// submit() returns the CursorBatch_Job__c record Id (or null if duplicate)
+Id jobId = new MyDataProcessingCoordinator().submit();
 ```
 
 ### Option C: CSV File Processing
@@ -443,7 +445,7 @@ Both the **Coordinator** and **Workers** are implemented as `Queueable` classes:
 
 `Database.Cursor` is only accessible to the user who created it. To ensure workers can access the cursor:
 
-1. **`submit()` publishes a Platform Event** (`CursorBatch_Coordinator__e`) instead of directly enqueueing the coordinator
+1. **`submit()` publishes a Platform Event** (`CursorBatch_Coordinator__e`) instead of directly enqueueing the coordinator, and returns the `CursorBatch_Job__c` record `Id` (or `null` if the job was already running)
 2. **Platform Event trigger** runs as the dedicated trigger user (configured in PlatformEventSubscriberConfig)
 3. **Coordinator queueable** runs as the trigger user and creates the cursor
 4. **Workers** also run as the trigger user (via `CursorBatch_Worker__e` trigger) and can access the cursor
@@ -991,8 +993,8 @@ The first matching condition is executed; subsequent options are skipped.
 Use `submitWithDelay()` to defer job execution by 1-10 minutes. This is useful for rate limiting, scheduled retries, or self-chaining patterns:
 
 ```apex
-// Start a job after a 5-minute delay
-new MyCoordinator().submitWithDelay(5);
+// Start a job after a 5-minute delay (returns job record Id or null)
+Id jobId = new MyCoordinator().submitWithDelay(5);
 ```
 
 #### Self-Chaining Pattern
@@ -1190,8 +1192,8 @@ The framework provides a kill switch to stop running jobs gracefully. When activ
 #### Using the Kill Switch
 
 ```apex
-// Get the job record ID from the CursorBatch_Job__c record
-Id jobRecordId = 'a0Bxx0000001234AAA';
+// Capture the job record ID when launching
+Id jobRecordId = CursorJob.run('MyDataProcessingJob');
 
 // Cancel the job
 Boolean cancelled = CursorBatchCoordinator.killJob(jobRecordId);
@@ -2088,8 +2090,8 @@ Chain_To_Method__c: run
 
 | Class | Description |
 |-------|-------------|
-| `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code |
-| `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers |
+| `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code. `run()` / `runWithDelay()` return the job record `Id` for tracking |
+| `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers. `submit()` / `submitWithDelay()` return the job record `Id` |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
 | `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that enqueues coordinator Queueable from submit() |
 | `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages. Includes `finish()` virtual method for completion logic |
