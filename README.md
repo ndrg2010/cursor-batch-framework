@@ -25,6 +25,7 @@ Traditional Salesforce batch processing has limitations:
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
 - 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
 - 📦 **Reducer-Based Shared State** — Optional shared state across parallel workers with snapshot reads, delta emission, and centralized reduction
+- 📄 **CSV File Processing** — Process uploaded CSV files (up to 2 GB) through an external middleware with the same config-driven API, reducers, and chaining
 
 ## Table of Contents
 
@@ -68,13 +69,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000FcHtAAK) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000FcHtAAK) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H9wXAAS) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000H9wXAAS) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000FcHtAAK --target-org your-org --wait 10
+sf package install --package 04tfj000000H9wXAAS --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -152,6 +153,7 @@ Choose your approach based on complexity:
 |----------|----------|-------------|
 | **CursorJob (Metadata-Driven)** | Simple jobs with standard query/worker pattern | Zero code — configure in metadata |
 | **Custom Coordinator** | Complex logic, conditional queries, custom callbacks | ~50-80 lines |
+| **CSV File Processing** | Process uploaded CSV files with same config-driven API | Worker class only (~20 lines) |
 
 ### Option A: Metadata-Driven Jobs (CursorJob)
 
@@ -762,6 +764,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Worker_Retry_Delay__c` | Number | 1 | Base delay in minutes for worker retry exponential backoff |
 | `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
 | `Processing_Type__c` | Text(10) | `SOQL` | Data source type: `SOQL` for cursor-based queries, `CSV` for file-based processing via external middleware |
+| `Enable_State_Reducer__c` | Checkbox | `false` | When enabled, uses built-in `CursorBatchCounterReducer` for additive numeric counter state (no custom reducer class needed). Ignored when `State_Reducer_Class__c` is set |
 
 #### CursorJob Settings (Metadata-Driven Jobs)
 
@@ -2099,8 +2102,12 @@ Chain_To_Method__c: run
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
 | `ICursorBatchMetadataQueryBuilder` | Interface for query builders that receive runtime metadata JSON (extends query builder pattern with a second argument) |
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
+| `CursorBatchCounterReducer` | Built-in reducer for additive numeric counters — enables shared state with just a checkbox toggle (`Enable_State_Reducer__c`), no custom reducer class needed |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
 | `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
+| `CursorBatchCsvWorker` | Abstract base for CSV file workers. Receives `List<Map<String, Object>>` rows instead of `List<SObject>` — all other features (reducers, retry, chaining) work identically |
+| `CursorBatchCsvCallbackCoordinator` | Handles CSV middleware callback — receives row count via Platform Event and triggers worker fan-out |
+| `CsvCursorClient` | HTTP client for the CSV middleware. Manages session init, row count retrieval, and paginated row fetches via Named Credential |
 
 ### Custom Objects
 
@@ -2113,18 +2120,20 @@ Chain_To_Method__c: run
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count, metadata JSON) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state) |
 
-### New Metadata Fields (v0.11)
+### Metadata Fields Added Since v0.10
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `Query_Builder_Class__c` | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
-| `Query_Builder_Method__c` | Text(255) | Method name to call on query builder |
-| `Worker_Class__c` | Text(255) | Worker class extending `CursorBatchWorker` |
-| `Chain_To_Job__c` | Text(255) | Job name to chain to after completion (simplest option) |
-| `Chain_To_Class__c` | Text(255) | Class to chain to after completion (implements `Callable`) |
-| `Chain_To_Method__c` | Text(255) | Method to call on chain class (default: `run`) |
-| `Logger_Tag__c` | Text(255) | Tag to apply to all log entries |
-| `State_Reducer_Class__c` | Text(255) | Class implementing `ICursorBatchStateReducer` for reducer-based shared state |
+| Field | Added | Type | Description |
+|-------|-------|------|-------------|
+| `Query_Builder_Class__c` | v0.11 | Text(255) | Class implementing `ICursorBatchQueryBuilder` |
+| `Query_Builder_Method__c` | v0.11 | Text(255) | Method name to call on query builder |
+| `Worker_Class__c` | v0.11 | Text(255) | Worker class extending `CursorBatchWorker` |
+| `Chain_To_Job__c` | v0.11 | Text(255) | Job name to chain to after completion (simplest option) |
+| `Chain_To_Class__c` | v0.11 | Text(255) | Class to chain to after completion (implements `Callable`) |
+| `Chain_To_Method__c` | v0.11 | Text(255) | Method to call on chain class (default: `run`) |
+| `Logger_Tag__c` | v0.11 | Text(255) | Tag to apply to all log entries |
+| `State_Reducer_Class__c` | v0.15 | Text(255) | Class implementing `ICursorBatchStateReducer` for reducer-based shared state |
+| `Processing_Type__c` | v0.21 | Text(10) | Data source type: `SOQL` or `CSV` |
+| `Enable_State_Reducer__c` | v0.21 | Checkbox | Enables built-in `CursorBatchCounterReducer` without a custom reducer class |
 
 ### Triggers
 

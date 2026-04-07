@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.15",
-      "versionNumber": "0.15.0.NEXT",
+      "versionName": "ver 0.21",
+      "versionNumber": "0.21.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "CursorBatch_Coordinator__e PublishAfterCommit for transaction safety",
+      "versionDescription": "CSV file processing, built-in counter reducer, metadata query builders, cleaner buildStateDelta API",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -39,7 +39,8 @@
     "CursorBatchFramework@0.13.0-2": "04tfj000000DNwTAAW",
     "CursorBatchFramework@0.14.0-1": "04tfj000000EfEbAAK",
     "CursorBatchFramework@0.15.0-1": "04tfj000000FcGHAA0",
-    "CursorBatchFramework@0.15.0-2": "04tfj000000FcHtAAK"
+    "CursorBatchFramework@0.15.0-2": "04tfj000000FcHtAAK",
+    "CursorBatchFramework@0.21.0-1": "04tfj000000H9wXAAS"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
