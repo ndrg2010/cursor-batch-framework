@@ -32,13 +32,6 @@ public class SampleAccountOpportunityWorker extends CursorBatchWorker {
     private static final String NEW_STAGE = 'Qualification';
     
     /**
-     * @description Default constructor required for reflection-based instantiation.
-     */
-    public SampleAccountOpportunityWorker() {
-        super();
-    }
-    
-    /**
      * @description Processes a batch of Account records by querying and updating
      *              their child Opportunities. This is the key to the parent/child
      *              pattern: we receive parents but process children.
@@ -81,14 +74,6 @@ public class SampleAccountOpportunityWorker extends CursorBatchWorker {
         // Update all Opportunities for these Accounts in a single DML
         // Since all Opportunities per Account are in this worker, no lock contention
         update opportunities;
-    }
-    
-    /**
-     * @description Called when this worker finishes ALL its assigned pages.
-     */
-    public override void onComplete() {
-        super.onComplete();
-        // Per-worker completion logic
     }
 }
 

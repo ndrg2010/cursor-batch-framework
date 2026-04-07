@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Processing_Type__c</fullName>
+    <defaultValue>&apos;SOQL&apos;</defaultValue>
+    <description>Determines the data source for this job. SOQL uses Database.Cursor for record processing. CSV uses an external middleware to index and paginate uploaded CSV files.</description>
+    <externalId>false</externalId>
+    <fieldManageability>DeveloperControlled</fieldManageability>
+    <inlineHelpText>Set to SOQL for standard query-based processing (default). Set to CSV for file-based processing via the CSV middleware.</inlineHelpText>
+    <label>Processing Type</label>
+    <length>10</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

@@ -33,17 +33,18 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              calls submitWithDelay() for continuous processing (e.g., 0-records scenario).
      */
     @TestVisible
-    private static Id currentAsyncJobId;
+    public static Id currentAsyncJobId;
     
     protected String jobName;
     protected String metadataJson;
+    protected String processingType;
     protected ICursorBatchLogger logger;
     
     /**
      * @description Job record ID for this coordinator instance. Set by submit() for fresh jobs
      *              or by setJobRecordId() for retry scenarios (called by finalizer).
      */
-    private Id jobRecordId;
+    protected Id jobRecordId;
     
     /**
      * @description Protected no-arg constructor for reflection-based instantiation. When using
@@ -171,7 +172,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @param ctx Queueable context (unused; required by Queueable interface)
      * @throws CursorBatchException When no active config is found or job record is missing
      */
-    public void execute(QueueableContext ctx) {
+    public virtual void execute(QueueableContext ctx) {
         // Track the current job ID so isJobAlreadyRunning() can exclude it from duplicate detection.
         // This allows finish() to call submitWithDelay() for continuous processing (e.g., 0-records).
         currentAsyncJobId = ctx?.getJobId();
@@ -193,8 +194,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 throw new CursorBatchException('No active config found for job: ' + jobName);
             }
             
-            Integer workerCount = getConfigIntOrDefault(config.Parallel_Count__c, DEFAULT_WORKER_COUNT);
-            Integer pageSize = getConfigIntOrDefault(config.Page_Size__c, DEFAULT_PAGE_SIZE);
+            this.processingType = String.isNotBlank(config.Processing_Type__c)
+                ? config.Processing_Type__c : CursorBatchContext.PROCESSING_TYPE_SOQL;
             
             // On retry, use stored query from job record (buildQuery() may fail if coordinator
             // state wasn't reconstructed). Fresh runs have Query__c set by createJobRecord().
@@ -213,46 +214,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Long queryDurationMs = System.currentTimeMillis() - queryStartTime;
             logger.logInfo('CursorBatchCoordinator cursor query took ' + queryDurationMs + 'ms, totalRecords: ' + totalRecords);
             
-            if (totalRecords == 0) {
-                logger.logInfo('No records to process for ' + jobName + ', completing job.');
-                jobRecord.Status__c = 'Completed';
-                jobRecord.Completed_At__c = System.now();
-                jobRecord.Total_Records__c = 0;
-                jobRecord.Query_Duration_Ms__c = queryDurationMs;
-                update jobRecord;
+            if (fanOutJob(jobRecord, CursorBatchContext.extractQueryId(dbCursor), totalRecords, queryDurationMs, config)) {
                 onComplete();
-                CursorBatchCompletionHandler.routeFinishCallback(jobRecord, logger);
-                return;
             }
-            
-            // Calculate workers needed based on pageSize - each worker handles one page worth of records
-            // e.g., 50 records / 15 pageSize = 4 workers (3 process 15 each, last gets 5)
-            Integer minWorkersNeeded = (Integer) Math.ceil((Decimal) totalRecords / pageSize);
-            Integer actualWorkerCount = Math.min(minWorkersNeeded, workerCount);
-            
-            // When not constrained by config, use pageSize per worker for optimal batching
-            // When constrained, distribute evenly across available workers
-            Integer recordsPerWorker = (actualWorkerCount >= minWorkersNeeded) 
-                ? pageSize 
-                : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
-            
-            // Extract queryId from cursor for cross-transaction access
-            String cursorQueryId = CursorBatchContext.extractQueryId(dbCursor);
-            logger.logInfo('CursorBatchCoordinator extracted cursor queryId: ' + cursorQueryId);
-            
-            // Fan out workers and get accurate counts (calculated during actual worker assignment)
-            // Returns [actualWorkerCount, actualTotalBatches] since some workers may be skipped
-            // when recordsPerWorker calculation results in fewer workers than initially calculated
-            List<Integer> fanOutResult = fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
-            Integer actualWorkersSpawned = fanOutResult[0];
-            Integer actualTotalBatches = fanOutResult[1];
-            
-            logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkersSpawned + ' workers (' + actualTotalBatches + ' batches) via Platform Events');
-            
-            // Update job record with cursor details and Processing status (using accurate counts)
-            updateJobRecordAfterCursor(jobRecord, actualWorkersSpawned, cursorQueryId, totalRecords, queryDurationMs, actualTotalBatches);
-            
-            onComplete();
             
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinator error for ' + jobName, e);
@@ -310,13 +274,13 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Attaches the coordinator finalizer to handle cursor query failures.
-     *              Handles the case where System.attachFinalizer() is not allowed outside
-     *              a valid Queueable execution context (e.g., direct test calls).
+     * @description Attaches the coordinator finalizer to handle failures (cursor timeouts,
+     *              callout errors, etc.). Protected so CSV coordinators can call it before
+     *              middleware callouts.
      * @param jobRecordId ID of the job record for the finalizer
-     * @param query The SOQL query string for logging in failure scenarios
+     * @param query The SOQL query string for logging in failure scenarios (null for CSV)
      */
-    private void attachFinalizer(Id jobRecordId, String query) {
+    protected void attachFinalizer(Id jobRecordId, String query) {
         CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
             jobRecordId,
             jobName,
@@ -359,6 +323,53 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         jobRecord.Status__c = 'Processing';
         update jobRecord;
         logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
+    }
+    
+    /**
+     * @description Calculates worker distribution and fans out workers via Platform Events.
+     *              Shared by both SOQL coordinators (after cursor creation) and CSV coordinators
+     *              (after middleware callback with row count). Handles zero-record short-circuit,
+     *              calling onComplete() and routeFinishCallback() directly when totalRecords is 0.
+     * @param jobRecord Job record to update with worker counts and status
+     * @param cursorQueryId Cursor queryId (SOQL) or csvCursorQuery session ID (CSV)
+     * @param totalRecords Total number of records/rows to process
+     * @param queryDurationMs Time to create cursor/index file (0 for CSV callback)
+     * @param config Job configuration for worker count and page size
+     * @return true when workers were fanned out (caller should call onComplete()); false when
+     *         zero records short-circuited (onComplete() already called internally)
+     */
+    protected Boolean fanOutJob(CursorBatch_Job__c jobRecord, String cursorQueryId, Integer totalRecords, Long queryDurationMs, CursorBatch_Config__mdt config) {
+        if (totalRecords == 0) {
+            logger.logInfo('No records to process for ' + jobName + ', completing job.');
+            jobRecord.Status__c = 'Completed';
+            jobRecord.Completed_At__c = System.now();
+            jobRecord.Total_Records__c = 0;
+            jobRecord.Query_Duration_Ms__c = queryDurationMs;
+            update jobRecord;
+            onComplete();
+            CursorBatchCompletionHandler.routeFinishCallback(jobRecord, logger);
+            return false;
+        }
+        
+        Integer workerCount = getConfigIntOrDefault(config?.Parallel_Count__c, DEFAULT_WORKER_COUNT);
+        Integer pageSize = getConfigIntOrDefault(config?.Page_Size__c, DEFAULT_PAGE_SIZE);
+        
+        Integer minWorkersNeeded = (Integer) Math.ceil((Decimal) totalRecords / pageSize);
+        Integer actualWorkerCount = Math.min(minWorkersNeeded, workerCount);
+        Integer recordsPerWorker = (actualWorkerCount >= minWorkersNeeded)
+            ? pageSize
+            : (Integer) Math.ceil((Decimal) totalRecords / actualWorkerCount);
+        
+        logger.logInfo('CursorBatchCoordinator extracted cursor/session queryId: ' + cursorQueryId);
+        
+        List<Integer> fanOutResult = fanOutWithPlatformEvents(cursorQueryId, jobRecord.Id, actualWorkerCount, recordsPerWorker, totalRecords, pageSize);
+        Integer actualWorkersSpawned = fanOutResult[0];
+        Integer actualTotalBatches = fanOutResult[1];
+        
+        logger.logInfo('Distributing ' + totalRecords + ' records across ' + actualWorkersSpawned + ' workers (' + actualTotalBatches + ' batches) via Platform Events');
+        
+        updateJobRecordAfterCursor(jobRecord, actualWorkersSpawned, cursorQueryId, totalRecords, queryDurationMs, actualTotalBatches);
+        return true;
     }
     
     /**
@@ -417,7 +428,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 Worker_Number__c = workerNum,
                 Job_Record_Id__c = jobRecordId,
                 Worker_Class__c = getWorkerClassName(),
-                Metadata_JSON__c = metadataJson
+                Metadata_JSON__c = metadataJson,
+                Processing_Type__c = processingType
             ));
         }
         

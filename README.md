@@ -32,6 +32,7 @@ Traditional Salesforce batch processing has limitations:
 - [Quick Start](#quick-start)
   - [Option A: Metadata-Driven Jobs (CursorJob)](#option-a-metadata-driven-jobs-cursorjob)
   - [Option B: Custom Coordinator Classes](#option-b-custom-coordinator-classes)
+  - [Option C: CSV File Processing](#option-c-csv-file-processing)
 - [Architecture](#architecture)
 - [Configuration Reference](#configuration-reference)
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
@@ -251,12 +252,6 @@ public class MyDataProcessingCoordinator extends CursorBatchCoordinator {
         return 'MyDataProcessingWorker';
     }
     
-    // Optional: Called when coordinator completes worker fanout
-    public override void onComplete() {
-        super.onComplete();
-        // Custom logic after workers are dispatched
-    }
-    
     // Optional: Called when ALL workers have completed (success or failure)
     // IMPORTANT: This runs in a SEPARATE TRANSACTION via Platform Event, not in the worker's transaction
     public override void finish(CursorBatch_Job__c jobRecord) {
@@ -294,12 +289,6 @@ public class MyDataProcessingWorker extends CursorBatchWorker {
         }
         
         update accounts;
-    }
-    
-    // Optional: Called when this worker finishes ALL its assigned pages
-    public override void onComplete() {
-        super.onComplete();
-        // Custom cleanup or logging for this worker
     }
 }
 ```
@@ -361,6 +350,78 @@ Create a `CursorBatch_Config__mdt` record:
 
 ```apex
 new MyDataProcessingCoordinator().submit();
+```
+
+### Option C: CSV File Processing
+
+Process uploaded CSV files using the same framework — same config-driven API, same reducers, same chaining. The only difference is the `process()` signature.
+
+#### 1. Create a CSV Worker
+
+```apex
+public class LeadImportWorker extends CursorBatchCsvWorker {
+
+    public override void process(List<Map<String, Object>> rows) {
+        List<Lead> leads = new List<Lead>();
+        for (Map<String, Object> row : rows) {
+            leads.add(new Lead(
+                FirstName = (String) row.get('FirstName'),
+                LastName  = (String) row.get('LastName'),
+                Email     = (String) row.get('Email'),
+                Company   = (String) row.get('Company')
+            ));
+        }
+        upsert leads Email;
+    }
+}
+```
+
+All other overridable methods — `buildStateDelta()`, `buildSerializedWorkerState()`, `finish()`, `onComplete()` — work identically to SOQL workers.
+
+#### 2. Create Config Record
+
+| Field | Value |
+|-------|-------|
+| `MasterLabel` | `Lead CSV Import` |
+| `Processing_Type__c` | `CSV` |
+| `Worker_Class__c` | `LeadImportWorker` |
+| `Parallel_Count__c` | `10` |
+| `Page_Size__c` | `200` |
+| `Active__c` | `true` |
+
+No `Query_Builder_Class__c` is needed for CSV jobs.
+
+#### 3. Set Up the CSV Middleware
+
+The framework uses an external middleware ([cursor-csv](https://github.com/ndrg2010/cursor-csv)) that indexes CSV files and serves rows via HTTP. The middleware calls back into Salesforce via Platform Events when indexing is complete — no polling.
+
+Deploy the Named Credential and External Credential from `unpackaged/`:
+
+```bash
+sf project deploy start --source-dir unpackaged/namedCredentials/
+sf project deploy start --source-dir unpackaged/externalCredentials/
+```
+
+Update the Named Credential URL to point at your middleware instance.
+
+#### 4. Run
+
+```apex
+CursorJob.run('Lead CSV Import', '{"contentVersionId": "068xx..."}');
+```
+
+The `contentVersionId` is the Salesforce `ContentVersion` ID of the uploaded CSV file. The framework handles everything else: middleware session init, callback, fan-out, parallel processing, retry, completion, and chaining.
+
+#### CSV Architecture
+
+```
+CursorJob.run() → createJobRecord → CursorBatch_Coordinator__e
+    → CursorJob.execute() detects CSV → CsvCursorClient.initSession()
+    → Middleware indexes file → CursorBatch_Coordinator__e (CSV_Ready)
+    → CursorBatchCsvCallbackCoordinator.execute()
+        → CsvCursorClient.getRowCount() → fanOutJob() → CursorBatch_Worker__e
+    → Workers: CsvCursorClient.getRows() → process(List<Map<String, Object>>)
+    → Completion: same as SOQL (reducers, finish, chaining)
 ```
 
 ## Architecture
@@ -593,7 +654,8 @@ When all workers complete, the coordinator's `finish()` method is invoked **via 
 **Implications for your code:**
 
 - `finish()` cannot access in-memory state from workers (they ran in different transactions)
-- Use `CursorBatch_Job__c` fields to pass summary data (status, counts, errors)
+- Use `getCurrentState()` to read the final reduced state and `getMetadata()` to read runtime parameters — both work in `process()` and `finish()` with the same API
+- Use `CursorBatch_Job__c` fields to read job-level summary data (status, counts, errors)
 - Any cleanup or notification logic in `finish()` has its own governor limits
 
 ### How Cursor Sharing Works
@@ -699,6 +761,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Worker_Max_Retries__c` | Number | 3 | Max retry attempts for failed worker page processing |
 | `Worker_Retry_Delay__c` | Number | 1 | Base delay in minutes for worker retry exponential backoff |
 | `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
+| `Processing_Type__c` | Text(10) | `SOQL` | Data source type: `SOQL` for cursor-based queries, `CSV` for file-based processing via external middleware |
 
 #### CursorJob Settings (Metadata-Driven Jobs)
 
@@ -1024,14 +1087,14 @@ The framework automatically detects which interface your query builder implement
 
 #### Accessing Metadata in Workers
 
-Workers access metadata via `ctx.metadataJson`. Metadata is automatically preserved across pages and retries:
+Workers access metadata via `getMetadata()`, which returns `Map<String, Object>` and works in both `process()` and `finish()`. Metadata is automatically preserved across pages and retries:
 
 ```apex
 public class MyWorker extends CursorBatchWorker {
     
     public override void process(List<SObject> records) {
-        if (String.isNotBlank(ctx.metadataJson)) {
-            Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(ctx.metadataJson);
+        Map<String, Object> meta = getMetadata();
+        if (meta != null) {
             Id targetId = (Id) meta.get('recordId');
             // Use targetId during processing...
         }
@@ -1040,6 +1103,8 @@ public class MyWorker extends CursorBatchWorker {
     }
 }
 ```
+
+> The raw JSON string is also available via `ctx.metadataJson` during `process()` if needed.
 
 #### How Metadata Flows
 
@@ -1079,8 +1144,8 @@ public class MyWorker extends CursorBatchWorker {
 | Stage | How Metadata Is Available |
 |-------|---------------------------|
 | **Query Builder** | Passed as the second argument to `buildQuery(methodName, metadataJson)` |
-| **Worker `process()`** | Via `ctx.metadataJson` on the `CursorBatchContext` |
-| **Worker `finish()`** | Via the `CursorBatch_Job__c.Metadata_JSON__c` field on the job record |
+| **Worker `process()`** | Via `getMetadata()` (or `ctx.metadataJson` for the raw JSON string) |
+| **Worker `finish()`** | Via `getMetadata()` (reads from `CursorBatch_Job__c.Metadata_JSON__c`) |
 | **Coordinator retries** | Restored from `CursorBatch_Job__c.Metadata_JSON__c` |
 
 #### Backward Compatibility
@@ -1186,7 +1251,56 @@ if (cancelled) {
 
 ### Worker finish() Method
 
-Workers can implement completion logic that runs when ALL workers for a job complete. This is useful for conditional chaining based on job results.
+Workers can implement completion logic that runs when ALL workers for a job complete. The `finish()` method has access to two framework-provided accessors that work the same way they do in `process()`:
+
+| Accessor | Returns | What it contains |
+|----------|---------|-----------------|
+| `getCurrentState()` | `Map<String, Object>` | The fully reduced shared state from all workers |
+| `getMetadata()` | `Map<String, Object>` | The runtime parameters passed at job launch |
+
+Both return `null` when no data was provided.
+
+**Example: Writing reduced state back to a record**
+
+```apex
+public class OrderSumWorker extends CursorBatchWorker {
+    private Decimal pageTotal = 0;
+
+    public override void process(List<SObject> records) {
+        for (Order__c order : (List<Order__c>) records) {
+            pageTotal += order.Amount__c;
+        }
+    }
+
+    protected override Object buildStateDelta() {
+        return new Map<String, Object>{ 'totalOrderAmount' => pageTotal };
+    }
+
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        Map<String, Object> state = getCurrentState();
+        Map<String, Object> meta  = getMetadata();
+
+        if (state == null || meta == null) {
+            return;
+        }
+
+        update new Opportunity(
+            Id = (Id) meta.get('opportunityId'),
+            Amount = (Decimal) state.get('totalOrderAmount')
+        );
+    }
+}
+```
+
+Launched with:
+
+```apex
+CursorJob.run('Order Sum Job', JSON.serialize(new Map<String, Object>{
+    'opportunityId' => someOppId
+}));
+```
+
+**Example: Conditional chaining based on job results**
 
 ```apex
 public class BillingBatchWorker extends CursorBatchWorker {
@@ -1196,7 +1310,6 @@ public class BillingBatchWorker extends CursorBatchWorker {
     }
     
     public override void finish(CursorBatch_Job__c jobRecord) {
-        // Called when ALL workers complete
         String jobName = jobRecord.Job_Name__c;
         
         if (jobName == 'Billing Before Advance') {
@@ -1274,15 +1387,16 @@ public class MyStateReducer implements ICursorBatchStateReducer {
 }
 ```
 
-Workers can read the current snapshot with `getCurrentState()` and emit a delta by overriding `buildStateDelta()`:
+Workers can read the current snapshot with `getCurrentState()` and emit a delta by overriding `buildStateDelta()`. Both `getCurrentState()` and `getMetadata()` return `Map<String, Object>` and work identically in `process()` and `finish()`:
 
 ```apex
 public class MyStatefulWorker extends CursorBatchWorker {
     private Integer lastPageSize = 0;
     
     public override void process(List<SObject> records) {
-        Map<String, Object> state = (Map<String, Object>) getCurrentState();
-        // Use the current snapshot while processing this page
+        Map<String, Object> state = getCurrentState();
+        Map<String, Object> meta  = getMetadata();
+        // Both return Map<String, Object> — use .get('key') to access values
         lastPageSize = records.size();
     }
     
@@ -1293,7 +1407,7 @@ public class MyStatefulWorker extends CursorBatchWorker {
     }
     
     public override void finish(CursorBatch_Job__c jobRecord) {
-        Map<String, Object> finalState = (Map<String, Object>) getCurrentState();
+        Map<String, Object> finalState = getCurrentState();
         // finalState reflects the fully reduced State_JSON__c value
     }
 }

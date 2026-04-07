@@ -68,14 +68,6 @@ public class SampleAccountOpportunityCoordinator extends CursorBatchCoordinator 
     }
     
     /**
-     * @description Called when the coordinator completes fanning out workers.
-     */
-    public override void onComplete() {
-        super.onComplete();
-        // Custom post-fanout logic
-    }
-    
-    /**
      * @description Called when ALL workers have completed.
      * @param jobRecord The job tracking record with completion status
      */

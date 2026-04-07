@@ -5,6 +5,9 @@
  */
 public without sharing class CursorBatchContext {
     
+    public static final String PROCESSING_TYPE_CSV = 'CSV';
+    public static final String PROCESSING_TYPE_SOQL = 'SOQL';
+    
     public Database.Cursor cursor { get; private set; }
     public Integer startPosition { get; private set; }
     public Integer endPosition { get; private set; }
@@ -26,6 +29,11 @@ public without sharing class CursorBatchContext {
     public String workerState { get; set; }
     /** Optional JSON metadata from job invocation. Available to workers via ctx.metadataJson. */
     public String metadataJson { get; private set; }
+    /** Processing type for this job (SOQL or CSV). Controls cursor reconstruction and fetch behavior. */
+    @TestVisible
+    public String processingType { get; private set; }
+    /** Convenience accessor: true when processingType is CSV. */
+    public Boolean isCsvJob { get { return processingType == PROCESSING_TYPE_CSV; } }
     
     /**
      * @description Constructs a CursorBatchContext with all parameters including retry support.
@@ -97,6 +105,7 @@ public without sharing class CursorBatchContext {
         this.stateDeltaJson = null;
         this.workerState = null;
         this.metadataJson = metadataJson;
+        this.processingType = PROCESSING_TYPE_SOQL;
     }
     
     /**
@@ -111,6 +120,7 @@ public without sharing class CursorBatchContext {
             this.cursorQueryId, this.retryCount, this.metadataJson
         );
         ctx.isFinal = this.isFinal;
+        ctx.processingType = this.processingType;
         // stateDeltaJson is for current run only (finalizer publishes it); do not copy
         ctx.workerState = this.workerState;
         return ctx;
@@ -175,7 +185,7 @@ public without sharing class CursorBatchContext {
      */
     public static CursorBatchContext fromEvent(CursorBatch_Worker__e evt, Database.Cursor cursor) {
         Integer retryCount = evt.Retry_Count__c != null ? Integer.valueOf(evt.Retry_Count__c) : 0;
-        return new CursorBatchContext(
+        CursorBatchContext ctx = new CursorBatchContext(
             cursor,
             Integer.valueOf(evt.Start_Position__c),
             Integer.valueOf(evt.End_Position__c),
@@ -188,6 +198,9 @@ public without sharing class CursorBatchContext {
             retryCount,
             evt.Metadata_JSON__c
         );
+        ctx.processingType = String.isNotBlank(evt.Processing_Type__c)
+            ? evt.Processing_Type__c : PROCESSING_TYPE_SOQL;
+        return ctx;
     }
     
     /**

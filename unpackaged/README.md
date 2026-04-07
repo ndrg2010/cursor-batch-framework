@@ -9,6 +9,7 @@ This directory contains metadata that is **NOT included in the CursorBatchFramew
 | **Platform Event Config** | `platformEventSubscriberConfigs/` | Required trigger configuration with org-specific running user |
 | **Sample Implementations** | `classes/Sample*.cls` | Example coordinators and workers demonstrating usage patterns |
 | **Nebula Logger Adapter** | `classes/NebulaLoggerAdapterForCursorBatch.cls` | Optional integration with Nebula Logger |
+| **CSV Middleware Credentials** | `namedCredentials/`, `externalCredentials/` | Templates for CSV middleware connectivity |
 
 ---
 
@@ -183,6 +184,33 @@ CursorJob.run('SampleStatefulLeadJob');
 - Set `Query_Builder_Method__c = 'buildOpenLeadQuery'`
 - Set `Worker_Class__c = 'SampleStatefulLeadWorker'`
 - Set `State_Reducer_Class__c = 'SampleStatefulLeadReducer'`
+
+---
+
+### CSV File Processing Pattern
+
+The CSV samples demonstrate file-based processing using the same framework features as SOQL jobs.
+
+| Sample | Description |
+|--------|-------------|
+| `SampleCsvLeadWorker` | Processes CSV rows and upserts Lead records by Email |
+| `SampleCsvStatefulWorker` | CSV worker with reducer-based shared state and `finish()` callback |
+
+```apex
+// Process a CSV file
+CursorJob.run('SampleCsvLeadJob', '{"contentVersionId": "068xx..."}');
+
+// CSV job with stateful reducer
+CursorJob.run('SampleCsvStatefulJob', '{"contentVersionId": "068xx..."}');
+```
+
+**Setup Required:**
+
+1. Deploy the Named Credential and External Credential from `unpackaged/namedCredentials/` and `unpackaged/externalCredentials/`
+2. Update the Named Credential URL to point at your [cursor-csv](https://github.com/ndrg2010/cursor-csv) middleware instance
+3. Create `CursorBatch_Config__mdt` records:
+   - `MasterLabel = 'SampleCsvLeadJob'`, `Processing_Type__c = 'CSV'`, `Worker_Class__c = 'SampleCsvLeadWorker'`
+   - `MasterLabel = 'SampleCsvStatefulJob'`, `Processing_Type__c = 'CSV'`, `Worker_Class__c = 'SampleCsvStatefulWorker'`, `Enable_State_Reducer__c = true`
 
 ---
 

@@ -119,13 +119,80 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     }
     
     /**
+     * @description Executes the coordinator. For SOQL jobs, delegates to the standard cursor-based
+     *              path. For CSV jobs, initiates a middleware session and returns — the middleware
+     *              calls back via CursorBatch_Coordinator__e when the file is indexed.
+     * @param ctx Queueable context
+     */
+    public override void execute(QueueableContext ctx) {
+        if (config == null) {
+            loadConfig(jobName);
+        }
+        String pType = config != null ? config.Processing_Type__c : null;
+        if (pType == CursorBatchContext.PROCESSING_TYPE_CSV) {
+            executeCsvInit(ctx);
+        } else {
+            super.execute(ctx);
+        }
+    }
+    
+    /**
+     * @description Initiates a CSV middleware session. Extracts the contentVersionId from
+     *              metadataJson and sends it to the middleware for indexing. The job stays
+     *              in Preparing status until the middleware calls back.
+     * @param ctx Queueable context
+     */
+    private void executeCsvInit(QueueableContext ctx) {
+        try {
+            CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobRecordId);
+            if (jobRecord == null) {
+                throw new CursorBatchException('Job record not found: ' + jobRecordId);
+            }
+            
+            if (String.isBlank(this.metadataJson) && String.isNotBlank(jobRecord.Metadata_JSON__c)) {
+                this.metadataJson = jobRecord.Metadata_JSON__c;
+            }
+            
+            if (String.isBlank(this.metadataJson)) {
+                throw new CursorBatchException(
+                    'CSV jobs require metadataJson with contentVersionId for job: ' + jobName
+                );
+            }
+            
+            Map<String, Object> metadata = (Map<String, Object>) JSON.deserializeUntyped(this.metadataJson);
+            String contentVersionId = (String) metadata.get('contentVersionId');
+            if (String.isBlank(contentVersionId)) {
+                throw new CursorBatchException(
+                    'metadataJson must include contentVersionId for CSV job: ' + jobName
+                );
+            }
+            
+            logger.logInfo('CursorJob CSV init for ' + jobName + ': contentVersionId=' + contentVersionId);
+            
+            attachFinalizer(jobRecord.Id, null);
+            
+            CsvCursorClient.initSession(contentVersionId, jobRecord.Id);
+            
+            logger.logInfo('CursorJob CSV middleware session initiated for ' + jobName +
+                ', awaiting callback');
+                
+        } catch (Exception e) {
+            logger.logException('CursorJob CSV init error for ' + jobName, e);
+            throw e;
+        }
+    }
+    
+    /**
      * @description Builds the SOQL query by delegating to the configured query builder class.
-     *              Instantiates the query builder via reflection and calls buildQuery(methodName).
-     * @return Complete SOQL query string
-     * @throws CursorBatchException When query builder class is not configured or not found
+     *              Returns null for CSV jobs (no SOQL needed).
+     * @return Complete SOQL query string, or null for CSV jobs
+     * @throws CursorBatchException When query builder class is not configured for SOQL jobs
      */
     public override String buildQuery() {
         if (String.isBlank(queryBuilderClass) || String.isBlank(queryBuilderMethod)) {
+            if (config != null && config.Processing_Type__c == CursorBatchContext.PROCESSING_TYPE_CSV) {
+                return null;
+            }
             throw new CursorBatchException(
                 'CursorJob requires Query_Builder_Class__c and Query_Builder_Method__c in config for job: ' + jobName
             );

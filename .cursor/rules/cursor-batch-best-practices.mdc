@@ -20,7 +20,7 @@ new MyCustomCoordinator().submit();
 ```
 
 **Required metadata configuration** (`CursorBatch_Config__mdt`):
-- `Query_Builder_Class__c` — Selector class implementing `ICursorBatchQueryBuilder`
+- `Query_Builder_Class__c` — Selector class implementing `ICursorBatchQueryBuilder` (or `ICursorBatchMetadataQueryBuilder` if it needs runtime parameters)
 - `Query_Builder_Method__c` — Method name returning the query string
 - `Worker_Class__c` — Worker class extending `CursorBatchWorker`
 
@@ -56,7 +56,7 @@ public class AccountStatusWorker extends CursorBatchWorker {
 ```
 
 **Thin worker rules**:
-1. Default constructor only — framework handles initialization
+1. No constructor needed — the inherited default constructor handles everything. Only add one if you need to call `setLogger()`.
 2. `process()` does one thing: process records
 3. No state management — use `CursorBatchContext` for execution parameters
 4. Don't catch exceptions unless you want to suppress retry (see below)
@@ -252,20 +252,25 @@ Existing query builders implementing `ICursorBatchQueryBuilder` continue to work
 
 ### Accessing Metadata in Workers
 
-Workers read metadata from `ctx.metadataJson`:
+Metadata scopes the query (query builder's job). Workers typically don't need it during `process()` — they just process whatever records the cursor returns. Use `getMetadata()` in `finish()` to post results back to the originating record:
 
 ```apex
 public class MyWorker extends CursorBatchWorker {
     public override void process(List<SObject> records) {
-        if (String.isNotBlank(ctx.metadataJson)) {
-            Map<String, Object> meta = (Map<String, Object>) JSON.deserializeUntyped(ctx.metadataJson);
+        update records;
+    }
+
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        Map<String, Object> state = getCurrentState();
+        Map<String, Object> meta  = getMetadata();
+        if (meta != null) {
             Id targetId = (Id) meta.get('recordId');
         }
     }
 }
 ```
 
-Metadata is automatically preserved across pages and retries — no extra work needed.
+`getMetadata()` and `getCurrentState()` work in both `process()` and `finish()`. Metadata is automatically preserved across pages and retries.
 
 ---
 

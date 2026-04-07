@@ -49,17 +49,6 @@ public class SampleLeadCoordinator extends CursorBatchCoordinator {
     }
     
     /**
-     * @description Called when the coordinator completes fanning out workers.
-     *              Override for custom post-fanout logic (e.g., notifications).
-     */
-    public override void onComplete() {
-        super.onComplete();
-        // Add custom logic here, e.g.:
-        // - Send notification that processing has started
-        // - Log to external system
-    }
-    
-    /**
      * @description Called when ALL workers have completed (success or failure).
      *              Use this for job chaining, sending completion notifications,
      *              or cleanup tasks.

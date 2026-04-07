@@ -34,6 +34,8 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
     
     /**
      * @description Processes a single event by instantiating and enqueueing a coordinator.
+     *              Routes CSV_Ready callbacks to CursorBatchCsvCallbackCoordinator and
+     *              CSV_Error callbacks to failure handling.
      * @param evt CursorBatch_Coordinator__e event containing coordinator parameters
      */
     private void processEvent(CursorBatch_Coordinator__e evt) {
@@ -42,6 +44,16 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
             
             if (String.isBlank(coordinatorClassName)) {
                 logger.logError('CursorBatchCoordinatorTriggerHandler: Coordinator class name not specified for job "' + evt.Job_Name__c + '"');
+                return;
+            }
+            
+            if (coordinatorClassName == 'CSV_Ready') {
+                handleCsvCallback(evt);
+                return;
+            }
+            
+            if (coordinatorClassName == 'CSV_Error') {
+                handleCsvError(evt);
                 return;
             }
             
@@ -59,6 +71,82 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
             
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinatorTriggerHandler: Error processing event for job "' + evt.Job_Name__c + '"', e);
+        }
+    }
+    
+    /**
+     * @description Handles a CSV_Ready callback from the middleware. The middleware has finished
+     *              indexing the file and the csvCursorQuery is available for pagination.
+     * @param evt Platform Event where Job_Name__c contains the csvCursorQuery
+     */
+    private void handleCsvCallback(CursorBatch_Coordinator__e evt) {
+        String csvCursorQuery = evt.Job_Name__c;
+        Id jobId;
+        try {
+            jobId = Id.valueOf(evt.Job_Record_Id__c);
+        } catch (Exception e) {
+            logger.logError('CursorBatchCoordinatorTriggerHandler: CSV_Ready with invalid job record ID: ' + evt.Job_Record_Id__c);
+            return;
+        }
+        
+        logger.logInfo('CursorBatchCoordinatorTriggerHandler: CSV_Ready callback for job record ' +
+            jobId + ', csvCursorQuery=' + csvCursorQuery);
+        
+        // Lock the job record to prevent duplicate callback processing (TOCTOU guard).
+        // Persist csvCursorQuery here so it survives coordinator transaction rollback on retry.
+        List<CursorBatch_Job__c> jobs = [
+            SELECT Id, Status__c, Cursor_Query_Id__c
+            FROM CursorBatch_Job__c
+            WHERE Id = :jobId
+            FOR UPDATE
+        ];
+        if (jobs.isEmpty()) {
+            logger.logError('CursorBatchCoordinatorTriggerHandler: CSV_Ready callback for missing job record: ' + jobId);
+            return;
+        }
+        
+        CursorBatch_Job__c jobRecord = jobs[0];
+        if (jobRecord.Status__c != 'Preparing' || String.isNotBlank(jobRecord.Cursor_Query_Id__c)) {
+            logger.logInfo('CursorBatchCoordinatorTriggerHandler: Ignoring duplicate CSV_Ready for job ' +
+                jobId + ' (status=' + jobRecord.Status__c + ', cursorQueryId=' + jobRecord.Cursor_Query_Id__c + ')');
+            return;
+        }
+        
+        jobRecord.Cursor_Query_Id__c = csvCursorQuery;
+        update jobRecord;
+        
+        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator(csvCursorQuery);
+        coordinator.setJobRecordId(jobId);
+        
+        if (!Test.isRunningTest()) {
+            System.enqueueJob(coordinator);
+        }
+    }
+    
+    /**
+     * @description Handles a CSV_Error callback from the middleware. Marks the job as Failed
+     *              with the error message carried in Job_Name__c.
+     * @param evt Platform Event where Job_Name__c contains the error message
+     */
+    private void handleCsvError(CursorBatch_Coordinator__e evt) {
+        String errorMessage = evt.Job_Name__c;
+        Id jobId;
+        try {
+            jobId = Id.valueOf(evt.Job_Record_Id__c);
+        } catch (Exception e) {
+            logger.logError('CursorBatchCoordinatorTriggerHandler: CSV_Error with invalid job record ID: ' + evt.Job_Record_Id__c);
+            return;
+        }
+        
+        logger.logError('CursorBatchCoordinatorTriggerHandler: CSV_Error for job ' + jobId + ': ' + errorMessage);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobId);
+        if (jobRecord != null) {
+            jobRecord.Status__c = 'Failed';
+            jobRecord.Error_Message__c = 'CSV middleware error: ' + errorMessage;
+            jobRecord.Completed_At__c = System.now();
+            update jobRecord;
+            CursorBatchCompletionHandler.routeFinishCallback(jobRecord, logger);
         }
     }
     

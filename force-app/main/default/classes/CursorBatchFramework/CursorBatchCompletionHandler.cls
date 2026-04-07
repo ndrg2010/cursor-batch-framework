@@ -315,8 +315,8 @@ public without sharing class CursorBatchCompletionHandler {
             return;
         }
         
-        // Path 3: Query_Builder_Class is set - this is a CursorJob, call worker.finish()
-        if (config != null && String.isNotBlank(config.Query_Builder_Class__c)) {
+        // Path 3: CursorJob (SOQL with query builder, or CSV) - call worker.finish()
+        if (config != null && (String.isNotBlank(config.Query_Builder_Class__c) || config.Processing_Type__c == CursorBatchContext.PROCESSING_TYPE_CSV)) {
             String workerClass = config.Worker_Class__c;
             if (String.isNotBlank(workerClass)) {
                 CursorBatchWorker.invokeFinishCallback(workerClass, job, logger);

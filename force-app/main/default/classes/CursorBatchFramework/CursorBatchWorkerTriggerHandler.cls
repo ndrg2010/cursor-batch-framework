@@ -34,22 +34,27 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
     }
     
     /**
-     * @description Processes a single event by reconstructing the cursor and enqueueing a worker.
+     * @description Processes a single event by reconstructing the cursor (for SOQL) or
+     *              skipping reconstruction (for CSV) and enqueueing a worker.
      * @param evt CursorBatch_Worker__e event containing worker parameters
      */
     private void processEvent(CursorBatch_Worker__e evt) {
         try {
-            String queryId = evt.Cursor_Query_Id__c;
-            Database.Cursor cursor = cursorsByQueryId.get(queryId);
+            Database.Cursor cursor = null;
             
-            if (cursor == null) {
-                cursor = CursorBatchContext.reconstructCursor(queryId);
+            if (evt.Processing_Type__c != CursorBatchContext.PROCESSING_TYPE_CSV) {
+                String queryId = evt.Cursor_Query_Id__c;
+                cursor = cursorsByQueryId.get(queryId);
+                
                 if (cursor == null) {
-                    logger.logError('CursorBatchWorkerTriggerHandler: Failed to reconstruct cursor for queryId "' + queryId + '"');
-                    return;
+                    cursor = CursorBatchContext.reconstructCursor(queryId);
+                    if (cursor == null) {
+                        logger.logError('CursorBatchWorkerTriggerHandler: Failed to reconstruct cursor for queryId "' + queryId + '"');
+                        return;
+                    }
+                    logger.logInfo('CursorBatchWorkerTriggerHandler: Reconstructed cursor for queryId "' + queryId + '"');
+                    cursorsByQueryId.put(queryId, cursor);
                 }
-                logger.logInfo('CursorBatchWorkerTriggerHandler: Reconstructed cursor for queryId "' + queryId + '"');
-                cursorsByQueryId.put(queryId, cursor);
             }
             
             CursorBatchContext ctx = CursorBatchContext.fromEvent(evt, cursor);

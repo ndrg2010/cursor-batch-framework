@@ -99,7 +99,7 @@ public without sharing class CursorBatchSelector {
                    Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c,
                    Chain_To_Job__c, Chain_To_Class__c, Chain_To_Method__c,
                    Query_Builder_Class__c, Query_Builder_Method__c, Worker_Class__c, Logger_Tag__c,
-                   State_Reducer_Class__c, Enable_State_Reducer__c
+                   State_Reducer_Class__c, Enable_State_Reducer__c, Processing_Type__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true

@@ -15,16 +15,6 @@
 public class SampleLeadWorker extends CursorBatchWorker {
     
     /**
-     * @description Default constructor required for reflection-based instantiation.
-     *              The framework creates worker instances dynamically using Type.forName().
-     */
-    public SampleLeadWorker() {
-        super();
-        // Optionally set a custom logger:
-        // setLogger(NebulaLoggerAdapterForCursorBatch.getInstance());
-    }
-    
-    /**
      * @description Processes a batch of Lead records. This method is called once
      *              per page of records. The worker may process multiple pages if
      *              assigned a range larger than the page size.
@@ -55,16 +45,6 @@ public class SampleLeadWorker extends CursorBatchWorker {
         // if (response.getStatusCode() == 429) {
         //     throw CursorBatchRetryException.create('Rate limited by external service', 5);
         // }
-    }
-    
-    /**
-     * @description Called when this worker finishes ALL its assigned pages.
-     *              Override for custom cleanup or logging. Note: This is called
-     *              per-worker, not when the entire job completes.
-     */
-    public override void onComplete() {
-        super.onComplete();
-        // Add custom per-worker completion logic here
     }
 }
 

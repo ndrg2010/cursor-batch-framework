@@ -22,6 +22,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     protected ICursorBatchLogger logger;
     protected Object currentState;
     private Boolean stateLoaded = false;
+    private String finishMetadataJson;
     
     /**
      * @description Default constructor for reflection-based instantiation. Context must be set
@@ -69,13 +70,12 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     }
     
     /**
-     * @description Executes the worker: fetches a page of records, processes them, and
-     *              re-enqueues for the next page if more records remain. Handles retries
-     *              for CursorBatchRetryException (self-retry) and other exceptions (finalizer retry).
+     * @description Executes the worker: delegates to fetchAndProcess() for data retrieval
+     *              and business logic, then handles state delta, pagination, and completion.
+     *              Subclasses override fetchAndProcess() for different data sources (e.g. CSV).
      * @param queueableCtx Queueable context (unused; required by Queueable interface)
      */
     public void execute(QueueableContext queueableCtx) {
-        // Attach finalizer FIRST to catch uncatchable exceptions (permissions, limits, etc.)
         attachFinalizer();
         
         if (ctx == null || String.isBlank(ctx.jobName)) {
@@ -85,55 +85,36 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         }
         
         try {
-            ctx.stateDeltaJson = null;  // Current run only; set below after successful process(); finalizer reads it for completion event
-            if (ctx.cursor == null) {
-                logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
-                    ') has no cursor available');
-                onComplete();
-                return;
-            }
+            ctx.stateDeltaJson = null;
             
-            // Calculate safe fetch count to avoid "Fetch beyond bound" errors
-            Integer remainingInRange = ctx.endPosition - ctx.startPosition;
-            Integer remainingInCursor = ctx.cursor.getNumRecords() - ctx.startPosition;
-            Integer fetchCount = Math.min(ctx.pageSize, Math.min(remainingInRange, remainingInCursor));
+            FetchResult result = fetchAndProcess();
             
-            if (fetchCount <= 0) {
+            if (result.isEmpty) {
                 ctx.isFinal = true;
                 onComplete();
                 return;
             }
             
-            List<SObject> scope = ctx.cursor.fetch(ctx.startPosition, fetchCount);
-            
-            if (scope.isEmpty()) {
-                ctx.isFinal = true;
-                onComplete();
-                return;
-            }
-            
-            String retryInfo = ctx.retryCount > 0 ? ' (retry ' + ctx.retryCount + ')' : '';
-            logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + 
-                scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
-            
-            process(scope);
             ctx.stateDeltaJson = CursorBatchStateManager.serializeDelta(ctx.jobName, buildStateDelta());
             if (ctx.stateDeltaJson != null && ctx.stateDeltaJson.length() > CursorBatchStateManager.STATE_JSON_MAX_LENGTH) {
                 logger.logError('CursorBatchWorker: State delta exceeds field limit for job ' + ctx.jobName + ', discarding');
                 ctx.stateDeltaJson = null;
             }
             
-            Integer newPosition = ctx.startPosition + scope.size();
+            Integer newPosition = ctx.startPosition + result.recordCount;
             
-            if (newPosition < ctx.endPosition && newPosition < ctx.cursor.getNumRecords()) {
-                // Check if job was cancelled (kill switch) before spooling to next page
+            Boolean hasMorePages = newPosition < ctx.endPosition;
+            if (ctx.cursor != null) {
+                hasMorePages = hasMorePages && newPosition < ctx.cursor.getNumRecords();
+            }
+            
+            if (hasMorePages) {
                 if (CursorBatchSelector.isJobCancelled(ctx.jobRecordId)) {
                     logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
                         ') stopping - job was cancelled');
                     ctx.isFinal = true;
                     onComplete();
                 } else {
-                    // More pages to process - build state for next run; enqueue only outside test
                     String serializedState = buildSerializedWorkerState();
                     if (!Test.isRunningTest()) {
                         CursorBatchContext nextCtx = ctx.withNextPosition(newPosition, serializedState);
@@ -141,18 +122,63 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
                     }
                 }
             } else {
-                // Final page - mark as complete
                 ctx.isFinal = true;
                 onComplete();
             }
             
         } catch (CursorBatchRetryException retryEx) {
-            // Caller explicitly requested retry - handle with self-retry
             handleRetry(retryEx, retryEx.suggestedDelayMinutes);
         } catch (Exception e) {
-            // Finalizer already attached at start - it will handle retry
             logger.logException('CursorBatchWorker error for ' + ctx.jobName + ' at position ' + ctx.startPosition, e);
             throw e;
+        }
+    }
+    
+    /**
+     * @description Fetches a page of data and delegates to process(). Override in subclasses
+     *              to change the data source (e.g. CursorBatchCsvWorker fetches from middleware).
+     * @return FetchResult indicating how many records were processed (or empty)
+     */
+    protected virtual FetchResult fetchAndProcess() {
+        if (ctx.cursor == null) {
+            logger.logError('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + 
+                ') has no cursor available');
+            return new FetchResult(0, true);
+        }
+        
+        Integer remainingInRange = ctx.endPosition - ctx.startPosition;
+        Integer remainingInCursor = ctx.cursor.getNumRecords() - ctx.startPosition;
+        Integer fetchCount = Math.min(ctx.pageSize, Math.min(remainingInRange, remainingInCursor));
+        
+        if (fetchCount <= 0) {
+            return new FetchResult(0, true);
+        }
+        
+        List<SObject> scope = ctx.cursor.fetch(ctx.startPosition, fetchCount);
+        
+        if (scope.isEmpty()) {
+            return new FetchResult(0, true);
+        }
+        
+        String retryInfo = ctx.retryCount > 0 ? ' (retry ' + ctx.retryCount + ')' : '';
+        logger.logInfo('CursorBatchWorker (' + ctx.jobName + ' #' + ctx.workerNum + ') processing ' + 
+            scope.size() + ' records at position ' + ctx.startPosition + retryInfo);
+        
+        process(scope);
+        return new FetchResult(scope.size(), false);
+    }
+    
+    /**
+     * @description Result of a fetchAndProcess() call. Tells execute() whether data was
+     *              processed and how many records advanced the cursor position.
+     */
+    public class FetchResult {
+        public Integer recordCount { get; private set; }
+        public Boolean isEmpty { get; private set; }
+        
+        public FetchResult(Integer recordCount, Boolean isEmpty) {
+            this.recordCount = recordCount;
+            this.isEmpty = isEmpty;
         }
     }
     
@@ -224,6 +250,7 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     private void initializeFinishState(CursorBatch_Job__c jobRecord) {
         currentState = CursorBatchStateManager.deserializeState(jobRecord?.Job_Name__c, jobRecord?.State_JSON__c);
         stateLoaded = true;
+        finishMetadataJson = jobRecord?.Metadata_JSON__c;
     }
     
     /**
@@ -236,17 +263,44 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     public abstract void process(List<SObject> records);
     
     /**
-     * @description Returns the current shared state snapshot for reducer-enabled CursorJob workers.
-     *              Loads state from the job record on first call (lazy); subsequent calls return
-     *              the cached value. Subclasses can cast this to their reducer's state type.
-     * @return Current state snapshot, or null when no reducer is configured or state is not loaded
+     * @description Returns the current shared state snapshot as a map. This is the primary
+     *              accessor for reducer-enabled workers using the built-in CursorBatchCounterReducer
+     *              or any reducer whose state shape is Map<String, Object>. Loads state from
+     *              the job record on first call (lazy); subsequent calls return the cached value.
+     * @return Current state map, or null when no reducer is configured or state is not loaded
      */
-    protected Object getCurrentState() {
+    protected Map<String, Object> getCurrentState() {
+        Object raw = getCurrentStateObject();
+        return raw != null ? (Map<String, Object>) raw : null;
+    }
+    
+    /**
+     * @description Returns the current shared state snapshot as an untyped Object. Use this
+     *              instead of getCurrentState() when your custom reducer returns a typed class
+     *              rather than a Map. Cast the result to your reducer's state type.
+     * @return Current state object, or null when no reducer is configured or state is not loaded
+     */
+    protected Object getCurrentStateObject() {
         if (!stateLoaded) {
             loadCurrentStateInternal();
             stateLoaded = true;
         }
         return currentState;
+    }
+    
+    /**
+     * @description Returns the runtime metadata passed at job invocation, deserialized as a map.
+     *              Works in both process() (reads from ctx.metadataJson) and finish() (reads
+     *              from the job record's Metadata_JSON__c). Returns null when no metadata was provided.
+     * @return Deserialized metadata map, or null
+     */
+    protected Map<String, Object> getMetadata() {
+        String raw = finishMetadataJson != null ? finishMetadataJson
+                   : (ctx != null ? ctx.metadataJson : null);
+        if (String.isBlank(raw)) {
+            return null;
+        }
+        return (Map<String, Object>) JSON.deserializeUntyped(raw);
     }
     
     /**

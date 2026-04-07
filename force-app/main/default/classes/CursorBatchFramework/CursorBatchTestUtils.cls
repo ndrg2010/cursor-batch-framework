@@ -620,7 +620,7 @@ public without sharing class CursorBatchTestUtils {
         private Integer lastPageSize = 0;
         
         public override void process(List<SObject> records) {
-            testStatefulWorker_lastSeenState = (Map<String, Object>) getCurrentState();
+            testStatefulWorker_lastSeenState = getCurrentState();
             lastPageSize = records != null ? records.size() : 0;
         }
         
@@ -633,7 +633,7 @@ public without sharing class CursorBatchTestUtils {
         
         public override void finish(CursorBatch_Job__c jobRecord) {
             testStatefulWorker_finishCalled = true;
-            testStatefulWorker_lastFinishedState = (Map<String, Object>) getCurrentState();
+            testStatefulWorker_lastFinishedState = getCurrentState();
         }
     }
     
@@ -709,6 +709,135 @@ public without sharing class CursorBatchTestUtils {
             String json = JSON.serialize(new Map<String, Object>{ 'count' => recordsProcessedThisWorker });
             testWorkerStateAccumulator_lastSerializedState = json;
             return json;
+        }
+    }
+    
+    // ============================================
+    // CSV Test Helpers
+    // ============================================
+    
+    public static List<Map<String, Object>> testCsvWorker_processedRows = new List<Map<String, Object>>();
+    public static Integer testCsvWorker_processCallCount = 0;
+    public static Boolean testCsvWorker_finishCalled = false;
+    
+    public static void resetCsvWorker() {
+        testCsvWorker_processedRows = new List<Map<String, Object>>();
+        testCsvWorker_processCallCount = 0;
+        testCsvWorker_finishCalled = false;
+    }
+    
+    /**
+     * @description Concrete CSV worker for testing.
+     */
+    public class TestCsvWorker extends CursorBatchCsvWorker {
+        
+        public TestCsvWorker() {
+            super();
+        }
+        
+        public override void process(List<Map<String, Object>> rows) {
+            testCsvWorker_processedRows.addAll(rows);
+            testCsvWorker_processCallCount++;
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            testCsvWorker_finishCalled = true;
+        }
+
+        public Decimal testToDecimal(Object v) { return toDecimal(v); }
+        public Integer testToInteger(Object v) { return toInteger(v); }
+        public Date testToDate(Object v) { return toDate(v); }
+        public Datetime testToDatetime(Object v) { return toDatetime(v); }
+        public Boolean testToBoolean(Object v) { return toBoolean(v); }
+    }
+    
+    /**
+     * @description Creates a CursorBatchContext configured for CSV processing.
+     * @param jobRecordId Job record ID
+     * @param csvCursorQuery Session ID for the middleware
+     * @return CursorBatchContext with processingType = CSV and null cursor
+     */
+    public static CursorBatchContext createCsvTestContext(Id jobRecordId, String csvCursorQuery) {
+        CursorBatchContext ctx = new CursorBatchContext(
+            null,   // no Database.Cursor for CSV
+            0,      // startPosition
+            10,     // endPosition
+            5,      // pageSize
+            'TestCsvJob',
+            1,      // workerNum
+            jobRecordId,
+            'CursorBatchTestUtils.TestCsvWorker',
+            csvCursorQuery,
+            0
+        );
+        ctx.processingType = CursorBatchContext.PROCESSING_TYPE_CSV;
+        return ctx;
+    }
+    
+    /**
+     * @description HTTP mock for CsvCursorClient tests.
+     */
+    public class CsvMiddlewareMock implements HttpCalloutMock {
+        
+        private Map<String, HttpResponse> responseMap = new Map<String, HttpResponse>();
+        
+        public CsvMiddlewareMock withInitSuccess() {
+            HttpResponse res = new HttpResponse();
+            res.setStatusCode(200);
+            res.setBody('{"status":"ok"}');
+            responseMap.put('POST:/init', res);
+            return this;
+        }
+        
+        public CsvMiddlewareMock withRowCount(Integer count) {
+            HttpResponse res = new HttpResponse();
+            res.setStatusCode(200);
+            res.setBody('{"totalRows":' + count + '}');
+            responseMap.put('GET:/count', res);
+            return this;
+        }
+        
+        public CsvMiddlewareMock withRows(List<Map<String, Object>> rows) {
+            HttpResponse res = new HttpResponse();
+            res.setStatusCode(200);
+            res.setBody(JSON.serialize(new Map<String, Object>{ 'rows' => rows }));
+            responseMap.put('GET:/rows', res);
+            return this;
+        }
+        
+        public CsvMiddlewareMock withError(String endpoint, Integer statusCode, String body) {
+            HttpResponse res = new HttpResponse();
+            res.setStatusCode(statusCode);
+            res.setBody(body);
+            responseMap.put(endpoint, res);
+            return this;
+        }
+        
+        public HttpResponse respond(HttpRequest req) {
+            String method = req.getMethod();
+            String endpoint = req.getEndpoint();
+            
+            String path;
+            if (endpoint.contains('/init')) {
+                path = '/init';
+            } else if (endpoint.contains('/count')) {
+                path = '/count';
+            } else if (endpoint.contains('/rows')) {
+                path = '/rows';
+            } else {
+                path = '/unknown';
+            }
+            
+            String key = method + ':' + path;
+            HttpResponse res = responseMap.get(key);
+            if (res != null) {
+                return res;
+            }
+            
+            HttpResponse defaultRes = new HttpResponse();
+            defaultRes.setStatusCode(404);
+            defaultRes.setBody('No mock configured for ' + key);
+            return defaultRes;
         }
     }
     

@@ -64,7 +64,8 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
     }
     
     /**
-     * @description Reconstructs cursor and re-enqueues worker with delay for retry.
+     * @description Reconstructs cursor (for SOQL) or skips reconstruction (for CSV) and
+     *              re-enqueues worker with delay for retry.
      * @param maxRetries Maximum retry attempts (passed to avoid redundant config lookup)
      * @param errorMessage Error from the failed attempt (for logging)
      */
@@ -76,18 +77,20 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             ' for worker #' + ctx.workerNum + ' in ' + delay + ' min at position ' + ctx.startPosition);
         
         try {
-            // Reconstruct cursor from queryId
-            Database.Cursor cursor = CursorBatchContext.reconstructCursor(ctx.cursorQueryId);
-            if (cursor == null) {
-                logger.logError('CursorBatchWorkerFinalizer: Failed to reconstruct cursor for queryId: ' + ctx.cursorQueryId);
-                publishCompletionEvent(false, 'Failed to reconstruct cursor for retry: ' + errorMessage, true);
-                return;
+            CursorBatchContext retryCtx;
+            
+            if (ctx.isCsvJob) {
+                retryCtx = ctx.withRetry(newRetryCount);
+            } else {
+                Database.Cursor cursor = CursorBatchContext.reconstructCursor(ctx.cursorQueryId);
+                if (cursor == null) {
+                    logger.logError('CursorBatchWorkerFinalizer: Failed to reconstruct cursor for queryId: ' + ctx.cursorQueryId);
+                    publishCompletionEvent(false, 'Failed to reconstruct cursor for retry: ' + errorMessage, true);
+                    return;
+                }
+                retryCtx = ctx.withCursor(cursor).withRetry(newRetryCount);
             }
             
-            // Create retry context with new cursor and incremented retry count
-            CursorBatchContext retryCtx = ctx.withCursor(cursor).withRetry(newRetryCount);
-            
-            // Instantiate and enqueue worker
             CursorBatchWorker worker = CursorBatchContext.createWorkerInstance(ctx.workerClassName, retryCtx);
             System.enqueueJob(worker, delay);
             
