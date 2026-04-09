@@ -69,13 +69,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HDDlAAO) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HDDlAAO) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HJSrAAO) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HJSrAAO) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000HDDlAAO --target-org your-org --wait 10
+sf package install --package 04tfj000000HJSrAAO --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -2111,7 +2111,7 @@ Chain_To_Method__c: run
 | `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
 | `CursorBatchCsvWorker` | Abstract base for CSV file workers. Receives `List<Map<String, Object>>` rows instead of `List<SObject>` — all other features (reducers, retry, chaining) work identically |
 | `CursorBatchCsvCallbackCoordinator` | Handles CSV middleware callback — receives row count via Platform Event and triggers worker fan-out |
-| `CsvCursorClient` | HTTP client for the CSV middleware. Manages session init, row count retrieval, and paginated row fetches via Named Credential |
+| `CsvCursorClient` | HTTP client for the CSV middleware (Content Session API v1). Manages session init, status polling, paginated row fetches, and session deletion via Named Credential |
 
 ### Custom Objects
 

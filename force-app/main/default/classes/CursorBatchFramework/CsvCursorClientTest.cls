@@ -2,14 +2,16 @@
 private class CsvCursorClientTest {
 
     @IsTest
-    static void initSession_sendsCorrectPayload() {
+    static void initSession_returnsCsvQueryId() {
         Test.setMock(HttpCalloutMock.class, new CursorBatchTestUtils.CsvMiddlewareMock().withInitSuccess());
 
         CursorBatch_Job__c job = CursorBatchTestUtils.createTestJobRecord('CsvTest', 1, 'CursorJob');
 
         Test.startTest();
-        CsvCursorClient.initSession('068000000000001', job.Id);
+        String csvQueryId = CsvCursorClient.initSession('068000000000001', job.Id);
         Test.stopTest();
+
+        System.assertEquals('cq-test-session', csvQueryId, 'Expected csvQueryId from 202 response');
     }
 
     @IsTest
@@ -69,5 +71,31 @@ private class CsvCursorClientTest {
         Test.stopTest();
 
         System.assert(rows.isEmpty());
+    }
+
+    @IsTest
+    static void deleteSession_succeeds() {
+        Test.setMock(HttpCalloutMock.class, new CursorBatchTestUtils.CsvMiddlewareMock().withDeleteSuccess());
+
+        Test.startTest();
+        CsvCursorClient.deleteSession('cq_test123');
+        Test.stopTest();
+    }
+
+    @IsTest
+    static void deleteSession_throwsOnHttpError() {
+        Test.setMock(HttpCalloutMock.class,
+            new CursorBatchTestUtils.CsvMiddlewareMock().withError('DELETE:/session', 404, 'Session not found'));
+
+        Boolean caught = false;
+        Test.startTest();
+        try {
+            CsvCursorClient.deleteSession('cq_missing');
+        } catch (CursorBatchCoordinator.CursorBatchException e) {
+            caught = true;
+            System.assert(e.getMessage().contains('404'), 'Expected status code in error message');
+        }
+        Test.stopTest();
+        System.assert(caught, 'Expected exception on HTTP error');
     }
 }

@@ -775,7 +775,8 @@ public without sharing class CursorBatchTestUtils {
     }
     
     /**
-     * @description HTTP mock for CsvCursorClient tests.
+     * @description HTTP mock for CsvCursorClient tests. Matches the Content Session API v1
+     *              path convention: POST /init, GET /{id}/status, GET /{id}/rows, DELETE /{id}.
      */
     public class CsvMiddlewareMock implements HttpCalloutMock {
         
@@ -783,8 +784,8 @@ public without sharing class CursorBatchTestUtils {
         
         public CsvMiddlewareMock withInitSuccess() {
             HttpResponse res = new HttpResponse();
-            res.setStatusCode(200);
-            res.setBody('{"status":"ok"}');
+            res.setStatusCode(202);
+            res.setBody('{"csvQueryId":"cq-test-session","status":"PREPARING","ttlSeconds":900}');
             responseMap.put('POST:/init', res);
             return this;
         }
@@ -792,16 +793,32 @@ public without sharing class CursorBatchTestUtils {
         public CsvMiddlewareMock withRowCount(Integer count) {
             HttpResponse res = new HttpResponse();
             res.setStatusCode(200);
-            res.setBody('{"totalRows":' + count + '}');
-            responseMap.put('GET:/count', res);
+            res.setBody('{"csvQueryId":"cq-test-session","status":"READY","rowCount":' + count + '}');
+            responseMap.put('GET:/status', res);
             return this;
         }
         
         public CsvMiddlewareMock withRows(List<Map<String, Object>> rows) {
             HttpResponse res = new HttpResponse();
             res.setStatusCode(200);
-            res.setBody(JSON.serialize(new Map<String, Object>{ 'rows' => rows }));
+            Map<String, Object> body = new Map<String, Object>{
+                'csvQueryId' => 'cq-test-session',
+                'start' => 1,
+                'count' => rows.size(),
+                'totalRows' => rows.size(),
+                'hasMore' => false,
+                'rows' => rows
+            };
+            res.setBody(JSON.serialize(body));
             responseMap.put('GET:/rows', res);
+            return this;
+        }
+        
+        public CsvMiddlewareMock withDeleteSuccess() {
+            HttpResponse res = new HttpResponse();
+            res.setStatusCode(204);
+            res.setBody('');
+            responseMap.put('DELETE:/session', res);
             return this;
         }
         
@@ -820,10 +837,12 @@ public without sharing class CursorBatchTestUtils {
             String path;
             if (endpoint.contains('/init')) {
                 path = '/init';
-            } else if (endpoint.contains('/count')) {
-                path = '/count';
+            } else if (endpoint.contains('/status')) {
+                path = '/status';
             } else if (endpoint.contains('/rows')) {
                 path = '/rows';
+            } else if (method == 'DELETE') {
+                path = '/session';
             } else {
                 path = '/unknown';
             }

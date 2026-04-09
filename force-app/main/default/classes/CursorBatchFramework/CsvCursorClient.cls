@@ -1,10 +1,11 @@
 /**
- * @description HTTP client for the CursorBatch CSV middleware. Encapsulates the fire-and-callback
- *              protocol: initSession sends the file reference and job ID; the middleware calls back
- *              via CursorBatch_Coordinator__e when indexing is complete. getRowCount and getRows
- *              are used by the callback coordinator and workers respectively.
+ * @description HTTP client for the CursorBatch CSV middleware (Content Session API v1).
+ *              Endpoints follow the /v1/csv/{csvQueryId}/… path convention with per-org
+ *              API key authentication via Named Credential "CursorBatch_CSV".
  *
- *              Requires a Named Credential called "CursorBatch_CSV" pointing at the middleware base URL.
+ *              Lifecycle: initSession (POST /init, 202) -> poll or wait for platform event
+ *              -> getRowCount (GET /{id}/status) -> getRows (GET /{id}/rows) in pages
+ *              -> deleteSession (DELETE /{id}) when done.
  * @group CursorBatchFramework
  * @see CursorBatchCsvCallbackCoordinator
  * @see CursorBatchCsvWorker
@@ -14,13 +15,14 @@ public without sharing class CsvCursorClient {
     private static final String NAMED_CREDENTIAL = 'callout:CursorBatch_CSV';
 
     /**
-     * @description Sends the CSV file reference to the middleware for indexing. The middleware
-     *              will publish a CursorBatch_Coordinator__e callback when ready.
+     * @description Sends the CSV file reference to the middleware for async indexing.
+     *              Returns the csvQueryId session handle from the 202 response.
      * @param contentVersionId Salesforce ContentVersion ID for the uploaded CSV file
      * @param jobRecordId CursorBatch_Job__c record ID for the callback
+     * @return csvQueryId session identifier assigned by the middleware
      * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or non-success responses
      */
-    public static void initSession(String contentVersionId, Id jobRecordId) {
+    public static String initSession(String contentVersionId, Id jobRecordId) {
         HttpRequest req = new HttpRequest();
         req.setEndpoint(NAMED_CREDENTIAL + '/init');
         req.setMethod('POST');
@@ -33,17 +35,20 @@ public without sharing class CsvCursorClient {
 
         HttpResponse res = new Http().send(req);
         validateResponse(res, 'initSession');
+
+        Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
+        return (String) body.get('csvQueryId');
     }
 
     /**
-     * @description Retrieves the total row count for an indexed CSV file.
-     * @param csvCursorQuery Session identifier returned by the middleware callback
+     * @description Retrieves the total row count for an indexed CSV session via the status endpoint.
+     * @param csvQueryId Session identifier returned by initSession or the middleware callback
      * @return Total number of data rows (excluding header)
-     * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or non-success responses
+     * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or missing rowCount
      */
-    public static Integer getRowCount(String csvCursorQuery) {
+    public static Integer getRowCount(String csvQueryId) {
         HttpRequest req = new HttpRequest();
-        req.setEndpoint(NAMED_CREDENTIAL + '/count?cursor=' + EncodingUtil.urlEncode(csvCursorQuery, 'UTF-8'));
+        req.setEndpoint(NAMED_CREDENTIAL + '/' + EncodingUtil.urlEncode(csvQueryId, 'UTF-8') + '/status');
         req.setMethod('GET');
         req.setTimeout(30000);
 
@@ -51,28 +56,30 @@ public without sharing class CsvCursorClient {
         validateResponse(res, 'getRowCount');
 
         Map<String, Object> body = (Map<String, Object>) JSON.deserializeUntyped(res.getBody());
-        Object rawCount = body.get('totalRows');
+        Object rawCount = body.get('rowCount');
         if (rawCount == null) {
             throw new CursorBatchCoordinator.CursorBatchException(
-                'CSV middleware getRowCount response missing totalRows field'
+                'CSV middleware getRowCount response missing rowCount field'
             );
         }
         return Integer.valueOf(rawCount);
     }
 
     /**
-     * @description Fetches a page of CSV rows from the middleware.
-     * @param csvCursorQuery Session identifier returned by the middleware callback
-     * @param offset Zero-based row offset
-     * @param pageSize Maximum rows to return
+     * @description Fetches a page of CSV rows from the middleware. Internally converts the
+     *              framework's 0-based offset to the API's 1-based start parameter.
+     * @param csvQueryId Session identifier returned by initSession or the middleware callback
+     * @param offset Zero-based row offset (converted to 1-based start for the API)
+     * @param pageSize Maximum rows to return (max 2000)
      * @return List of row maps keyed by CSV column header
      * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or non-success responses
      */
-    public static List<Map<String, Object>> getRows(String csvCursorQuery, Integer offset, Integer pageSize) {
+    public static List<Map<String, Object>> getRows(String csvQueryId, Integer offset, Integer pageSize) {
+        Integer start = offset + 1;
         HttpRequest req = new HttpRequest();
         req.setEndpoint(
-            NAMED_CREDENTIAL + '/rows?cursor=' + EncodingUtil.urlEncode(csvCursorQuery, 'UTF-8') +
-            '&offset=' + offset + '&limit=' + pageSize
+            NAMED_CREDENTIAL + '/' + EncodingUtil.urlEncode(csvQueryId, 'UTF-8') +
+            '/rows?start=' + start + '&count=' + pageSize
         );
         req.setMethod('GET');
         req.setTimeout(60000);
@@ -89,6 +96,21 @@ public without sharing class CsvCursorClient {
             }
         }
         return rows;
+    }
+
+    /**
+     * @description Deletes a content session and releases parsed row data on the middleware.
+     * @param csvQueryId Session identifier to delete
+     * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors (404 for missing session is still thrown)
+     */
+    public static void deleteSession(String csvQueryId) {
+        HttpRequest req = new HttpRequest();
+        req.setEndpoint(NAMED_CREDENTIAL + '/' + EncodingUtil.urlEncode(csvQueryId, 'UTF-8'));
+        req.setMethod('DELETE');
+        req.setTimeout(30000);
+
+        HttpResponse res = new Http().send(req);
+        validateResponse(res, 'deleteSession');
     }
 
     private static void validateResponse(HttpResponse res, String methodName) {
