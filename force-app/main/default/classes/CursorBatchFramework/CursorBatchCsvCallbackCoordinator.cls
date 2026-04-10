@@ -5,8 +5,9 @@
  *
  *              This coordinator retrieves the row count from the middleware and fans out
  *              workers using the same shared fanOutJob() logic as the SOQL path. The
- *              csvCursorQuery session ID is persisted on the job record by the trigger
- *              handler (in its own transaction) so it survives coordinator rollback on retry.
+ *              csvCursorQuery session ID is persisted on the job record by executeCsvInit()
+ *              (when status transitions to Extracting File) so it survives coordinator
+ *              rollback on retry.
  * @group CursorBatchFramework
  * @see CsvCursorClient
  * @see CursorBatchCoordinatorTriggerHandler
@@ -14,6 +15,7 @@
 public without sharing class CursorBatchCsvCallbackCoordinator extends CursorBatchCoordinator {
 
     private String csvCursorQuery;
+    private Long queryDurationMs;
     private CursorBatch_Config__mdt cachedConfig;
 
     public CursorBatchCsvCallbackCoordinator() {
@@ -21,12 +23,15 @@ public without sharing class CursorBatchCsvCallbackCoordinator extends CursorBat
     }
 
     /**
-     * @description Constructs the callback coordinator with the middleware session ID.
+     * @description Constructs the callback coordinator with the middleware session ID and
+     *              the pre-computed query duration (time from job submission to CSV_Ready callback).
      * @param csvCursorQuery Session identifier from the middleware callback event
+     * @param queryDurationMs Elapsed milliseconds from Started_At__c to CSV_Ready event CreatedDate
      */
-    public CursorBatchCsvCallbackCoordinator(String csvCursorQuery) {
+    public CursorBatchCsvCallbackCoordinator(String csvCursorQuery, Long queryDurationMs) {
         super();
         this.csvCursorQuery = csvCursorQuery;
+        this.queryDurationMs = queryDurationMs != null ? queryDurationMs : 0;
     }
 
     /**
@@ -52,6 +57,15 @@ public without sharing class CursorBatchCsvCallbackCoordinator extends CursorBat
                 this.csvCursorQuery = jobRecord.Cursor_Query_Id__c;
             }
 
+            // On retry path (no-arg constructor), compute duration from job record timestamps
+            if (this.queryDurationMs == null || this.queryDurationMs == 0) {
+                if (jobRecord.Started_At__c != null) {
+                    this.queryDurationMs = System.now().getTime() - jobRecord.Started_At__c.getTime();
+                } else {
+                    this.queryDurationMs = 0;
+                }
+            }
+
             this.cachedConfig = getConfig(jobName);
             if (this.cachedConfig == null) {
                 throw new CursorBatchException('No active config found for CSV job: ' + jobName);
@@ -67,7 +81,7 @@ public without sharing class CursorBatchCsvCallbackCoordinator extends CursorBat
 
             attachFinalizer(jobRecord.Id, null);
 
-            if (fanOutJob(jobRecord, csvCursorQuery, totalRecords, 0, this.cachedConfig)) {
+            if (fanOutJob(jobRecord, csvCursorQuery, totalRecords, this.queryDurationMs, this.cachedConfig)) {
                 onComplete();
             }
 

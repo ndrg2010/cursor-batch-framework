@@ -339,7 +339,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @param jobRecord Job record to update with worker counts and status
      * @param cursorQueryId Cursor queryId (SOQL) or csvCursorQuery session ID (CSV)
      * @param totalRecords Total number of records/rows to process
-     * @param queryDurationMs Time to create cursor/index file (0 for CSV callback)
+     * @param queryDurationMs Time to create cursor (SOQL) or elapsed time from submission to CSV_Ready callback (CSV)
      * @param config Job configuration for worker count and page size
      * @return true when workers were fanned out (caller should call onComplete()); false when
      *         zero records short-circuited (onComplete() already called internally)

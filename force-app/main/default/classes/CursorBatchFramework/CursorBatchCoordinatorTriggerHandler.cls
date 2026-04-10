@@ -76,7 +76,9 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
     
     /**
      * @description Handles a CSV_Ready callback from the middleware. The middleware has finished
-     *              indexing the file and the csvCursorQuery is available for pagination.
+     *              indexing the file and the csvCursorQuery is available for pagination. Only
+     *              processes jobs in Extracting File status (set by executeCsvInit). Computes
+     *              query duration as elapsed time from Started_At__c to event CreatedDate.
      * @param evt Platform Event where Job_Name__c contains the csvCursorQuery
      */
     private void handleCsvCallback(CursorBatch_Coordinator__e evt) {
@@ -93,9 +95,8 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
             jobId + ', csvCursorQuery=' + csvCursorQuery);
         
         // Lock the job record to prevent duplicate callback processing (TOCTOU guard).
-        // Persist csvCursorQuery here so it survives coordinator transaction rollback on retry.
         List<CursorBatch_Job__c> jobs = [
-            SELECT Id, Status__c, Cursor_Query_Id__c
+            SELECT Id, Status__c, Cursor_Query_Id__c, Started_At__c
             FROM CursorBatch_Job__c
             WHERE Id = :jobId
             FOR UPDATE
@@ -106,16 +107,18 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
         }
         
         CursorBatch_Job__c jobRecord = jobs[0];
-        if (jobRecord.Status__c != 'Preparing' || String.isNotBlank(jobRecord.Cursor_Query_Id__c)) {
-            logger.logInfo('CursorBatchCoordinatorTriggerHandler: Ignoring duplicate CSV_Ready for job ' +
-                jobId + ' (status=' + jobRecord.Status__c + ', cursorQueryId=' + jobRecord.Cursor_Query_Id__c + ')');
+        if (jobRecord.Status__c != 'Extracting File') {
+            logger.logInfo('CursorBatchCoordinatorTriggerHandler: Ignoring CSV_Ready for job ' +
+                jobId + ' (status=' + jobRecord.Status__c + ')');
             return;
         }
         
-        jobRecord.Cursor_Query_Id__c = csvCursorQuery;
-        update jobRecord;
+        Long queryDurationMs = 0;
+        if (jobRecord.Started_At__c != null) {
+            queryDurationMs = evt.CreatedDate.getTime() - jobRecord.Started_At__c.getTime();
+        }
         
-        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator(csvCursorQuery);
+        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator(csvCursorQuery, queryDurationMs);
         coordinator.setJobRecordId(jobId);
         
         if (!Test.isRunningTest()) {

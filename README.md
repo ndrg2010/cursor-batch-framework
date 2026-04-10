@@ -69,13 +69,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HJSrAAO) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HJSrAAO) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HM49AAG) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HM49AAG) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000HJSrAAO --target-org your-org --wait 10
+sf package install --package 04tfj000000HM49AAG --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -423,11 +423,12 @@ The `contentVersionId` is the Salesforce `ContentVersion` ID of the uploaded CSV
 #### CSV Architecture
 
 ```
-CursorJob.run() → createJobRecord → CursorBatch_Coordinator__e
+CursorJob.run() → createJobRecord (Preparing) → CursorBatch_Coordinator__e
     → CursorJob.execute() detects CSV → CsvCursorClient.initSession()
+    → Persist csvQueryId, status → Extracting File
     → Middleware indexes file → CursorBatch_Coordinator__e (CSV_Ready)
     → CursorBatchCsvCallbackCoordinator.execute()
-        → CsvCursorClient.getRowCount() → fanOutJob() → CursorBatch_Worker__e
+        → CsvCursorClient.getRowCount() → fanOutJob() (Processing) → CursorBatch_Worker__e
     → Workers: CsvCursorClient.getRows() → process(List<Map<String, Object>>)
     → Completion: same as SOQL (reducers, finish, chaining)
 ```
@@ -792,7 +793,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | Field | Type | Description |
 |-------|------|-------------|
 | `Job_Name__c` | Text | Job identifier matching config MasterLabel |
-| `Status__c` | Picklist | `Preparing` → `Processing` → `Completed`/`Completed with Errors`/`Failed` |
+| `Status__c` | Picklist | `Preparing` → [`Extracting File` →] `Processing` → `Completed`/`Completed with Errors`/`Failed` |
 | `Total_Workers__c` | Number | Number of parallel workers created |
 | `Workers_Finished__c` | Number | Workers that completed all their assigned pages |
 | `Total_Batches__c` | Number | Expected total batch/page executions |
@@ -805,7 +806,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Coordinator_Class__c` | Text | Fully qualified coordinator class name |
 | `Cursor_Query_Id__c` | Text | Cursor queryId for cross-transaction access |
 | `Query__c` | Long Text | SOQL query used |
-| `Query_Duration_Ms__c` | Number | Time to execute cursor query (ms) |
+| `Query_Duration_Ms__c` | Number | Time to execute cursor query (SOQL) or middleware indexing time (CSV), in ms |
 | `Worker_Processing_Time_Min__c` | Formula | Estimated worker processing time in minutes |
 | `Error_Message__c` | Long Text | Error details if failed |
 | `State_JSON__c` | Long Text | Serialized reducer-managed shared state for stateful `CursorJob` runs |
@@ -818,6 +819,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | Status | Description |
 |--------|-------------|
 | `Preparing` | Job record created, cursor query pending or in progress |
+| `Extracting File` | CSV middleware is indexing the uploaded file (CSV jobs only) |
 | `Processing` | Cursor query succeeded, workers are processing records |
 | `Completed` | All workers completed successfully |
 | `Completed with Errors` | Some workers succeeded, some failed |
@@ -1166,7 +1168,7 @@ public class MyWorker extends CursorBatchWorker {
 
 The framework automatically prevents duplicate jobs using a three-layer check:
 
-1. **Job tracking records** — `CursorBatch_Job__c` with `Status__c IN ('Preparing', 'Processing')` and matching job name
+1. **Job tracking records** — `CursorBatch_Job__c` with `Status__c IN ('Preparing', 'Extracting File', 'Processing')` and matching job name
 2. **Coordinator class** — `AsyncApexJob` for running queueables of the coordinator class (skipped for `CursorJob` since all metadata-driven jobs share the same class)
 3. **Worker class** — `AsyncApexJob` for running queueables of the worker class (guardrail for cases where job records were lost but workers are still running)
 
@@ -2070,6 +2072,12 @@ Chain_To_Method__c: run
 ### Job stuck at "Preparing"
 
 - Large datasets may require longer cursor query times
+
+### Job stuck at "Extracting File"
+
+- The CSV middleware has not called back yet — check the middleware logs
+- Verify the Named Credential URL and External Credential are configured correctly
+- The middleware publishes `CSV_Ready` or `CSV_Error` via Platform Event when indexing completes
 
 ### Job shows "Completed with Errors"
 

@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.24",
-      "versionNumber": "0.24.0.NEXT",
+      "versionName": "ver 0.25",
+      "versionNumber": "0.25.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Migrate CSV client to Content Session API v1: path-based endpoints, 1-based pagination, session lifecycle management",
+      "versionDescription": "CSV integration enhancements: Extracting File status, csvQueryId capture from init, query duration tracking via platform event callback",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -43,7 +43,8 @@
     "CursorBatchFramework@0.21.0-1": "04tfj000000H9wXAAS",
     "CursorBatchFramework@0.22.0-1": "04tfj000000HBFBAA4",
     "CursorBatchFramework@0.23.0-1": "04tfj000000HDDlAAO",
-    "CursorBatchFramework@0.24.0-1": "04tfj000000HJSrAAO"
+    "CursorBatchFramework@0.24.0-1": "04tfj000000HJSrAAO",
+    "CursorBatchFramework@0.25.0-1": "04tfj000000HM49AAG"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

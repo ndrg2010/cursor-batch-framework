@@ -92,6 +92,10 @@
                 <behavior>Edit</behavior>
                 <field>Query__c</field>
             </layoutItems>
+            <layoutItems>
+                <behavior>Edit</behavior>
+                <field>Metadata_JSON__c</field>
+            </layoutItems>
         </layoutColumns>
         <layoutColumns>
             <layoutItems>

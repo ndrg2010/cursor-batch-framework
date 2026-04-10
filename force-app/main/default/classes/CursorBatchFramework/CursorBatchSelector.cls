@@ -66,7 +66,7 @@ public without sharing class CursorBatchSelector {
     }
 
     /**
-     * @description Queries CursorBatch_Job__c records that are currently running (Preparing or Processing).
+     * @description Queries CursorBatch_Job__c records that are currently running (Preparing, Extracting File, or Processing).
      *              Used to check if a job is already running before starting a new one.
      * @param jobName The job name to search for
      * @return List of running CursorBatch_Job__c records
@@ -78,7 +78,7 @@ public without sharing class CursorBatchSelector {
 
         return getJobsWithAllFields(
             'Job_Name__c = :jobName AND Status__c IN :statuses',
-            new Map<String, Object>{ 'jobName' => jobName, 'statuses' => new List<String>{ 'Preparing', 'Processing' } },
+            new Map<String, Object>{ 'jobName' => jobName, 'statuses' => new List<String>{ 'Preparing', 'Extracting File', 'Processing' } },
             null
         );
     }

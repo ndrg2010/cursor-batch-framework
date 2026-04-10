@@ -21,17 +21,20 @@ private class CursorBatchCsvCallbackCoordinatorTest {
             'TestCsvJob', 'CursorJob', 0
         );
 
-        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_session_abc');
+        Long durationMs = 5000;
+        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_session_abc', durationMs);
         coordinator.setJobRecordId(job.Id);
 
         Test.startTest();
         coordinator.execute(null);
         Test.stopTest();
 
-        CursorBatch_Job__c updated = [SELECT Status__c, Total_Records__c, Cursor_Query_Id__c FROM CursorBatch_Job__c WHERE Id = :job.Id];
+        CursorBatch_Job__c updated = [SELECT Status__c, Total_Records__c, Cursor_Query_Id__c, Query_Duration_Ms__c FROM CursorBatch_Job__c WHERE Id = :job.Id];
         System.assertEquals('Processing', updated.Status__c);
         System.assertEquals(25, updated.Total_Records__c);
         System.assertEquals('cq_session_abc', updated.Cursor_Query_Id__c);
+        System.assertEquals(durationMs, updated.Query_Duration_Ms__c,
+            'Query duration should be set from the CSV callback');
     }
 
     @IsTest
@@ -49,7 +52,7 @@ private class CursorBatchCsvCallbackCoordinatorTest {
             'TestCsvJob', 'CursorJob', 0
         );
 
-        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_empty');
+        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_empty', 1000);
         coordinator.setJobRecordId(job.Id);
 
         Test.startTest();
@@ -63,7 +66,7 @@ private class CursorBatchCsvCallbackCoordinatorTest {
 
     @IsTest
     static void buildQuery_returnsNull() {
-        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_x');
+        CursorBatchCsvCallbackCoordinator coordinator = new CursorBatchCsvCallbackCoordinator('cq_x', 0);
         System.assertEquals(null, coordinator.buildQuery());
     }
 
@@ -77,6 +80,9 @@ private class CursorBatchCsvCallbackCoordinatorTest {
         CursorBatch_Job__c job = CursorBatchTestUtils.createPreparingJobRecord(
             'TestCsvJob', 'CursorJob', 0
         );
+        job.Status__c = 'Extracting File';
+        job.Cursor_Query_Id__c = 'cq_session_xyz';
+        update job;
 
         CursorBatch_Coordinator__e evt = new CursorBatch_Coordinator__e(
             Coordinator_Class__c = 'CSV_Ready',

@@ -143,8 +143,8 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
     
     /**
      * @description Initiates a CSV middleware session. Extracts the contentVersionId from
-     *              metadataJson and sends it to the middleware for indexing. The job stays
-     *              in Preparing status until the middleware calls back.
+     *              metadataJson and sends it to the middleware for indexing. On success,
+     *              persists the csvQueryId and transitions the job to Extracting File status.
      * @param ctx Queueable context
      */
     private void executeCsvInit(QueueableContext ctx) {
@@ -176,10 +176,14 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
             
             attachFinalizer(jobRecord.Id, null);
             
-            CsvCursorClient.initSession(contentVersionId, jobRecord.Id);
+            String csvQueryId = CsvCursorClient.initSession(contentVersionId, jobRecord.Id);
+            
+            jobRecord.Cursor_Query_Id__c = csvQueryId;
+            jobRecord.Status__c = 'Extracting File';
+            update jobRecord;
             
             logger.logInfo('CursorJob CSV middleware session initiated for ' + jobName +
-                ', awaiting callback');
+                ', csvQueryId=' + csvQueryId + ', awaiting callback');
                 
         } catch (Exception e) {
             logger.logException('CursorJob CSV init error for ' + jobName, e);
