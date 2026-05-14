@@ -71,13 +71,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J0sLAAS) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J0sLAAS) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J121AAC) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J121AAC) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000J0sLAAS --target-org your-org --wait 10
+sf package install --package 04tfj000000J121AAC --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -948,7 +948,7 @@ The framework manages the parent for you — there is nothing to wire up:
 1. On `submit()`, `CursorBatchCoordinator` looks up the active `CursorBatch_Config__mdt` for the job name. If found, it upserts a `CursorBatch_Job_Parent__c` record using the config's `DeveloperName` as the external-ID key (Salesforce does not allow Lookup fields to target custom metadata records, so the unique external-ID enforces 1:1 with the config).
 2. The new run record links to the parent via the `Job_Parent__c` lookup field.
 3. `Last_Job_Started_At__c` is refreshed on every run.
-4. `CursorBatchCompletionHandler` writes `Last_Job_Status__c` whenever the run reaches a terminal status — including `Cancelled` (kill switch) — so the parent always reflects the latest outcome.
+4. `Last_Job_Status__c` mirrors the run lifecycle in real time: `Preparing` on submission, `Processing` once the cursor query succeeds, then `Completed` / `Completed with Errors` / `Failed` / `Cancelled` on termination. The parent always reflects the latest run's current state, never a previous run's stale terminal status.
 
 All parent writes are best-effort and wrapped in try/catch; any FLS, sharing, or validation issue on the parent object is logged and swallowed so it can never block job creation or completion.
 
@@ -961,7 +961,7 @@ All parent writes are best-effort and wrapped in try/catch; any FLS, sharing, or
 | `Config_Label__c` | Text(255) | Denormalized copy of `CursorBatch_Config__mdt.MasterLabel`, refreshed on every run |
 | `Description__c` | Long Text Area | Customer-managed free-form notes — never written by the framework |
 | `Last_Job_Started_At__c` | DateTime | Refreshed at every run submission |
-| `Last_Job_Status__c` | Text(40) | Final status of the most recent terminal run (`Completed`, `Completed with Errors`, `Failed`, `Cancelled`) |
+| `Last_Job_Status__c` | Text(40) | Live status of the most recent run — `Preparing` on submit, `Processing` once the cursor query succeeds, then `Completed` / `Completed with Errors` / `Failed` / `Cancelled` on termination |
 
 #### Working with the parent in code
 
@@ -990,9 +990,9 @@ List<CursorBatch_Job_Parent__c> parents = [
 The package ships two Lightning record pages, both set as the org default:
 
 - **Cursor Batch Job Record Page** — surfaces the new `Job Parent` lookup so users can navigate from a run to its parent in one click.
-- **Cursor Batch Job Parent Record Page** — header with last status / last started, info section with config metadata, free-form `Description__c`, and a system info section.
+- **Cursor Batch Job Parent Record Page** — highlights panel (`Name`, `Config Label`, `Last Job Status`, `Last Job Started At`), free-form `Description__c` section, and a Jobs related list (`lst:dynamicRelatedList`) showing every historical run with `Name`, `Status`, `Percent Complete`, `Started At`, `Completed At`, `Total Records`, `Total Worker Retries`, and `Failed Workers`, sorted by Created Date desc, action bar visible, 20 records per page.
 
-> **Note:** A Jobs related list on the parent FlexiPage is intentionally not packaged in the version that introduces the parent object, due to a Salesforce packaging restriction (a FlexiPage cannot reference a related-list component for a relationship being introduced in the same package version). To see the Jobs related list on the parent FlexiPage right now, open the page in Lightning App Builder, drop in a "Related Lists" component, and save. Future releases will ship the related list pre-configured.
+Both pages are assigned as the Lightning org default for both desktop (`Large`) and mobile (`Small`) form factors via `actionOverrides` in the source-controlled `CustomObject` metadata, so the assignment travels with deploys — no manual "Set as Org Default" click required after install.
 
 ### Job Chaining
 

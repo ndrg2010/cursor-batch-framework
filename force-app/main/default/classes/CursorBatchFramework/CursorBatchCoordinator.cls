@@ -272,8 +272,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Upserts the per-config CursorBatch_Job_Parent__c record using the config's
      *              DeveloperName as the external-ID key. This guarantees one parent per
      *              CursorBatch_Config__mdt record (Salesforce does not allow Lookup fields
-     *              targeting custom metadata). Wrapped in try/catch so parent FLS, sharing,
-     *              or validation issues never block job creation.
+     *              targeting custom metadata). Also resets Last_Job_Status__c to 'Preparing'
+     *              so the parent immediately reflects the new run rather than the previous
+     *              run's terminal status. Wrapped in try/catch so parent FLS, sharing, or
+     *              validation issues never block job creation.
      * @param cfg The active config for this job, or null when no metadata record matches
      * @return Parent record Id, or null when there is no config / DeveloperName or the upsert failed
      */
@@ -285,13 +287,42 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
                 Config_Developer_Name__c = cfg.DeveloperName,
                 Config_Label__c = cfg.MasterLabel,
-                Last_Job_Started_At__c = System.now()
+                Last_Job_Started_At__c = System.now(),
+                Last_Job_Status__c = 'Preparing'
             );
             Database.upsert(parent, CursorBatch_Job_Parent__c.Config_Developer_Name__c, false);
             return parent.Id;
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinator: Failed to upsert CursorBatch_Job_Parent__c for ' + cfg.DeveloperName, e);
             return null;
+        }
+    }
+    
+    /**
+     * @description Best-effort write of the job's current Status__c onto the linked
+     *              CursorBatch_Job_Parent__c.Last_Job_Status__c. No-op when the job has no
+     *              parent. Wrapped in try/catch so parent-side FLS, sharing, or validation
+     *              issues never bubble up and disrupt the in-progress run.
+     *              Public so other framework classes (e.g. CursorBatchCoordinatorFinalizer)
+     *              can mirror status transitions that happen outside the CompletionHandler.
+     * @param job The job whose status should be mirrored to its parent (must have Job_Parent__c populated)
+     * @param logger Logger instance for error reporting
+     */
+    public static void mirrorJobStatusToParentExternal(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        mirrorJobStatusToParent(job, logger);
+    }
+    
+    private static void mirrorJobStatusToParent(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        if (job == null || job.Job_Parent__c == null) {
+            return;
+        }
+        try {
+            update new CursorBatch_Job_Parent__c(
+                Id = job.Job_Parent__c,
+                Last_Job_Status__c = job.Status__c
+            );
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinator: Failed to mirror status to parent for ' + job.Job_Name__c, e);
         }
     }
     
@@ -363,6 +394,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         jobRecord.Total_Batches__c = totalBatches;
         jobRecord.Status__c = 'Processing';
         update jobRecord;
+        mirrorJobStatusToParent(jobRecord, logger);
         logger.logInfo('CursorBatchCoordinator updated job to Processing status: ' + jobRecord.Id);
     }
     
@@ -755,6 +787,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         job.Status__c = 'Cancelled';
         job.Completed_At__c = System.now();
         update job;
+        mirrorJobStatusToParent(job, CursorBatchLogger.getDefault());
         return true;
     }
     

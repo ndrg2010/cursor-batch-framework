@@ -4,7 +4,15 @@
         <actionName>View</actionName>
         <content>Cursor_Batch_Job_Parent_Record_Page</content>
         <formFactor>Large</formFactor>
-        <type>flexipage</type>
+        <skipRecordTypeSelect>false</skipRecordTypeSelect>
+        <type>Flexipage</type>
+    </actionOverrides>
+    <actionOverrides>
+        <actionName>View</actionName>
+        <content>Cursor_Batch_Job_Parent_Record_Page</content>
+        <formFactor>Small</formFactor>
+        <skipRecordTypeSelect>false</skipRecordTypeSelect>
+        <type>Flexipage</type>
     </actionOverrides>
     <compactLayoutAssignment>Cursor_Batch_Job_Parent_Compact</compactLayoutAssignment>
     <deploymentStatus>Deployed</deploymentStatus>

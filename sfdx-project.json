@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.26",
-      "versionNumber": "0.26.0.NEXT",
+      "versionName": "ver 0.27",
+      "versionNumber": "0.27.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Per-config CursorBatch_Job_Parent__c parent records aggregate all runs of metadata-defined jobs, with org-default Lightning record pages and a Job_Parent__c lookup on every run. Removes packaged platformEventSubscriberConfig files.",
+      "versionDescription": "Adds the Jobs related list to the Cursor Batch Job Parent Lightning record page (lst:dynamicRelatedList with curated columns), fixes Last_Job_Status__c so the parent mirrors Preparing/Processing/Cancelled/Failed transitions in addition to the existing terminal-only writes, and assigns both record pages as the Lightning org default for both Large and Small form factors.",
       "definitionFile": "config/project-scratch-def.json"
     }
   ],
@@ -38,7 +38,9 @@
     "CursorBatchFramework@0.23.0-1": "04tfj000000HDDlAAO",
     "CursorBatchFramework@0.24.0-1": "04tfj000000HJSrAAO",
     "CursorBatchFramework@0.25.0-1": "04tfj000000HM49AAG",
-    "CursorBatchFramework@0.26.0-1": "04tfj000000J0sLAAS"
+    "CursorBatchFramework@0.26.0-1": "04tfj000000J0sLAAS",
+    "CursorBatchFramework@0.27.0-1": "04tfj000000J10PAAS",
+    "CursorBatchFramework@0.27.0-2": "04tfj000000J121AAC"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

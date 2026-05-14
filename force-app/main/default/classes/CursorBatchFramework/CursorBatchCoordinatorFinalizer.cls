@@ -147,6 +147,11 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
         jobRecord.Failed_Workers__c = jobRecord.Failed_Workers__c ?? 0;
         update jobRecord;
         
+        // Mirror the terminal Failed status onto the parent record (if any) so it doesn't
+        // remain stuck at 'Preparing'/'Processing'. This finalizer path bypasses the
+        // CompletionHandler, which is the other code path that normally writes the parent.
+        CursorBatchCoordinator.mirrorJobStatusToParentExternal(jobRecord, logger);
+        
         // Invoke the coordinator's finish() callback so it can handle the failure
         CursorBatchCoordinator.invokeFinishCallback(coordinatorClassName, jobName, jobRecord, logger);
         logger.logInfo('CursorBatchCoordinatorFinalizer: Invoked finish() callback for failed job ' + jobName);
