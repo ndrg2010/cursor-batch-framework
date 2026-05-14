@@ -823,4 +823,178 @@ private without sharing class CursorBatchCompletionHandlerTest {
         Assert.areEqual(1, updatedJob.Workers_Finished__c, 
             'Worker completion should still be tracked');
     }
+    
+    // ============================================
+    // CursorBatch_Job_Parent__c Last_Job_Status__c Tests
+    // ============================================
+    
+    @IsTest
+    static void testParentLastStatusUpdatedOnCompletion() {
+        // Arrange - linked parent + a job that will reach 'Completed' on the next event
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'ParentStatusJob',
+            Config_Label__c = 'ParentStatusJob',
+            Last_Job_Started_At__c = System.now()
+        );
+        insert parent;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ParentStatusJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Job_Parent__c = parent.Id;
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert - parent reflects the terminal job status
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should be Completed');
+        CursorBatch_Job_Parent__c updatedParent = [
+            SELECT Id, Last_Job_Status__c FROM CursorBatch_Job_Parent__c WHERE Id = :parent.Id
+        ];
+        Assert.areEqual('Completed', updatedParent.Last_Job_Status__c,
+            'Parent Last_Job_Status__c should be set to the terminal job status');
+    }
+    
+    @IsTest
+    static void testParentLastStatusUpdatedOnFailure() {
+        // Arrange - parent + single-worker job that will fail and reach 'Failed'
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'ParentFailJob',
+            Config_Label__c = 'ParentFailJob',
+            Last_Job_Started_At__c = System.now()
+        );
+        insert parent;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ParentFailJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Job_Parent__c = parent.Id;
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'boom',
+                Is_Final__c = true
+            )
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job_Parent__c updatedParent = [
+            SELECT Id, Last_Job_Status__c FROM CursorBatch_Job_Parent__c WHERE Id = :parent.Id
+        ];
+        Assert.areEqual('Failed', updatedParent.Last_Job_Status__c,
+            'Parent Last_Job_Status__c should reflect Failed terminal status');
+    }
+    
+    @IsTest
+    static void testParentLastStatusUpdatedOnCancelled() {
+        // Arrange - parent + cancelled job. Completion events still arrive after killJob; the
+        // handler skips the finish callback but should still write 'Cancelled' onto the parent.
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'ParentCancelJob',
+            Config_Label__c = 'ParentCancelJob',
+            Last_Job_Started_At__c = System.now()
+        );
+        insert parent;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ParentCancelJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Job_Parent__c = parent.Id;
+        jobRecord.Status__c = 'Cancelled';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert - parent reflects Cancelled even though finish callback was skipped
+        CursorBatch_Job_Parent__c updatedParent = [
+            SELECT Id, Last_Job_Status__c FROM CursorBatch_Job_Parent__c WHERE Id = :parent.Id
+        ];
+        Assert.areEqual('Cancelled', updatedParent.Last_Job_Status__c,
+            'Parent Last_Job_Status__c should reflect Cancelled terminal status');
+    }
+    
+    @IsTest
+    static void testParentUpdateFailureSwallowed() {
+        // Arrange - call routeFinishCallback directly with an in-memory job snapshot whose
+        // Job_Parent__c points at a syntactically-valid but already-deleted parent ID. The
+        // update inside updateParentLastStatus will throw ENTITY_IS_DELETED; that exception
+        // must be caught and logged instead of bubbling up to the caller.
+        // (Going through handle() doesn't work because Job_Parent__c is SetNull-on-parent-delete,
+        //  which would null the lookup before the handler ever sees it.)
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'ParentSwallowJob',
+            Config_Label__c = 'ParentSwallowJob',
+            Last_Job_Started_At__c = System.now()
+        );
+        insert parent;
+        Id deletedParentId = parent.Id;
+        delete parent;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ParentSwallowJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        update jobRecord;
+        
+        CursorBatch_Job__c snapshot = new CursorBatch_Job__c(
+            Id = jobRecord.Id,
+            Job_Name__c = 'ParentSwallowJob',
+            Status__c = 'Completed',
+            Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            Job_Parent__c = deletedParentId
+        );
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act - must not throw
+        Test.startTest();
+        CursorBatchCompletionHandler.routeFinishCallback(snapshot, mockLogger);
+        Test.stopTest();
+        
+        // Assert - the parent update failure was logged, downstream routing still ran
+        Boolean foundParentFailure = false;
+        for (String msg : mockLogger.exceptionMessages) {
+            if (msg.contains('parent Last_Job_Status__c')) {
+                foundParentFailure = true;
+                break;
+            }
+        }
+        Assert.isTrue(foundParentFailure,
+            'Parent update failure should be logged via logException');
+    }
 }

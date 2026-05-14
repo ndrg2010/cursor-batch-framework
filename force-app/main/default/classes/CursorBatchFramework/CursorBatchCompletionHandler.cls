@@ -216,12 +216,14 @@ public without sharing class CursorBatchCompletionHandler {
             }
         }
         
-        // Invoke callbacks for completed jobs using 4-path finish logic
-        // Skip callbacks for cancelled jobs (kill switch activated)
+        // Invoke callbacks for completed jobs using 4-path finish logic.
+        // Skip the finish callback for cancelled jobs (kill switch activated), but still
+        // update the parent's Last_Job_Status__c so the parent reflects the terminal state.
         for (CursorBatch_Job__c job : completedJobs) {
             if (job.Status__c != 'Cancelled') {
                 routeFinishCallback(job, logger);
             } else {
+                updateParentLastStatus(job, logger);
                 logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
             }
         }
@@ -278,6 +280,7 @@ public without sharing class CursorBatchCompletionHandler {
      * @param logger Logger instance for error reporting
      */
     public static void routeFinishCallback(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        updateParentLastStatus(job, logger);
         try {
             routeFinishCallbackInternal(job, logger);
         } catch (Exception e) {
@@ -287,6 +290,28 @@ public without sharing class CursorBatchCompletionHandler {
             } catch (Exception fallbackEx) {
                 logger.logException('CursorBatchCompletionHandler: Fallback coordinator.finish() also failed for ' + job.Job_Name__c, fallbackEx);
             }
+        }
+    }
+    
+    /**
+     * @description Best-effort write of the terminal Status__c onto the linked
+     *              CursorBatch_Job_Parent__c.Last_Job_Status__c. No-op when the job has no
+     *              parent. Wrapped in try/catch so parent-side FLS, sharing, or validation
+     *              issues never bubble up and block the finish callback.
+     * @param job The completed job record (must have Job_Parent__c populated by the selector)
+     * @param logger Logger instance for error reporting
+     */
+    private static void updateParentLastStatus(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        if (job == null || job.Job_Parent__c == null) {
+            return;
+        }
+        try {
+            update new CursorBatch_Job_Parent__c(
+                Id = job.Job_Parent__c,
+                Last_Job_Status__c = job.Status__c
+            );
+        } catch (Exception e) {
+            logger.logException('CursorBatchCompletionHandler: Failed to update parent Last_Job_Status__c for ' + job.Job_Name__c, e);
         }
     }
     

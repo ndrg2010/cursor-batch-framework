@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
-    <description>Grants read access to the CursorBatch_Job__c object and its tab.</description>
+    <description>Grants read access to the CursorBatch_Job__c and CursorBatch_Job_Parent__c objects and their tabs.</description>
     <hasActivationRequired>false</hasActivationRequired>
     <label>Cursor Batch Job Viewer</label>
     <license>Salesforce</license>
@@ -14,8 +14,22 @@
         <viewAllFields>true</viewAllFields>
         <viewAllRecords>true</viewAllRecords>
     </objectPermissions>
+    <objectPermissions>
+        <allowCreate>false</allowCreate>
+        <allowDelete>false</allowDelete>
+        <allowEdit>false</allowEdit>
+        <allowRead>true</allowRead>
+        <modifyAllRecords>false</modifyAllRecords>
+        <object>CursorBatch_Job_Parent__c</object>
+        <viewAllFields>true</viewAllFields>
+        <viewAllRecords>true</viewAllRecords>
+    </objectPermissions>
     <tabSettings>
         <tab>CursorBatch_Job__c</tab>
+        <visibility>Visible</visibility>
+    </tabSettings>
+    <tabSettings>
+        <tab>CursorBatch_Job_Parent__c</tab>
         <visibility>Visible</visibility>
     </tabSettings>
 </PermissionSet>

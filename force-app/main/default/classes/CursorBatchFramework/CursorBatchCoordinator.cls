@@ -237,6 +237,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Creates the job record with Preparing status. Called from submit() to ensure
      *              the record is committed before the queueable executes, surviving any rollback.
      *              Writes the query immediately so it's visible before the cursor returns.
+     *              When an active CursorBatch_Config__mdt record exists for this jobName, also
+     *              upserts the per-config CursorBatch_Job_Parent__c record (keyed by config
+     *              DeveloperName) and links Job_Parent__c. Custom coordinators with no metadata
+     *              record leave Job_Parent__c null and insert as before.
      */
     private void createJobRecord() {
         CursorBatch_Job__c job = new CursorBatch_Job__c(
@@ -255,9 +259,40 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Failed_Workers__c = 0,
             Total_Worker_Retries__c = 0
         );
+        Id parentId = upsertJobParent(getConfig(jobName));
+        if (parentId != null) {
+            job.Job_Parent__c = parentId;
+        }
         insert job;
         this.jobRecordId = job.Id;
         logger.logInfo('CursorBatchCoordinator created job record in submit: ' + job.Id);
+    }
+    
+    /**
+     * @description Upserts the per-config CursorBatch_Job_Parent__c record using the config's
+     *              DeveloperName as the external-ID key. This guarantees one parent per
+     *              CursorBatch_Config__mdt record (Salesforce does not allow Lookup fields
+     *              targeting custom metadata). Wrapped in try/catch so parent FLS, sharing,
+     *              or validation issues never block job creation.
+     * @param cfg The active config for this job, or null when no metadata record matches
+     * @return Parent record Id, or null when there is no config / DeveloperName or the upsert failed
+     */
+    private Id upsertJobParent(CursorBatch_Config__mdt cfg) {
+        if (cfg == null || String.isBlank(cfg.DeveloperName)) {
+            return null;
+        }
+        try {
+            CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+                Config_Developer_Name__c = cfg.DeveloperName,
+                Config_Label__c = cfg.MasterLabel,
+                Last_Job_Started_At__c = System.now()
+            );
+            Database.upsert(parent, CursorBatch_Job_Parent__c.Config_Developer_Name__c, false);
+            return parent.Id;
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinator: Failed to upsert CursorBatch_Job_Parent__c for ' + cfg.DeveloperName, e);
+            return null;
+        }
     }
     
     /**

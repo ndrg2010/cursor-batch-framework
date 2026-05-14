@@ -816,4 +816,103 @@ private without sharing class CursorBatchCoordinatorTest {
         // Assert
         Assert.areEqual(false, result, 'Should return false for null job ID');
     }
+    
+    // ============================================
+    // CursorBatch_Job_Parent__c Auto-Upsert Tests
+    // ============================================
+    
+    @IsTest
+    static void testSubmitCreatesAndLinksParent() {
+        // Arrange - config has DeveloperName so the parent should be upserted on submit()
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
+            'ParentLinkJob', 5, 20
+        );
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('ParentLinkJob');
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - exactly one parent exists for this DeveloperName, the job points at it,
+        // and denormalized config metadata was written.
+        String devName = CursorBatchTestUtils.toDeveloperName('ParentLinkJob');
+        List<CursorBatch_Job_Parent__c> parents = [
+            SELECT Id, Config_Developer_Name__c, Config_Label__c, Last_Job_Started_At__c
+            FROM CursorBatch_Job_Parent__c
+            WHERE Config_Developer_Name__c = :devName
+        ];
+        Assert.areEqual(1, parents.size(), 'Should upsert exactly one parent for this config');
+        Assert.areEqual('ParentLinkJob', parents[0].Config_Label__c, 'Parent should denormalize MasterLabel');
+        Assert.areNotEqual(null, parents[0].Last_Job_Started_At__c, 'Parent should record start time');
+        
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('ParentLinkJob');
+        Assert.areEqual(1, jobs.size(), 'Should create one child job');
+        Assert.areEqual(parents[0].Id, jobs[0].Job_Parent__c, 'Job should be linked to the parent');
+    }
+    
+    @IsTest
+    static void testSubmitIdempotentParentUpsert() {
+        // Arrange - same config submitted twice should produce one parent and two linked children.
+        // Skip_Duplicate_Check__c bypasses the running-job guard so two child jobs can be created
+        // in the same transaction for the same config.
+        CursorBatch_Config__mdt cfg = CursorBatchTestUtils.createTestConfig(
+            'IdempotentParentJob', 5, 20, 3, 3, 1, true
+        );
+        CursorBatchCoordinator.testConfig = cfg;
+        
+        // Act
+        Test.startTest();
+        new CursorBatchTestUtils.TestCursorBatchCoordinator('IdempotentParentJob').submit();
+        new CursorBatchTestUtils.TestCursorBatchCoordinator('IdempotentParentJob').submit();
+        Test.stopTest();
+        
+        // Assert
+        String devName = CursorBatchTestUtils.toDeveloperName('IdempotentParentJob');
+        List<CursorBatch_Job_Parent__c> parents = [
+            SELECT Id FROM CursorBatch_Job_Parent__c
+            WHERE Config_Developer_Name__c = :devName
+        ];
+        Assert.areEqual(1, parents.size(), 'Two submissions of the same config should produce one parent');
+        
+        List<CursorBatch_Job__c> jobs = [
+            SELECT Id, Job_Parent__c FROM CursorBatch_Job__c
+            WHERE Job_Name__c = 'IdempotentParentJob'
+        ];
+        Assert.areEqual(2, jobs.size(), 'Should produce two child job records');
+        for (CursorBatch_Job__c j : jobs) {
+            Assert.areEqual(parents[0].Id, j.Job_Parent__c, 'Both children should link to the same parent');
+        }
+    }
+    
+    @IsTest
+    static void testSubmitWithoutConfigLeavesParentNull() {
+        // Arrange - no test config and no real CMDT record means getConfig() returns null.
+        // The coordinator should still insert the job with Job_Parent__c == null and create no parent.
+        CursorBatchCoordinator.testConfig = null;
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('NoConfigParentJob');
+        coordinator.shouldBlockDuplicate = false;
+        
+        // Act
+        Test.startTest();
+        coordinator.submit();
+        Test.stopTest();
+        
+        // Assert - one job, no parent, lookup is null
+        String devName = CursorBatchTestUtils.toDeveloperName('NoConfigParentJob');
+        List<CursorBatch_Job_Parent__c> parents = [
+            SELECT Id FROM CursorBatch_Job_Parent__c
+            WHERE Config_Developer_Name__c = :devName
+        ];
+        Assert.areEqual(0, parents.size(), 'No parent should be created when there is no matching config');
+        
+        List<CursorBatch_Job__c> jobs = [
+            SELECT Id, Job_Parent__c FROM CursorBatch_Job__c
+            WHERE Job_Name__c = 'NoConfigParentJob'
+        ];
+        Assert.areEqual(1, jobs.size(), 'Job should still be inserted without a config');
+        Assert.areEqual(null, jobs[0].Job_Parent__c, 'Job_Parent__c should remain null without a config');
+    }
 }

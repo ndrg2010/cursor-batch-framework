@@ -1,20 +1,13 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.25",
-      "versionNumber": "0.25.0.NEXT",
+      "versionName": "ver 0.26",
+      "versionNumber": "0.26.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "CSV integration enhancements: Extracting File status, csvQueryId capture from init, query duration tracking via platform event callback",
-      "definitionFile": "config/project-scratch-def.json",
-      "installBehaviors": {
-        "newOnly": [
-          "main/default/platformEventSubscriberConfigs/CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml",
-          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
-          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
-        ]
-      }
+      "versionDescription": "Per-config CursorBatch_Job_Parent__c parent records aggregate all runs of metadata-defined jobs, with org-default Lightning record pages and a Job_Parent__c lookup on every run. Removes packaged platformEventSubscriberConfig files.",
+      "definitionFile": "config/project-scratch-def.json"
     }
   ],
   "name": "cursor-batch-framework",
@@ -44,7 +37,8 @@
     "CursorBatchFramework@0.22.0-1": "04tfj000000HBFBAA4",
     "CursorBatchFramework@0.23.0-1": "04tfj000000HDDlAAO",
     "CursorBatchFramework@0.24.0-1": "04tfj000000HJSrAAO",
-    "CursorBatchFramework@0.25.0-1": "04tfj000000HM49AAG"
+    "CursorBatchFramework@0.25.0-1": "04tfj000000HM49AAG",
+    "CursorBatchFramework@0.26.0-1": "04tfj000000J0sLAAS"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
@@ -72,9 +66,6 @@
     "classes/CursorBatchFramework/ICursorBatchLogger.cls",
     "triggers/CursorBatchCoordinatorTrigger.trigger",
     "triggers/CursorBatchWorkerCompleteTrigger.trigger",
-    "triggers/CursorBatchWorkerTrigger.trigger",
-    "platformEventSubscriberConfigs/CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml",
-    "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
-    "platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
+    "triggers/CursorBatchWorkerTrigger.trigger"
   ]
 }

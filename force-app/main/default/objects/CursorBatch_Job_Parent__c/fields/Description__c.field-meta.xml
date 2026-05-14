@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Description__c</fullName>
+    <description>Free-form description of the parent job. Customer-managed; never written by the framework.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Optional notes describing what this batch job does or who owns it. Not modified by the framework.</inlineHelpText>
+    <label>Description</label>
+    <length>32768</length>
+    <required>false</required>
+    <type>LongTextArea</type>
+    <visibleLines>5</visibleLines>
+</CustomField>

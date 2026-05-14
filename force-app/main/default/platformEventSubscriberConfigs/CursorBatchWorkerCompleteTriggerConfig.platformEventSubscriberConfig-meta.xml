@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<PlatformEventSubscriberConfig xmlns="http://soap.sforce.com/2006/04/metadata">
-    <batchSize>50</batchSize>
-    <isProtected>true</isProtected>
-    <masterLabel>CursorBatchWorkerCompleteTriggerConfig</masterLabel>
-    <platformEventConsumer>CursorBatchWorkerCompleteTrigger</platformEventConsumer>
-    <user>YOUR_USERNAME_HERE</user>
-</PlatformEventSubscriberConfig>

@@ -111,6 +111,7 @@ public without sharing class CursorBatchTestUtils {
     ) {
         CursorBatch_Config__mdt config = new CursorBatch_Config__mdt(
             MasterLabel = jobName,
+            DeveloperName = toDeveloperName(jobName),
             Parallel_Count__c = workerCount,
             Page_Size__c = pageSize,
             Coordinator_Max_Retries__c = coordinatorMaxRetries,
@@ -120,6 +121,22 @@ public without sharing class CursorBatchTestUtils {
             Active__c = true
         );
         return config;
+    }
+    
+    /**
+     * @description Derives a CMDT-safe DeveloperName from a job MasterLabel by replacing any
+     *              non-alphanumeric characters with underscores. Used so existing tests that
+     *              build configs via createTestConfig() automatically exercise the
+     *              CursorBatch_Job_Parent__c upsert path without each test having to set
+     *              DeveloperName explicitly.
+     * @param jobName Job MasterLabel (may contain spaces or other punctuation)
+     * @return DeveloperName-safe string
+     */
+    public static String toDeveloperName(String jobName) {
+        if (String.isBlank(jobName)) {
+            return jobName;
+        }
+        return jobName.replaceAll('[^A-Za-z0-9]', '_');
     }
     
     /**

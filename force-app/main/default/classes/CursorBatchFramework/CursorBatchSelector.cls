@@ -57,7 +57,8 @@ public without sharing class CursorBatchSelector {
         List<CursorBatch_Job__c> jobs = [
             SELECT Id, Job_Name__c, Total_Workers__c, Completed_Batches__c, Workers_Finished__c,
                    Failed_Workers__c, Status__c, Coordinator_Class__c, Error_Message__c,
-                   Total_Worker_Retries__c, Completed_At__c, State_JSON__c, Metadata_JSON__c
+                   Total_Worker_Retries__c, Completed_At__c, State_JSON__c, Metadata_JSON__c,
+                   Job_Parent__c
             FROM CursorBatch_Job__c
             WHERE Id IN :jobIds
             FOR UPDATE
@@ -95,7 +96,7 @@ public without sharing class CursorBatchSelector {
         }
 
         List<CursorBatch_Config__mdt> configs = [
-            SELECT MasterLabel, Parallel_Count__c, Page_Size__c, Coordinator_Max_Retries__c,
+            SELECT MasterLabel, DeveloperName, Parallel_Count__c, Page_Size__c, Coordinator_Max_Retries__c,
                    Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c,
                    Chain_To_Job__c, Chain_To_Class__c, Chain_To_Method__c,
                    Query_Builder_Class__c, Query_Builder_Method__c, Worker_Class__c, Logger_Tag__c,
@@ -180,7 +181,7 @@ public without sharing class CursorBatchSelector {
                        'Total_Workers__c, Total_Batches__c, Total_Records__c, Completed_Batches__c, Workers_Finished__c, ' +
                        'Failed_Workers__c, Started_At__c, Coordinator_Class__c, ' +
                        'Cursor_Query_Id__c, Query_Duration_Ms__c, Completed_At__c, Error_Message__c, ' +
-                       'Total_Worker_Retries__c, State_JSON__c, Metadata_JSON__c ' +
+                       'Total_Worker_Retries__c, State_JSON__c, Metadata_JSON__c, Job_Parent__c ' +
                        'FROM CursorBatch_Job__c ' +
                        'WHERE ' + whereClause;
 

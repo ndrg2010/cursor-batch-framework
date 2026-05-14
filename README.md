@@ -26,6 +26,7 @@ Traditional Salesforce batch processing has limitations:
 - 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
 - 📦 **Reducer-Based Shared State** — Optional shared state across parallel workers with snapshot reads, delta emission, and centralized reduction
 - 📄 **CSV File Processing** — Process uploaded CSV files (up to 2 GB) through an external middleware with the same config-driven API, reducers, and chaining
+- 👨‍👦 **Per-Config Parent Records** — Every metadata-defined job gets a single `CursorBatch_Job_Parent__c` record aggregating all runs of that job, with last status, last started time, and a `Job_Parent__c` lookup on every run — no extra code required
 
 ## Table of Contents
 
@@ -39,6 +40,7 @@ Traditional Salesforce batch processing has limitations:
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
 - [Advanced Usage](#advanced-usage)
   - [Monitoring Jobs](#monitoring-jobs)
+  - [Per-Config Parent Records](#per-config-parent-records)
   - [Job Chaining](#job-chaining)
   - [Worker finish() Method](#worker-finish-method)
   - [Reducer-Based Shared State](#reducer-based-shared-state)
@@ -69,13 +71,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HM49AAG) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000HM49AAG) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J0sLAAS) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J0sLAAS) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000HM49AAG --target-org your-org --wait 10
+sf package install --package 04tfj000000J0sLAAS --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -143,7 +145,7 @@ The included configs use a placeholder user. Update all three files in `unpackag
 
 | Permission Set | Description |
 |----------------|-------------|
-| **Cursor Batch Job Viewer** | Grants read access and View All Records on `CursorBatch_Job__c` object with tab visibility. Assign to users who need to monitor batch job progress. |
+| **Cursor Batch Job Viewer** | Grants read access and View All Records on `CursorBatch_Job__c` and `CursorBatch_Job_Parent__c` objects, with tab visibility on both. Assign to users who need to monitor batch job progress and per-config job history. |
 
 ## Quick Start
 
@@ -813,6 +815,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Metadata_JSON__c` | Long Text | Optional JSON metadata passed at job invocation time (runtime parameters for query builders and workers) |
 | `Started_At__c` | DateTime | Job start time |
 | `Completed_At__c` | DateTime | Job completion time |
+| `Job_Parent__c` | Lookup | Optional link to the per-config `CursorBatch_Job_Parent__c` record. Set automatically by the framework when an active `CursorBatch_Config__mdt` matches the job name; `null` for custom coordinators with no metadata config |
 
 ### Job Statuses
 
@@ -931,6 +934,65 @@ List<CursorBatch_Job__c> jobs = [
 The framework includes two list views for monitoring:
 - **All Jobs** — Shows all job records
 - **Today's Jobs** — Filtered to jobs created today
+
+### Per-Config Parent Records
+
+Every metadata-defined job (i.e. any job backed by a `CursorBatch_Config__mdt` record) gets a single, persistent `CursorBatch_Job_Parent__c` record that aggregates all runs of that config. This gives operators a stable landing page per job, with a related list of every historical run, instead of having to filter the All Jobs list by `Job_Name__c`.
+
+Custom coordinators that are *not* backed by a metadata config leave `Job_Parent__c` null and behave exactly as before.
+
+#### How parents are populated
+
+The framework manages the parent for you — there is nothing to wire up:
+
+1. On `submit()`, `CursorBatchCoordinator` looks up the active `CursorBatch_Config__mdt` for the job name. If found, it upserts a `CursorBatch_Job_Parent__c` record using the config's `DeveloperName` as the external-ID key (Salesforce does not allow Lookup fields to target custom metadata records, so the unique external-ID enforces 1:1 with the config).
+2. The new run record links to the parent via the `Job_Parent__c` lookup field.
+3. `Last_Job_Started_At__c` is refreshed on every run.
+4. `CursorBatchCompletionHandler` writes `Last_Job_Status__c` whenever the run reaches a terminal status — including `Cancelled` (kill switch) — so the parent always reflects the latest outcome.
+
+All parent writes are best-effort and wrapped in try/catch; any FLS, sharing, or validation issue on the parent object is logged and swallowed so it can never block job creation or completion.
+
+#### Parent fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `Name` | Auto Number (`CBJP-{0000000}`) | Stable display key |
+| `Config_Developer_Name__c` | Text(40), unique external ID | Anchors the 1:1 relationship to `CursorBatch_Config__mdt.DeveloperName` |
+| `Config_Label__c` | Text(255) | Denormalized copy of `CursorBatch_Config__mdt.MasterLabel`, refreshed on every run |
+| `Description__c` | Long Text Area | Customer-managed free-form notes — never written by the framework |
+| `Last_Job_Started_At__c` | DateTime | Refreshed at every run submission |
+| `Last_Job_Status__c` | Text(40) | Final status of the most recent terminal run (`Completed`, `Completed with Errors`, `Failed`, `Cancelled`) |
+
+#### Working with the parent in code
+
+Because the link is a standard lookup, you can navigate from runs to their parent (and back) with normal SOQL:
+
+```apex
+// All runs of a given config, newest first
+List<CursorBatch_Job__c> runs = [
+    SELECT Id, Status__c, Started_At__c, Completed_At__c
+    FROM CursorBatch_Job__c
+    WHERE Job_Parent__r.Config_Developer_Name__c = 'My_Sync_Job'
+    ORDER BY CreatedDate DESC
+    LIMIT 50
+];
+
+// Current state of every metadata-defined job
+List<CursorBatch_Job_Parent__c> parents = [
+    SELECT Name, Config_Label__c, Last_Job_Status__c, Last_Job_Started_At__c
+    FROM CursorBatch_Job_Parent__c
+    ORDER BY Last_Job_Started_At__c DESC NULLS LAST
+];
+```
+
+#### Lightning record pages
+
+The package ships two Lightning record pages, both set as the org default:
+
+- **Cursor Batch Job Record Page** — surfaces the new `Job Parent` lookup so users can navigate from a run to its parent in one click.
+- **Cursor Batch Job Parent Record Page** — header with last status / last started, info section with config metadata, free-form `Description__c`, and a system info section.
+
+> **Note:** A Jobs related list on the parent FlexiPage is intentionally not packaged in the version that introduces the parent object, due to a Salesforce packaging restriction (a FlexiPage cannot reference a related-list component for a relationship being introduced in the same package version). To see the Jobs related list on the parent FlexiPage right now, open the page in Lightning App Builder, drop in a "Related Lists" component, and save. Future releases will ship the related list pre-configured.
 
 ### Job Chaining
 
@@ -2126,7 +2188,8 @@ Chain_To_Method__c: run
 | Object | Type | Description |
 |--------|------|-------------|
 | `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings, CursorJob settings) |
-| `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing) |
+| `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing). Includes optional `Job_Parent__c` lookup to the per-config parent record |
+| `CursorBatch_Job_Parent__c` | Custom Object | Per-config parent record aggregating all runs of a metadata-defined job. One per `CursorBatch_Config__mdt` (keyed by `Config_Developer_Name__c` external ID). Tracks `Last_Job_Status__c` and `Last_Job_Started_At__c`, exposes a Jobs related list, and supports a customer-managed `Description__c` |
 | `CursorBatch_Processed_Event__c` | Custom Object | Idempotency tracking for stateful jobs — stores (Job, ReplayId) pairs to detect replayed Platform Events. Master-Detail to `CursorBatch_Job__c` with cascade delete |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count, metadata JSON) |

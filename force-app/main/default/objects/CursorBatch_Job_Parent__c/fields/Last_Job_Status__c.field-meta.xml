@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Last_Job_Status__c</fullName>
+    <description>Final Status__c value of the most recent terminal CursorBatch_Job__c run for this config (Completed, Completed with Errors, Failed, or Cancelled). Written best-effort by CursorBatchCompletionHandler; failures here never block job completion.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Final status of the most recent run of this job. Updated automatically by the framework when a run reaches a terminal state.</inlineHelpText>
+    <label>Last Job Status</label>
+    <length>40</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Last_Job_Started_At__c</fullName>
+    <description>Timestamp of the most recent CursorBatch_Job__c.Started_At__c for this config. Updated by the framework each time the parent is upserted at job submission.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>When the most recent run of this job was started. Updated automatically by the framework.</inlineHelpText>
+    <label>Last Job Started At</label>
+    <required>false</required>
+    <type>DateTime</type>
+</CustomField>

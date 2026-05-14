@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Config_Developer_Name__c</fullName>
+    <caseSensitive>false</caseSensitive>
+    <description>CursorBatch_Config__mdt.DeveloperName for the configuration this parent represents. Acts as the 1:1 anchor between this object and CursorBatch_Config__mdt: Salesforce does not permit Lookup fields targeting custom metadata records, so the unique constraint on this external-ID field enforces one parent per config.</description>
+    <externalId>true</externalId>
+    <inlineHelpText>The DeveloperName of the matching CursorBatch_Config__mdt record. Set automatically by the framework on the first job run for each config and never changed thereafter.</inlineHelpText>
+    <label>Config Developer Name</label>
+    <length>40</length>
+    <required>true</required>
+    <type>Text</type>
+    <unique>true</unique>
+</CustomField>

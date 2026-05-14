@@ -174,6 +174,7 @@ private without sharing class CursorJobTest {
     ) {
         CursorBatch_Config__mdt config = new CursorBatch_Config__mdt(
             MasterLabel = jobName,
+            DeveloperName = CursorBatchTestUtils.toDeveloperName(jobName),
             Query_Builder_Class__c = queryBuilderClass,
             Query_Builder_Method__c = queryBuilderMethod,
             Worker_Class__c = workerClass,
@@ -436,6 +437,39 @@ private without sharing class CursorJobTest {
         // Assert - Job should be created
         List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByName('TestStaticRun');
         Assert.areEqual(1, jobs.size(), 'Should create job record');
+    }
+    
+    @IsTest
+    static void testStaticRunLinksJobParent() {
+        // Arrange - end-to-end CursorJob.run() should also auto-upsert and link Job_Parent__c
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'TestStaticRunParent',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        // Act
+        Test.startTest();
+        Id jobId = CursorJob.run('TestStaticRunParent');
+        Test.stopTest();
+        
+        // Assert
+        Assert.areNotEqual(null, jobId, 'CursorJob.run should return the new job Id');
+        CursorBatch_Job__c job = CursorBatchSelector.getJobById(jobId);
+        Assert.areNotEqual(null, job.Job_Parent__c, 'Job_Parent__c should be auto-linked for CursorJob runs');
+        
+        String devName = CursorBatchTestUtils.toDeveloperName('TestStaticRunParent');
+        List<CursorBatch_Job_Parent__c> parents = [
+            SELECT Id, Config_Developer_Name__c, Config_Label__c
+            FROM CursorBatch_Job_Parent__c
+            WHERE Id = :job.Job_Parent__c
+        ];
+        Assert.areEqual(1, parents.size(), 'Linked parent should exist');
+        Assert.areEqual(devName, parents[0].Config_Developer_Name__c,
+            'Parent should be keyed by config DeveloperName');
+        Assert.areEqual('TestStaticRunParent', parents[0].Config_Label__c,
+            'Parent should denormalize MasterLabel');
     }
     
     @IsTest
