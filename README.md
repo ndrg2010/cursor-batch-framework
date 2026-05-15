@@ -71,20 +71,20 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J121AAC) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J121AAC) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J1RpAAK) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J1RpAAK) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000J121AAC --target-org your-org --wait 10
+sf package install --package 04tfj000000J1RpAAK --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
 
-After installing the package, you must deploy the **Platform Event Subscriber Configurations** to specify which user runs the Platform Event triggers.
+After installing the package, you must update the **run-as user** on the three Platform Event Subscriber Configs that the package shipped with placeholder values.
 
-> **Note:** These configs are intentionally **NOT included in the package** so that your customizations (especially the run-as user) are preserved during package upgrades.
+> **Note:** These configs are shipped in the package with `installBehaviors.newOnly` so they're auto-created on first install with placeholder values, but **never overwritten on subsequent upgrades** — your customizations (run-as user, batch size) are preserved across all future package upgrades.
 
 #### Why This Is Required
 
@@ -97,9 +97,7 @@ Additionally, **all three triggers must run as the same user** because `Database
 
 The Platform Event Subscriber Config overrides this default, allowing triggers to run as a **permissioned user** with the necessary access.
 
-#### Deploy the Subscriber Configs
-
-The framework uses **three** Platform Event triggers that require subscriber configurations:
+#### The three Subscriber Configs
 
 | Trigger | Platform Event | Purpose |
 |---------|----------------|---------|
@@ -107,39 +105,37 @@ The framework uses **three** Platform Event triggers that require subscriber con
 | `CursorBatchWorkerTrigger` | `CursorBatch_Worker__e` | Spawns workers from coordinator events |
 | `CursorBatchWorkerCompleteTrigger` | `CursorBatch_WorkerComplete__e` | Handles worker completion and invokes `finish()` callback |
 
-1. Clone or download the repository to access the `unpackaged/` directory
-2. Deploy all three subscriber configurations:
+After install, find these in **Setup → Platform Events → \<event\> → Subscriptions**, or via metadata API as `PlatformEventSubscriberConfig`.
+
+#### Update the Run-As User
+
+The package ships placeholder configs with `<user>YOUR_USERNAME_HERE</user>` and a default batch size. There are two equivalent ways to update them:
+
+**Option 1 — Setup UI (easiest for one-time fixes):**
+
+1. Setup → Platform Events → click the platform event (e.g. `CursorBatch_Coordinator__e`)
+2. In the Subscriptions related list, edit the `Cursor*TriggerConfig` row
+3. Change the **Run As User** to your integration user; save
+4. Repeat for the other two triggers
+
+**Option 2 — Metadata deploy (preferred for repeatable setup across orgs):**
+
+1. Clone or download the repository to access `unpackaged/platformEventSubscriberConfigs/`
+2. Edit each XML file's `<user>` tag with your integration user's full username
+3. Deploy:
 
 ```bash
 sf project deploy start --source-dir unpackaged/platformEventSubscriberConfigs --target-org your-org
 ```
 
-3. Verify deployment in Setup → Platform Events:
-   - `CursorBatch_Coordinator__e` → Subscriptions
-   - `CursorBatch_Worker__e` → Subscriptions
-   - `CursorBatch_WorkerComplete__e` → Subscriptions
-
-#### Choosing the Run-As User
-
-The included configs use a placeholder user. Update all three files in `unpackaged/platformEventSubscriberConfigs/` before deploying:
-
-- `CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml`
-- `CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml`
-- `CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml`
-
-```xml
-<user>your-integration-user@example.com</user>
-```
-
 **Requirements for the run-as user:**
 - Must have **Read** access to `CursorBatch_Config__mdt`
-- Must have **Create/Edit** access to `CursorBatch_Job__c`
+- Must have **Create/Edit** access to `CursorBatch_Job__c` and `CursorBatch_Job_Parent__c`
 - Must have **Apex Class** access to coordinator, worker, and any dependent classes and objects.
 - Recommended: Use a dedicated integration user or system administrator
 - All three triggers **must use the same user** for cursor access to work
 
-> **Note:** See [unpackaged/README.md](unpackaged/README.md) for complete details and troubleshooting.
-> **Note:** Since these configs are not in the package, your customizations are always preserved during upgrades.
+> **Note:** Since the configs use `installBehaviors.newOnly`, your customizations are always preserved during upgrades. The placeholder is only installed on first install or in orgs that lost their configs (e.g. customers upgrading from v0.26 / v0.27, where the configs were inadvertently removed from the package — see Migration Guide).
 
 ### Permission Sets
 
@@ -1944,6 +1940,18 @@ The framework logs key events at each stage:
 | Exceptions | ERROR | Full stack trace included via `logException()` |
 
 ## Migration Guide
+
+### Upgrading from v0.26 or v0.27 (PlatformEventSubscriberConfig restoration)
+
+Versions 0.26 and 0.27 inadvertently removed the three `PlatformEventSubscriberConfig` files from the package. As a result, **upgrading any org from v0.25 (or earlier) to v0.26 or v0.27 destructively deletes the existing `Cursor*TriggerConfig` records**, causing the framework's Platform Event triggers to fall back to running as the **Automated Process** user. Workers then can't access cursors created by your integration user, and jobs silently stall mid-run.
+
+**v0.28 restores the configs to the package** with `installBehaviors.newOnly` so:
+
+- Orgs that lost their configs in v0.26/v0.27 (and never manually restored them) will have placeholder configs auto-created on the v0.28 install. **You must update the run-as user** on each of the three configs (see [Post-Install Setup](#post-install-setup)).
+- Orgs that already have the configs (either never upgraded past v0.25, or manually restored after a v0.26/v0.27 upgrade) will have their existing configs preserved — `newOnly` won't overwrite them.
+- Future upgrades are protected: as long as `installBehaviors.newOnly` stays in place, no upgrade will ever overwrite or delete your customized configs.
+
+If you upgraded straight from v0.25 to v0.27 and noticed your jobs hanging or workers throwing cursor-not-accessible errors, this is the cause. Either upgrade to v0.28 (recommended) or manually redeploy from `unpackaged/platformEventSubscriberConfigs/` after editing the `<user>` field.
 
 ### Migrating from Custom Coordinators to CursorJob
 

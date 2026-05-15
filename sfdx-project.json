@@ -1,13 +1,20 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.27",
-      "versionNumber": "0.27.0.NEXT",
+      "versionName": "ver 0.28",
+      "versionNumber": "0.28.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Adds the Jobs related list to the Cursor Batch Job Parent Lightning record page (lst:dynamicRelatedList with curated columns), fixes Last_Job_Status__c so the parent mirrors Preparing/Processing/Cancelled/Failed transitions in addition to the existing terminal-only writes, and assigns both record pages as the Lightning org default for both Large and Small form factors.",
-      "definitionFile": "config/project-scratch-def.json"
+      "versionDescription": "Restores PlatformEventSubscriberConfig files to the package with installBehaviors.newOnly so fresh installs auto-create placeholder configs (admin must update run-as user once) and upgrades preserve customer customizations. Fixes the destructive deletion that occurred during v0.25 -> v0.26 upgrades.",
+      "definitionFile": "config/project-scratch-def.json",
+      "installBehaviors": {
+        "newOnly": [
+          "main/default/platformEventSubscriberConfigs/CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml",
+          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
+          "main/default/platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
+        ]
+      }
     }
   ],
   "name": "cursor-batch-framework",
@@ -40,7 +47,8 @@
     "CursorBatchFramework@0.25.0-1": "04tfj000000HM49AAG",
     "CursorBatchFramework@0.26.0-1": "04tfj000000J0sLAAS",
     "CursorBatchFramework@0.27.0-1": "04tfj000000J10PAAS",
-    "CursorBatchFramework@0.27.0-2": "04tfj000000J121AAC"
+    "CursorBatchFramework@0.27.0-2": "04tfj000000J121AAC",
+    "CursorBatchFramework@0.28.0-1": "04tfj000000J1RpAAK"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
@@ -68,6 +76,9 @@
     "classes/CursorBatchFramework/ICursorBatchLogger.cls",
     "triggers/CursorBatchCoordinatorTrigger.trigger",
     "triggers/CursorBatchWorkerCompleteTrigger.trigger",
-    "triggers/CursorBatchWorkerTrigger.trigger"
+    "triggers/CursorBatchWorkerTrigger.trigger",
+    "platformEventSubscriberConfigs/CursorBatchCoordinatorTriggerConfig.platformEventSubscriberConfig-meta.xml",
+    "platformEventSubscriberConfigs/CursorBatchWorkerTriggerConfig.platformEventSubscriberConfig-meta.xml",
+    "platformEventSubscriberConfigs/CursorBatchWorkerCompleteTriggerConfig.platformEventSubscriberConfig-meta.xml"
   ]
 }
