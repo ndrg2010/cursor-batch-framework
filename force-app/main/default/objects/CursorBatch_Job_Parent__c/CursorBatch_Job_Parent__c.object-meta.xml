@@ -24,5 +24,11 @@
         <type>AutoNumber</type>
     </nameField>
     <pluralLabel>Cursor Batch Job Parents</pluralLabel>
+    <searchLayouts>
+        <searchResultsAdditionalFields>Config_Developer_Name__c</searchResultsAdditionalFields>
+        <searchResultsAdditionalFields>Config_Label__c</searchResultsAdditionalFields>
+        <searchResultsAdditionalFields>Last_Job_Status__c</searchResultsAdditionalFields>
+        <searchResultsAdditionalFields>Last_Job_Started_At__c</searchResultsAdditionalFields>
+    </searchLayouts>
     <sharingModel>ReadWrite</sharingModel>
 </CustomObject>

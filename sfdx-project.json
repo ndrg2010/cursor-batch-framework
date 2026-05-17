@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.28",
-      "versionNumber": "0.28.0.NEXT",
+      "versionName": "ver 0.29",
+      "versionNumber": "0.29.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Restores PlatformEventSubscriberConfig files to the package with installBehaviors.newOnly so fresh installs auto-create placeholder configs (admin must update run-as user once) and upgrades preserve customer customizations. Fixes the destructive deletion that occurred during v0.25 -> v0.26 upgrades.",
+      "versionDescription": "Adds search-layout metadata to CursorBatch_Job_Parent__c so Recently Viewed, lookup dialogs, and search results show Config Developer Name, Config Label, Last Job Status, and Last Job Started At alongside Name (instead of just Name).",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -48,7 +48,8 @@
     "CursorBatchFramework@0.26.0-1": "04tfj000000J0sLAAS",
     "CursorBatchFramework@0.27.0-1": "04tfj000000J10PAAS",
     "CursorBatchFramework@0.27.0-2": "04tfj000000J121AAC",
-    "CursorBatchFramework@0.28.0-1": "04tfj000000J1RpAAK"
+    "CursorBatchFramework@0.28.0-1": "04tfj000000J1RpAAK",
+    "CursorBatchFramework@0.29.0-1": "04tfj000000J3VFAA0"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
