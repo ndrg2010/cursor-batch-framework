@@ -279,90 +279,6 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
     }
     
     @IsTest
-    static void testHandle_coordinatorConstructorThrows_marksJobAsFailedWithErrorMessage() {
-        // Arrange -- ThrowingCoordinator's no-arg constructor unconditionally throws, which
-        // propagates from coordinatorType.newInstance() up through processEvent's try block
-        // and into the catch. Before this change, the handler swallowed silently and left the
-        // CursorBatch_Job__c row in Preparing forever; after the change, the row must be
-        // flipped to Failed with the original exception captured in Error_Message__c.
-        String throwingClassName = 'CursorBatchCoordinatorTriggerHandlerTest.ThrowingCoordinator';
-        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
-            'BoomTestJob',
-            throwingClassName,
-            0
-        );
-
-        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
-            new CursorBatch_Coordinator__e(
-                Job_Name__c = 'BoomTestJob',
-                Coordinator_Class__c = throwingClassName,
-                Job_Record_Id__c = jobRecord.Id,
-                Delay_Minutes__c = null
-            )
-        };
-
-        CursorBatchCoordinatorTriggerHandler handler = new CursorBatchCoordinatorTriggerHandler();
-
-        // Act -- coordinator constructor throws; handler must swallow but write back.
-        Test.startTest();
-        handler.handle(events);
-        Test.stopTest();
-
-        // Assert -- the row is now Failed and carries the original error details.
-        CursorBatch_Job__c reloaded = [
-            SELECT Id, Status__c, Error_Message__c, Completed_At__c
-            FROM CursorBatch_Job__c
-            WHERE Id = :jobRecord.Id
-            LIMIT 1
-        ];
-        Assert.areEqual('Failed', reloaded.Status__c,
-            'Handler catch block must flip Status__c to Failed so the row does not stay in Preparing.');
-        Assert.isNotNull(reloaded.Completed_At__c,
-            'Handler catch block must stamp Completed_At__c.');
-        Assert.isTrue(
-            String.isNotBlank(reloaded.Error_Message__c) &&
-                reloaded.Error_Message__c.contains('CursorBatchCoordinatorTriggerHandler caught an exception'),
-            'Error_Message__c must include the handler-failure prefix that identifies the source of the failure.'
-        );
-        Assert.isTrue(
-            reloaded.Error_Message__c.contains('Forced failure for unit test'),
-            'Error_Message__c must include the original exception message thrown by ThrowingCoordinator.'
-        );
-    }
-
-    @IsTest
-    static void testHandle_coordinatorConstructorThrowsButRowIdInvalid_doesNotThrow() {
-        // Arrange -- a Job_Record_Id__c that is not a valid Id (the framework should never
-        // publish this, but be defensive: markJobAsFailed must not throw). The handler's catch
-        // still fires from the constructor throw; the inner catch in markJobAsFailed must
-        // swallow the Id.valueOf failure.
-        String throwingClassName = 'CursorBatchCoordinatorTriggerHandlerTest.ThrowingCoordinator';
-        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
-            new CursorBatch_Coordinator__e(
-                Job_Name__c = 'BoomTestJobBadId',
-                Coordinator_Class__c = throwingClassName,
-                Job_Record_Id__c = 'not-an-id',
-                Delay_Minutes__c = null
-            )
-        };
-
-        CursorBatchCoordinatorTriggerHandler handler = new CursorBatchCoordinatorTriggerHandler();
-
-        // Act + Assert -- must not throw; we don't have a CursorBatch_Job__c to verify, just
-        // confirm the handler is non-fatal even when the write-back can't find a target row.
-        Boolean threw = false;
-        Test.startTest();
-        try {
-            handler.handle(events);
-        } catch (Exception e) {
-            threw = true;
-        }
-        Test.stopTest();
-        Assert.isFalse(threw,
-            'Handler must remain non-throwing even when Job_Record_Id__c on the event is not a parseable Id.');
-    }
-
-    @IsTest
     static void testHandleWithZeroDelay() {
         // Arrange - Test that delay of 0 is treated as no delay
         CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig(
@@ -438,9 +354,10 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Test.stopTest();
 
         // Assert -- enqueueCoordinator skips the real System.enqueueJob under
-        // Test.isRunningTest(), so the only observable signal is that markJobAsFailed did
-        // NOT fire. If newInstance had thrown, the row would now be Failed; staying in
-        // Preparing proves enqueueCoordinator was reached and ran cleanly.
+        // Test.isRunningTest(), so the only observable signal is that the catch block in
+        // processEvent did NOT fire. The row must stay untouched in Preparing -- if anything
+        // threw before reaching enqueueCoordinator the test would no longer be exercising
+        // that method.
         CursorBatch_Job__c reloaded = [
             SELECT Id, Status__c, Error_Message__c
             FROM CursorBatch_Job__c
@@ -448,7 +365,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
             LIMIT 1
         ];
         Assert.areEqual('Preparing', reloaded.Status__c,
-            'enqueueCoordinator must complete without triggering markJobAsFailed.');
+            'enqueueCoordinator must complete without falling into the catch block in processEvent.');
         Assert.isTrue(String.isBlank(reloaded.Error_Message__c),
             'No error should be recorded when enqueueCoordinator succeeds.');
     }
@@ -481,7 +398,8 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         handler.handle(events);
         Test.stopTest();
 
-        // Assert -- row not flipped to Failed proves the delay branch executed cleanly.
+        // Assert -- row untouched in Preparing proves the delay branch executed without
+        // falling into the catch block in processEvent.
         CursorBatch_Job__c reloaded = [
             SELECT Id, Status__c, Error_Message__c
             FROM CursorBatch_Job__c
@@ -489,7 +407,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
             LIMIT 1
         ];
         Assert.areEqual('Preparing', reloaded.Status__c,
-            'enqueueCoordinator delay branch must complete without triggering markJobAsFailed.');
+            'enqueueCoordinator delay branch must complete without falling into the catch block in processEvent.');
         Assert.isTrue(String.isBlank(reloaded.Error_Message__c),
             'No error should be recorded when enqueueCoordinator with delay succeeds.');
     }
@@ -512,8 +430,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         // Arrange -- job is in 'Extracting File' status with Started_At__c set. The CSV_Ready
         // callback should compute queryDurationMs from evt.CreatedDate - Started_At__c and
         // construct a CursorBatchCsvCallbackCoordinator. Under Test.isRunningTest() the
-        // enqueueJob call is skipped, so the row remains in 'Extracting File' (the catch
-        // block in processEvent would otherwise flip it to Failed if anything threw).
+        // enqueueJob call is skipped, so the row remains in 'Extracting File'.
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
             'CsvReadyHappyJob',
             'irrelevant-because-CSV_Ready-bypasses-coordinator-resolution',
@@ -718,9 +635,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
     //   - the happy path: row flipped to Failed, Error_Message__c populated with the
     //     'CSV middleware error: ...' prefix, Completed_At__c stamped, and the completion
     //     handler invoked. The job's Coordinator_Class__c uses TestableCoordinator so any
-    //     reflection inside routeFinishCallback resolves cleanly and the assertions on
-    //     Error_Message__c stay deterministic (i.e. the outer processEvent catch does not
-    //     fire and overwrite the message with the handler-failure prefix).
+    //     reflection inside routeFinishCallback resolves cleanly.
 
     @IsTest
     static void testHandleCsvError_invalidJobRecordId_isNonFatal() {
@@ -757,9 +672,7 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         // 'CSV middleware error: <evt.Job_Name__c>' message, stamp Completed_At__c, and
         // invoke routeFinishCallback. We use TestableCoordinator as the Coordinator_Class__c
         // so that any reflection in routeFinishCallback resolves to a real Queueable with a
-        // public no-arg constructor -- otherwise an exception in the completion handler
-        // would fall into processEvent's outer catch and markJobAsFailed would overwrite
-        // Error_Message__c with the handler-failure prefix, masking the assertion target.
+        // public no-arg constructor.
         String coordinatorClass = 'CursorBatchCoordinatorTriggerHandlerTest.TestableCoordinator';
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
             'CsvErrorHappyJob',
@@ -817,8 +730,8 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
     // through System.debug -- invisible after the debug log window expires. The handler now
     // calls CursorBatchLogger.resolveLogger(LOG_TAG), which the framework's convention-based
     // discovery resolves to CursorBatchLoggerAdapter (Callable Nebula adapter living in the
-    // consumer namespace), tagged with LOG_TAG, so swallowed exceptions and write-back errors
-    // land in Nebula's LogEntry__c.
+    // consumer namespace), tagged with LOG_TAG, so swallowed exceptions land in Nebula's
+    // LogEntry__c.
     //
     // The two tests below pin (a) the tag value (shared with CursorBatchWorkerTriggerHandler
     // so ops dashboards can filter both subscribers in one query) and (b) that the
@@ -900,8 +813,8 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
     /**
      * @description Test-only coordinator whose no-arg constructor unconditionally throws.
      *              Used to exercise the catch block in CursorBatchCoordinatorTriggerHandler.processEvent
-     *              and prove that the new write-back logic flips the corresponding
-     *              CursorBatch_Job__c row to Failed.
+     *              so the Nebula-routed logger.logException invocation can be verified by
+     *              constructor_routesLogOutputThroughAepResolvedLoggerService.
      *
      *              Resolved at runtime via Type.forName('CursorBatchCoordinatorTriggerHandlerTest.ThrowingCoordinator').
      *              The class intentionally does not extend CursorBatchCoordinator -- the constructor
