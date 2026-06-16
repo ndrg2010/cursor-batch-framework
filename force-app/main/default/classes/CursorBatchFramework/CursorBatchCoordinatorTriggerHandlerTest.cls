@@ -729,22 +729,22 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
     // The constructor used to call CursorBatchLogger.getDefault() which routes log output
     // through System.debug -- invisible after the debug log window expires. The handler now
     // calls CursorBatchLogger.resolveLogger(LOG_TAG), which the framework's convention-based
-    // discovery resolves to CursorBatchLoggerAdapter (Callable Nebula adapter living in the
-    // consumer namespace), tagged with LOG_TAG, so swallowed exceptions land in Nebula's
-    // LogEntry__c.
+    // discovery resolves to a Callable adapter in the consumer namespace (e.g. a Nebula
+    // adapter), tagged with LOG_TAG, so swallowed exceptions land in the consumer's
+    // persistent log sink instead of vanishing with the debug window.
     //
-    // The two tests below pin (a) the tag value (shared with CursorBatchWorkerTriggerHandler
-    // so ops dashboards can filter both subscribers in one query) and (b) that the
-    // AEP-resolved ILoggerService is actually invoked from a normal handle() path. (b) proves
-    // the Nebula adapter is wired through the framework's resolveLogger contract -- the
-    // System.debug-only default never touches ILoggerService.
+    // This package is dependency-free, so we cannot assert on a specific concrete adapter
+    // (fflib / Nebula / AEP types are not in force-app). The test below pins the tag value
+    // -- shared with CursorBatchWorkerTriggerHandler so ops dashboards can filter both
+    // subscribers in one query. Verification that the Callable adapter is actually invoked
+    // belongs in a consumer-side test that lives alongside the real adapter implementation.
 
     @IsTest
     static void logTag_pinnedToDispatchTag() {
         // Arrange + Act -- the tag is a compile-time constant exposed via @TestVisible so
-        // ops searches and downstream Nebula log filters have a stable identifier. The same
-        // value is repeated in CursorBatchWorkerTriggerHandler.LOG_TAG so ops can tag-filter
-        // both PE handlers' logs with a single equality predicate; a sibling test in
+        // ops searches and downstream log filters have a stable identifier. The same value
+        // is repeated in CursorBatchWorkerTriggerHandler.LOG_TAG so ops can tag-filter both
+        // PE handlers' logs with a single equality predicate; a sibling test in
         // CursorBatchWorkerTriggerHandlerTest pins the worker side independently.
         //
         // Assert -- if someone renames the constant or drifts the value, this test breaks
@@ -755,78 +755,6 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
             'LOG_TAG must remain "CursorBatch Dispatch" so ops dashboards filtering both PE handlers in one query keep matching.'
         );
     }
-
-    @IsTest
-    static void constructor_routesLogOutputThroughAepResolvedLoggerService() {
-        // Arrange -- swap the AEP-resolved ILoggerService for an ApexMocks stub. The handler
-        // constructor calls CursorBatchLogger.resolveLogger(LOG_TAG) which uses Type.forName
-        // to find CursorBatchLoggerAdapter, instantiates it via no-arg constructor (which in
-        // turn does Application.Service.newInstance(ILoggerService.class) -- this is the seam
-        // we intercept here), and calls Callable.call('addTag', ...) to apply LOG_TAG. If the
-        // handler still called CursorBatchLogger.getDefault() (the System.debug-only
-        // implementation), no call would ever reach mockLoggerService and the verify below
-        // would fail with "Wanted 1 time(s) but was called 0 time(s)".
-        fflib_ApexMocks mocks = new fflib_ApexMocks();
-        ILoggerService mockLoggerService = (ILoggerService) mocks.mock(ILoggerService.class);
-        ILogEntryBuilder mockEntryBuilder = (ILogEntryBuilder) mocks.mock(ILogEntryBuilder.class);
-        mocks.startStubbing();
-        mocks.when(mockLoggerService.info((String) fflib_Match.anyString())).thenReturn(mockEntryBuilder);
-        mocks.when(mockLoggerService.error((String) fflib_Match.anyString())).thenReturn(mockEntryBuilder);
-        mocks.when(mockLoggerService.exception((String) fflib_Match.anyString(), fflib_Match.anyObject())).thenReturn(mockEntryBuilder);
-        mocks.when(mockEntryBuilder.addTags((Set<String>) fflib_Match.anyObject())).thenReturn(mockEntryBuilder);
-        mocks.stopStubbing();
-        Application.Service.setMock(ILoggerService.class, mockLoggerService);
-
-        // Use the ThrowingCoordinator path so processEvent's catch fires and logException is
-        // guaranteed to be invoked once -- this is the exact code path stuck-job forensics
-        // depend on, so verifying it routes through Nebula is the highest-signal check.
-        String throwingClassName = 'CursorBatchCoordinatorTriggerHandlerTest.ThrowingCoordinator';
-        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
-            'NebulaWiringJob',
-            throwingClassName,
-            0
-        );
-        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
-            new CursorBatch_Coordinator__e(
-                Job_Name__c = 'NebulaWiringJob',
-                Coordinator_Class__c = throwingClassName,
-                Job_Record_Id__c = jobRecord.Id,
-                Delay_Minutes__c = null
-            )
-        };
-
-        CursorBatchCoordinatorTriggerHandler handler = new CursorBatchCoordinatorTriggerHandler();
-
-        // Act
-        Test.startTest();
-        handler.handle(events);
-        Test.stopTest();
-
-        // Assert -- the exception swallow in processEvent must hit ILoggerService.exception
-        // (which is what CursorBatchLoggerAdapter.logException delegates to). Any count >= 1
-        // proves the adapter is wired through resolveLogger; the framework's debug-only
-        // default would produce 0.
-        ((ILoggerService) mocks.verify(mockLoggerService, mocks.atLeast(1)))
-            .exception((String) fflib_Match.anyString(), fflib_Match.anyObject());
-    }
-
-    /**
-     * @description Test-only coordinator whose no-arg constructor unconditionally throws.
-     *              Used to exercise the catch block in CursorBatchCoordinatorTriggerHandler.processEvent
-     *              so the Nebula-routed logger.logException invocation can be verified by
-     *              constructor_routesLogOutputThroughAepResolvedLoggerService.
-     *
-     *              Resolved at runtime via Type.forName('CursorBatchCoordinatorTriggerHandlerTest.ThrowingCoordinator').
-     *              The class intentionally does not extend CursorBatchCoordinator -- the constructor
-     *              throws before the instanceof check is reached, so the type is irrelevant to the test.
-     */
-    public class ThrowingCoordinator {
-        public ThrowingCoordinator() {
-            throw new ThrowingCoordinatorException('Forced failure for unit test');
-        }
-    }
-
-    public class ThrowingCoordinatorException extends Exception {}
 
     /**
      * @description Test-only concrete subclass of CursorBatchCoordinator with a public no-arg
