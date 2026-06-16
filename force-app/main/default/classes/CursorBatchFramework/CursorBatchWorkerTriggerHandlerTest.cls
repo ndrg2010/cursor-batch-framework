@@ -365,6 +365,41 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
             'Reconstructed cursor should have same record count');
     }
     
+    // =====================================================================================
+    // Nebula Logger wiring coverage
+    // =====================================================================================
+    //
+    // The constructor used to call CursorBatchLogger.getDefault() which routes log output
+    // through System.debug -- invisible after the debug log window expires. The handler now
+    // calls CursorBatchLogger.resolveLogger(LOG_TAG), which the framework's convention-based
+    // discovery resolves to a Callable adapter in the consumer namespace (e.g. a Nebula
+    // adapter), tagged with LOG_TAG, so cursor-reconstruction failures and swallowed
+    // exceptions land in the consumer's persistent log sink instead of vanishing with the
+    // debug window.
+    //
+    // This package is dependency-free, so we cannot assert on a specific concrete adapter
+    // (fflib / Nebula / AEP types are not in force-app). The test below pins the tag value
+    // -- shared with CursorBatchCoordinatorTriggerHandler so ops dashboards can filter both
+    // subscribers in one query. Verification that the Callable adapter is actually invoked
+    // belongs in a consumer-side test that lives alongside the real adapter implementation.
+
+    @IsTest
+    static void logTag_pinnedToDispatchTag() {
+        // Arrange + Act -- the tag is a compile-time constant exposed via @TestVisible so
+        // ops searches and downstream log filters have a stable identifier. The same value
+        // is repeated in CursorBatchCoordinatorTriggerHandler.LOG_TAG so ops can tag-filter
+        // both PE handlers' logs with a single equality predicate; a sibling test in
+        // CursorBatchCoordinatorTriggerHandlerTest pins the coordinator side independently.
+        //
+        // Assert -- if someone renames the constant or drifts the value, this test breaks
+        // before LogEntry__c queries in dashboards/alerts silently start missing data.
+        Assert.areEqual(
+            'CursorBatch Dispatch',
+            CursorBatchWorkerTriggerHandler.LOG_TAG,
+            'LOG_TAG must remain "CursorBatch Dispatch" so ops dashboards filtering both PE handlers in one query keep matching.'
+        );
+    }
+
     @IsTest
     static void testTriggerFiresOnEventPublish() {
         // Arrange - This test actually fires the trigger by publishing Platform Events

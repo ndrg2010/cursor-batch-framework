@@ -3,19 +3,47 @@
  *              coordinator queueables using dynamic instantiation. This ensures the coordinator
  *              runs as the dedicated trigger user (from PlatformEventSubscriberConfig), which is
  *              required for cursor access by workers running as the same user.
+ *
+ *              Logging: the framework's default logger (CursorBatchLogger.getDefault()) writes
+ *              everything to System.debug, which is invisible after the debug log window
+ *              expires and has no persistent paper trail for stuck-job forensics. This handler
+ *              instead routes through CursorBatchLogger.resolveLogger(LOG_TAG), the framework's
+ *              convention-based extension point: it looks up CursorBatchLoggerAdapter via
+ *              Type.forName (Callable-enabled Nebula adapter living in the consumer namespace),
+ *              tags it with LOG_TAG, and falls back to System.debug only if the adapter class
+ *              cannot be loaded -- so this stays cross-package safe even if the framework is
+ *              repackaged or the adapter is moved between namespaces. Both PE dispatch
+ *              handlers (this class and CursorBatchWorkerTriggerHandler) share the same
+ *              LOG_TAG so ops can pull "anything that went wrong during PE dispatch" in a
+ *              single LogEntry__c tag filter rather than having to OR two separate tags.
  * @group CursorBatchFramework
  * @see CursorBatchCoordinator
  * @see CursorBatchWorkerTriggerHandler
+ * @see CursorBatchLogger
+ * @see CursorBatchLoggerAdapter
  */
 public without sharing class CursorBatchCoordinatorTriggerHandler {
     
+    /**
+     * @description Shared tag attached to every LogEntry__c emitted from PE dispatch handlers.
+     *              Kept identical in CursorBatchWorkerTriggerHandler so ops dashboards can
+     *              filter both subscribers' logs with a single tag clause. @TestVisible so the
+     *              pinned-value test can catch silent drift before LogEntry__c queries miss
+     *              data.
+     */
+    @TestVisible
+    private static final String LOG_TAG = 'CursorBatch Dispatch';
+
     private ICursorBatchLogger logger;
     
     /**
-     * @description Default constructor initializing the logger.
+     * @description Default constructor. Routes log output through Nebula Logger (via the
+     *              framework's resolveLogger convention) instead of the System.debug default,
+     *              so swallowed exceptions are recoverable from LogEntry__c after the
+     *              transaction ends.
      */
     public CursorBatchCoordinatorTriggerHandler() {
-        this.logger = CursorBatchLogger.getDefault();
+        this.logger = CursorBatchLogger.resolveLogger(LOG_TAG);
     }
     
     /**
