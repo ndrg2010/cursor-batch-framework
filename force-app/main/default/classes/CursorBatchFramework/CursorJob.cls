@@ -171,12 +171,16 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
                     'metadataJson must include contentVersionId for CSV job: ' + jobName
                 );
             }
+
+            String worksheetLabel = (String) metadata.get('worksheetLabel');
+            String worksheetPassword = (String) metadata.get('worksheetPassword');
             
             logger.logInfo('CursorJob CSV init for ' + jobName + ': contentVersionId=' + contentVersionId);
             
             attachFinalizer(jobRecord.Id, null);
             
-            String csvQueryId = CsvCursorClient.initSession(contentVersionId, jobRecord.Id);
+            String csvQueryId = CsvCursorClient.initSession(
+                contentVersionId, jobRecord.Id, worksheetLabel, worksheetPassword);
             
             jobRecord.Cursor_Query_Id__c = csvQueryId;
             jobRecord.Status__c = 'Extracting File';

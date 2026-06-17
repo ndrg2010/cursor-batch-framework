@@ -15,22 +15,47 @@ public without sharing class CsvCursorClient {
     private static final String NAMED_CREDENTIAL = 'callout:CursorBatch_CSV';
 
     /**
-     * @description Sends the CSV file reference to the middleware for async indexing.
+     * @description Sends the file reference to the middleware for async indexing.
      *              Returns the csvQueryId session handle from the 202 response.
-     * @param contentVersionId Salesforce ContentVersion ID for the uploaded CSV file
+     * @param contentVersionId Salesforce ContentVersion ID for the uploaded CSV/Excel file
      * @param jobRecordId CursorBatch_Job__c record ID for the callback
      * @return csvQueryId session identifier assigned by the middleware
      * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or non-success responses
      */
     public static String initSession(String contentVersionId, Id jobRecordId) {
+        return initSession(contentVersionId, jobRecordId, null, null);
+    }
+
+    /**
+     * @description Sends the file reference to the middleware for async indexing, with optional
+     *              worksheet selection for xls/xlsx files. Returns the csvQueryId session handle
+     *              from the 202 response. The worksheet fields are only added to the payload when
+     *              provided (CSV files omit them).
+     * @param contentVersionId Salesforce ContentVersion ID for the uploaded CSV/Excel file
+     * @param jobRecordId CursorBatch_Job__c record ID for the callback
+     * @param worksheetLabel Optional worksheet/sheet name to read (xls/xlsx only)
+     * @param worksheetPassword Optional password for protected workbooks (xls/xlsx only)
+     * @return csvQueryId session identifier assigned by the middleware
+     * @throws CursorBatchCoordinator.CursorBatchException On HTTP errors or non-success responses
+     */
+    public static String initSession(String contentVersionId, Id jobRecordId,
+                                     String worksheetLabel, String worksheetPassword) {
         HttpRequest req = new HttpRequest();
         req.setEndpoint(NAMED_CREDENTIAL + '/init');
         req.setMethod('POST');
         req.setHeader('Content-Type', 'application/json');
-        req.setBody(JSON.serialize(new Map<String, String>{
+
+        Map<String, String> payload = new Map<String, String>{
             'contentVersionId' => contentVersionId,
             'cursorBatchJobId' => String.valueOf(jobRecordId)
-        }));
+        };
+        if (String.isNotBlank(worksheetLabel)) {
+            payload.put('worksheetLabel', worksheetLabel);
+        }
+        if (String.isNotBlank(worksheetPassword)) {
+            payload.put('worksheetPassword', worksheetPassword);
+        }
+        req.setBody(JSON.serialize(payload));
         req.setTimeout(120000);
 
         HttpResponse res = new Http().send(req);

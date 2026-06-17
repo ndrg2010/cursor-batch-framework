@@ -25,7 +25,7 @@ Traditional Salesforce batch processing has limitations:
 - 🌐 **Callout Support** — Both coordinator and workers implement `Database.AllowsCallouts` for HTTP callouts
 - 🚀 **Metadata-Driven Jobs** — Use `CursorJob` to configure jobs entirely in metadata with zero boilerplate code
 - 📦 **Reducer-Based Shared State** — Optional shared state across parallel workers with snapshot reads, delta emission, and centralized reduction
-- 📄 **CSV File Processing** — Process uploaded CSV files (up to 2 GB) through an external middleware with the same config-driven API, reducers, and chaining
+- 📄 **CSV / Excel File Processing** — Process uploaded CSV and Excel (`xls`/`xlsx`) files (up to 2 GB) through an external middleware with the same config-driven API, reducers, and chaining
 - 👨‍👦 **Per-Config Parent Records** — Every metadata-defined job gets a single `CursorBatch_Job_Parent__c` record aggregating all runs of that job, with last status, last started time, and a `Job_Parent__c` lookup on every run — no extra code required
 
 ## Table of Contents
@@ -34,7 +34,7 @@ Traditional Salesforce batch processing has limitations:
 - [Quick Start](#quick-start)
   - [Option A: Metadata-Driven Jobs (CursorJob)](#option-a-metadata-driven-jobs-cursorjob)
   - [Option B: Custom Coordinator Classes](#option-b-custom-coordinator-classes)
-  - [Option C: CSV File Processing](#option-c-csv-file-processing)
+  - [Option C: CSV / Excel File Processing](#option-c-csv--excel-file-processing)
 - [Architecture](#architecture)
 - [Configuration Reference](#configuration-reference)
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
@@ -71,13 +71,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J3VFAA0) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000J3VFAA0) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KlVpAAK) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KlVpAAK) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000J3VFAA0 --target-org your-org --wait 10
+sf package install --package 04tfj000000KlVpAAK --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -151,7 +151,7 @@ Choose your approach based on complexity:
 |----------|----------|-------------|
 | **CursorJob (Metadata-Driven)** | Simple jobs with standard query/worker pattern | Zero code — configure in metadata |
 | **Custom Coordinator** | Complex logic, conditional queries, custom callbacks | ~50-80 lines |
-| **CSV File Processing** | Process uploaded CSV files with same config-driven API | Worker class only (~20 lines) |
+| **CSV / Excel File Processing** | Process uploaded CSV and Excel (`xls`/`xlsx`) files with same config-driven API | Worker class only (~20 lines) |
 
 ### Option A: Metadata-Driven Jobs (CursorJob)
 
@@ -356,9 +356,9 @@ Create a `CursorBatch_Config__mdt` record:
 Id jobId = new MyDataProcessingCoordinator().submit();
 ```
 
-### Option C: CSV File Processing
+### Option C: CSV / Excel File Processing
 
-Process uploaded CSV files using the same framework — same config-driven API, same reducers, same chaining. The only difference is the `process()` signature.
+Process uploaded CSV and Excel (`xls`/`xlsx`) files using the same framework — same config-driven API, same reducers, same chaining. The only difference is the `process()` signature.
 
 #### 1. Create a CSV Worker
 
@@ -416,7 +416,19 @@ CursorJob.run('Lead CSV Import', new Map<String, Object>{
 });
 ```
 
-The `contentVersionId` is the Salesforce `ContentVersion` ID of the uploaded CSV file. The framework handles everything else: middleware session init, callback, fan-out, parallel processing, retry, completion, and chaining.
+The `contentVersionId` is the Salesforce `ContentVersion` ID of the uploaded file. The framework handles everything else: middleware session init, callback, fan-out, parallel processing, retry, completion, and chaining.
+
+The middleware also supports `xls`/`xlsx` files. For Excel files you can optionally supply the worksheet to read and a password for protected workbooks via two additional metadata keys, supplied the same way as `contentVersionId`:
+
+```apex
+CursorJob.run('Lead Import', new Map<String, Object>{
+    'contentVersionId'  => '068xx...',
+    'worksheetLabel'    => 'Sheet2',   // optional, xls/xlsx only — sheet/tab name to read
+    'worksheetPassword' => 'xyz'       // optional, password for protected workbooks
+});
+```
+
+Both `worksheetLabel` and `worksheetPassword` are optional and are only included in the middleware init payload when provided, so CSV jobs can omit them.
 
 #### CSV Architecture
 

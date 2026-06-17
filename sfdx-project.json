@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.29",
-      "versionNumber": "0.29.0.NEXT",
+      "versionName": "ver 0.31",
+      "versionNumber": "0.31.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Adds search-layout metadata to CursorBatch_Job_Parent__c so Recently Viewed, lookup dialogs, and search results show Config Developer Name, Config Label, Last Job Status, and Last Job Started At alongside Name (instead of just Name).",
+      "versionDescription": "Adds Excel (xls/xlsx) support to the CSV middleware integration: callers can optionally pass worksheetLabel and worksheetPassword in job metadata (the same way as contentVersionId) to select a specific worksheet and unlock password-protected workbooks; both fields are optional and only included in the middleware init payload when provided. Also includes SL-146: persistent logging for the platform-event dispatch handlers (swallowed exceptions now route to LogEntry__c under a shared 'CursorBatch Dispatch' tag) and coordinator catch-block failures now flip the job to Failed via markJobAsFailed instead of leaving rows stuck in Preparing.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -49,7 +49,9 @@
     "CursorBatchFramework@0.27.0-1": "04tfj000000J10PAAS",
     "CursorBatchFramework@0.27.0-2": "04tfj000000J121AAC",
     "CursorBatchFramework@0.28.0-1": "04tfj000000J1RpAAK",
-    "CursorBatchFramework@0.29.0-1": "04tfj000000J3VFAA0"
+    "CursorBatchFramework@0.29.0-1": "04tfj000000J3VFAA0",
+    "CursorBatchFramework@0.30.0-1": "04tfj000000KGYTAA4",
+    "CursorBatchFramework@0.31.0-1": "04tfj000000KlVpAAK"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",
