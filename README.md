@@ -17,7 +17,7 @@ Traditional Salesforce batch processing has limitations:
 - ⚡ **Parallel Execution** — Fan out up to 50+ workers simultaneously using Queueable + Platform Events
 - 🎯 **Cursor-Based Pagination** — Efficient, server-side position tracking
 - 📡 **Platform Event Orchestration** — Bypass Queueable chaining limits (1 child job) to enable parallel fanout
-- 🔄 **Automatic Completion Callbacks** — Chain jobs or send notifications when done
+- 🔄 **Automatic Completion Callbacks** — Chain jobs or send notifications when done, invoked exactly once per job even if completion events are redelivered
 - 📊 **Built-in Job Tracking** — Monitor progress with custom object records and real-time percent complete
 - 🧩 **Pluggable Logging** — Integrate with Nebula Logger, Pharos, or custom solutions with convention-based discovery
 - 🔁 **Built-in Retry Support** — Automatic retry for both coordinator cursor queries AND worker page failures
@@ -71,13 +71,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KlVpAAK) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000KlVpAAK) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000PyKLAA0) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000PyKLAA0) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000KlVpAAK --target-org your-org --wait 10
+sf package install --package 04tfj000000PyKLAA0 --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -677,6 +677,34 @@ When all workers complete, the coordinator's `finish()` method is invoked **via 
 - Use `CursorBatch_Job__c` fields to read job-level summary data (status, counts, errors)
 - Any cleanup or notification logic in `finish()` has its own governor limits
 
+#### finish() Is Invoked Exactly Once
+
+Completion is treated as a **threshold crossing**, not a standing condition. Only the event batch that moves `Workers_Finished__c + Failed_Workers__c` from below `Total_Workers__c` to at or above it completes the job and invokes `finish()`. Any completion event processed after that point still updates the counters, but does not re-complete the job, re-invoke `finish()`, or overwrite `Completed_At__c`.
+
+This matters because a `CursorBatch_WorkerComplete__e` batch can legitimately arrive after the last worker's final event has already been counted:
+
+| Scenario | Why it happens |
+|----------|----------------|
+| Late page event | Worker page chaining doesn't depend on the completion handler, so a delayed non-final page event can land after every worker has reported its final page |
+| Redelivered event | Platform Event delivery is at-least-once. Non-stateful jobs have no processed-event idempotency (that's only enabled for stateful jobs), so a redelivered final event reaches the handler |
+
+Without the transition check, either case would fire `finish()` a second time and duplicate whatever it chains to — a chained job, a callout, a notification.
+
+#### When finish() Throws
+
+The job record is committed as terminal **before** `finish()` runs, so a failing callback would otherwise leave the job sitting at a green `Completed` with the failure visible only in a debug log. Instead, the framework records it on the job:
+
+| Behavior | Detail |
+|----------|--------|
+| **Error captured** | The exception is appended to `Error_Message__c` prefixed with `finish() failed:`, preserving any existing worker error ahead of it. Truncated at the field's 32,768-character limit |
+| **Status upgraded** | A clean `Completed` becomes `Completed with Errors`. `Failed` and an existing `Completed with Errors` are never downgraded — they already signal a problem |
+| **Parent re-mirrored** | `CursorBatch_Job_Parent__c.Last_Job_Status__c` is written again so the parent reflects the post-callback status, not the status captured before `finish()` ran |
+| **Never destructive** | The write-back is best-effort and fully wrapped — a `finish()` failure can't bubble out of the Platform Event transaction or roll back the worker counters that were already committed |
+
+Reflection failures are treated differently from callback failures. If the coordinator or worker class can't be resolved or constructed (missing class, wrong base class, no no-arg constructor), that's logged but does **not** mark the job as errored — only a failure inside your own `finish()` logic does.
+
+The same handling applies on the coordinator-failure path: if a job fails and the coordinator's `finish()` also throws, the second failure is appended to the job's error message and the status stays `Failed`.
+
 ### How Cursor Sharing Works
 
 The `Database.Cursor` is serializable to JSON with a `queryId` property. The coordinator:
@@ -833,7 +861,7 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Extracting File` | CSV middleware is indexing the uploaded file (CSV jobs only) |
 | `Processing` | Cursor query succeeded, workers are processing records |
 | `Completed` | All workers completed successfully |
-| `Completed with Errors` | Some workers succeeded, some failed |
+| `Completed with Errors` | Some workers succeeded and some failed, **or** all workers succeeded but the `finish()` callback threw |
 | `Failed` | All workers failed, or max retries exhausted |
 | `Cancelled` | Job was manually stopped via kill switch (`killJob()`) |
 
@@ -1434,6 +1462,8 @@ When all workers complete, the framework determines which `finish()` method to c
 | `Chain_To_Class__c` set | Invoke chain class directly | Simple linear chaining |
 | `Query_Builder_Class__c` set (no chain) | Call `worker.finish()` | Complex conditional logic |
 | Neither set | Call `coordinator.finish()` | Legacy custom coordinators |
+
+Whichever path runs, it runs **exactly once** per job, and an exception it throws is recorded on the job record rather than swallowed into a debug log. See [finish() Is Invoked Exactly Once](#finish-is-invoked-exactly-once) and [When finish() Throws](#when-finish-throws).
 
 ### Reducer-Based Shared State
 
@@ -2130,6 +2160,8 @@ Chain_To_Method__c: run
 - Failed worker count available in `Failed_Workers__c`
 - Job status set to `'Completed with Errors'` if some workers fail, `'Failed'` if all workers fail
 - `finish()` callback is always invoked, even on failure, allowing cleanup/notifications
+- `finish()` is invoked **exactly once** per job — redelivered or late completion events update counters but never re-fire the callback
+- An exception thrown by `finish()` is appended to `Error_Message__c` and upgrades a clean `Completed` to `Completed with Errors`, so a failed callback is never hidden behind a green status
 
 ## Troubleshooting
 
@@ -2166,6 +2198,12 @@ Chain_To_Method__c: run
 - Check `Failed_Workers__c` for count of failed workers
 - Review `Error_Message__c` for the first captured error
 - Check `Total_Worker_Retries__c` to see if retries were attempted
+- If `Failed_Workers__c` is `0`, the workers all succeeded and the `finish()` callback threw — look for a `finish() failed:` entry in `Error_Message__c`
+
+### finish() ran more than once
+
+- Fixed in v0.32. Earlier versions treated completion as a standing condition, so a late or redelivered `CursorBatch_WorkerComplete__e` batch could re-complete an already-terminal job and re-invoke the callback, duplicating whatever it chained to
+- If you're on an earlier version and can't upgrade, make your `finish()` logic idempotent (e.g. guard chained submissions on the absence of an existing run)
 
 ### Job shows "Cancelled"
 

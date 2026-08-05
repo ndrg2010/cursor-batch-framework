@@ -727,44 +727,60 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Invokes the coordinator's finish() callback method via reflection.
      *              Used by CursorBatchCompletionHandler and CursorBatchCoordinatorFinalizer
      *              to notify the coordinator when all workers complete or when the job fails.
+     *              The exception is returned rather than rethrown so callers can record it on
+     *              the job record without a finish() failure aborting the platform-event
+     *              transaction. Callers that don't care may ignore the return value.
      * @param coordinatorClassName Fully qualified name of the coordinator class
      * @param jobName Job name for initialization
      * @param jobRecord Job record containing completion details
      * @param logger Logger instance for error reporting
+     * @return The exception thrown by finish(), or null when finish() completed (or was skipped
+     *         because the class could not be resolved)
      */
-    public static void invokeFinishCallback(
+    public static Exception invokeFinishCallback(
         String coordinatorClassName, 
         String jobName, 
         CursorBatch_Job__c jobRecord, 
         ICursorBatchLogger logger
     ) {
         if (String.isBlank(coordinatorClassName)) {
-            return;
+            return null;
         }
         
+        // Resolving and constructing the coordinator is kept separate from running finish() so
+        // only a failure in the caller's own finish() logic is reported back. Reflection failures
+        // (missing class, wrong base class, no no-arg constructor) are logged as before.
+        CursorBatchCoordinator coordinator;
         try {
             Type coordType = Type.forName(coordinatorClassName);
             if (coordType == null) {
                 logger.logError('CursorBatchCoordinator: Coordinator class not found: ' + coordinatorClassName);
-                return;
+                return null;
             }
             
             Object instance = coordType.newInstance();
             if (!(instance instanceof CursorBatchCoordinator)) {
                 logger.logError('CursorBatchCoordinator: Class ' + coordinatorClassName + ' must extend CursorBatchCoordinator');
-                return;
+                return null;
             }
             
-            CursorBatchCoordinator coordinator = (CursorBatchCoordinator) instance;
+            coordinator = (CursorBatchCoordinator) instance;
             coordinator.initializeJobName(jobName);
             if (String.isNotBlank(jobRecord.Metadata_JSON__c)) {
                 coordinator.setMetadata(jobRecord.Metadata_JSON__c);
             }
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinator: Could not construct coordinator ' + coordinatorClassName + ' to invoke finish()', e);
+            return null;
+        }
+        
+        try {
             coordinator.finish(jobRecord);
-            
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinator: Error invoking finish() for ' + coordinatorClassName, e);
+            return e;
         }
+        return null;
     }
     
     /**

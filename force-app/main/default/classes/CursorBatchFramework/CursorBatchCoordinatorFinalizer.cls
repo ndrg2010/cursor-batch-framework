@@ -152,8 +152,33 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
         // CompletionHandler, which is the other code path that normally writes the parent.
         CursorBatchCoordinator.mirrorJobStatusToParentExternal(jobRecord, logger);
         
-        // Invoke the coordinator's finish() callback so it can handle the failure
-        CursorBatchCoordinator.invokeFinishCallback(coordinatorClassName, jobName, jobRecord, logger);
+        // Invoke the coordinator's finish() callback so it can handle the failure. If the
+        // callback itself throws, append that to the job's error so the second failure isn't
+        // lost; the status stays Failed since the job is already terminal.
+        Exception finishError = CursorBatchCoordinator.invokeFinishCallback(coordinatorClassName, jobName, jobRecord, logger);
+        if (finishError != null) {
+            appendFinishError(jobRecord, finishError);
+        }
         logger.logInfo('CursorBatchCoordinatorFinalizer: Invoked finish() callback for failed job ' + jobName);
+    }
+    
+    /**
+     * @description Appends a finish()-callback failure to the already-Failed job's error message.
+     *              Best-effort: a failure to record must not break the finalizer.
+     * @param jobRecord Job record to append to
+     * @param finishError The exception thrown by the coordinator's finish() callback
+     */
+    private void appendFinishError(CursorBatch_Job__c jobRecord, Exception finishError) {
+        try {
+            String combined = jobRecord.Error_Message__c + '\n\nfinish() failed: ' +
+                CursorBatchLogger.formatExceptionMessage(finishError);
+            if (combined.length() > CursorBatchCompletionHandler.ERROR_MESSAGE_MAX_LENGTH) {
+                combined = combined.left(CursorBatchCompletionHandler.ERROR_MESSAGE_MAX_LENGTH);
+            }
+            jobRecord.Error_Message__c = combined;
+            update new CursorBatch_Job__c(Id = jobRecord.Id, Error_Message__c = combined);
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinatorFinalizer: Failed to record finish() failure for ' + jobName, e);
+        }
     }
 }

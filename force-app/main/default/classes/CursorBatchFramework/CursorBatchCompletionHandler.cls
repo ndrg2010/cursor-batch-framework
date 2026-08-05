@@ -9,6 +9,9 @@
  */
 public without sharing class CursorBatchCompletionHandler {
     
+    /** Maximum length of CursorBatch_Job__c.Error_Message__c (LongTextArea). Used to truncate appended errors. */
+    public static final Integer ERROR_MESSAGE_MAX_LENGTH = 32768;
+    
     private ICursorBatchLogger logger;
     
     /**
@@ -153,9 +156,15 @@ public without sharing class CursorBatchCompletionHandler {
             }
             job.Total_Worker_Retries__c += totalRetries;
             
-            // Check if all workers are done (using Workers_Finished + Failed, not batch count)
+            // Check if all workers are done (using Workers_Finished + Failed, not batch count).
+            // Completion is a transition, not a standing condition: only the batch that moves the
+            // job across the threshold completes it. Testing the condition alone would re-complete
+            // an already-terminal job on every later batch — a page event redelivered after the
+            // last worker's final event has been counted still satisfies it — invoking the finish
+            // callback more than once and duplicating whatever it chains to.
             Decimal totalDone = job.Workers_Finished__c + job.Failed_Workers__c;
-            if (totalDone >= job.Total_Workers__c) {
+            Decimal doneBeforeThisBatch = totalDone - workersFinishedCount - failCount;
+            if (doneBeforeThisBatch < job.Total_Workers__c && totalDone >= job.Total_Workers__c) {
                 // Preserve Cancelled status if job was killed (don't overwrite with completion status)
                 if (job.Status__c != 'Cancelled') {
                     if (job.Failed_Workers__c == 0) {
@@ -276,20 +285,76 @@ public without sharing class CursorBatchCompletionHandler {
      *              
      *              Wrapped in try-catch to ensure exceptions are logged and don't silently
      *              crash the caller. Falls back to coordinator.finish() on error.
+     *              
+     *              A failure in the finish callback is recorded on the job record itself
+     *              (Error_Message__c, and Status__c upgraded to 'Completed with Errors') so the
+     *              job does not sit in a green terminal state with the failure visible only in
+     *              a debug log.
      * @param job The completed job record
      * @param logger Logger instance for error reporting
      */
     public static void routeFinishCallback(CursorBatch_Job__c job, ICursorBatchLogger logger) {
         updateParentLastStatus(job, logger);
+        Exception finishError = null;
         try {
-            routeFinishCallbackInternal(job, logger);
+            finishError = routeFinishCallbackInternal(job, logger);
         } catch (Exception e) {
+            finishError = e;
             logger.logException('CursorBatchCompletionHandler: Error in routeFinishCallback for job ' + job.Job_Name__c, e);
             try {
                 CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
             } catch (Exception fallbackEx) {
                 logger.logException('CursorBatchCompletionHandler: Fallback coordinator.finish() also failed for ' + job.Job_Name__c, fallbackEx);
             }
+        }
+        if (finishError != null) {
+            recordFinishFailure(job, finishError, logger);
+        }
+    }
+    
+    /**
+     * @description Records a finish-callback failure on the job record. The job row was already
+     *              committed as terminal before the callback ran, so without this the failure is
+     *              only visible in a debug log. Appends to Error_Message__c rather than
+     *              overwriting so a worker error captured during event handling is preserved, and
+     *              only upgrades a clean 'Completed' status — 'Failed' and 'Completed with Errors'
+     *              already signal a problem and must not be downgraded.
+     *              Wrapped in try/catch so a failure to record can never break the platform-event
+     *              transaction.
+     * @param job The completed job record (mutated in memory so the parent mirror stays in sync)
+     * @param finishError The exception thrown by the finish callback
+     * @param logger Logger instance for error reporting
+     */
+    private static void recordFinishFailure(CursorBatch_Job__c job, Exception finishError, ICursorBatchLogger logger) {
+        if (job == null || job.Id == null) {
+            return;
+        }
+        try {
+            String finishMessage = 'finish() failed: ' + CursorBatchLogger.formatExceptionMessage(finishError);
+            String combined = String.isBlank(job.Error_Message__c)
+                ? finishMessage
+                : job.Error_Message__c + '\n\n' + finishMessage;
+            if (combined.length() > ERROR_MESSAGE_MAX_LENGTH) {
+                combined = combined.left(ERROR_MESSAGE_MAX_LENGTH);
+            }
+            
+            CursorBatch_Job__c jobUpdate = new CursorBatch_Job__c(Id = job.Id, Error_Message__c = combined);
+            Boolean statusUpgraded = (job.Status__c == 'Completed');
+            if (statusUpgraded) {
+                jobUpdate.Status__c = 'Completed with Errors';
+            }
+            update jobUpdate;
+            
+            job.Error_Message__c = combined;
+            if (statusUpgraded) {
+                // The parent was mirrored before the callback ran, so it still reads 'Completed'.
+                job.Status__c = 'Completed with Errors';
+                updateParentLastStatus(job, logger);
+            }
+            logger.logError('CursorBatchCompletionHandler: finish() failed for job ' + job.Job_Name__c +
+                '; recorded on job record. Status: ' + job.Status__c);
+        } catch (Exception e) {
+            logger.logException('CursorBatchCompletionHandler: Failed to record finish() failure on job ' + job.Job_Name__c, e);
         }
     }
     
@@ -319,8 +384,9 @@ public without sharing class CursorBatchCompletionHandler {
      * @description Internal implementation of the 4-path finish callback logic.
      * @param job The completed job record
      * @param logger Logger instance for routing
+     * @return The exception raised by the selected path, or null when it completed
      */
-    private static void routeFinishCallbackInternal(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+    private static Exception routeFinishCallbackInternal(CursorBatch_Job__c job, ICursorBatchLogger logger) {
         CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(job.Job_Name__c);
         
         // Path 1: Chain_To_Job is set - chain to another CursorJob by name
@@ -330,27 +396,27 @@ public without sharing class CursorBatchCompletionHandler {
                 logger.logInfo('CursorBatchCompletionHandler: Chained to job ' + config.Chain_To_Job__c);
             } catch (Exception e) {
                 logger.logException('CursorBatchCompletionHandler: Error chaining to job ' + config.Chain_To_Job__c, e);
+                return e;
             }
-            return;
+            return null;
         }
         
         // Path 2: Chain_To_Class is set - invoke the chain directly
         if (config != null && String.isNotBlank(config.Chain_To_Class__c)) {
-            invokeChain(config.Chain_To_Class__c, config.Chain_To_Method__c, job, logger);
-            return;
+            return invokeChain(config.Chain_To_Class__c, config.Chain_To_Method__c, job, logger);
         }
         
         // Path 3: CursorJob (SOQL with query builder, or CSV) - call worker.finish()
         if (config != null && (String.isNotBlank(config.Query_Builder_Class__c) || config.Processing_Type__c == CursorBatchContext.PROCESSING_TYPE_CSV)) {
             String workerClass = config.Worker_Class__c;
             if (String.isNotBlank(workerClass)) {
-                CursorBatchWorker.invokeFinishCallback(workerClass, job, logger);
+                return CursorBatchWorker.invokeFinishCallback(workerClass, job, logger);
             }
-            return;
+            return null;
         }
         
         // Path 4: Custom coordinator - call coordinator.finish()
-        CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
+        return CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
     }
     
     /**
@@ -359,15 +425,17 @@ public without sharing class CursorBatchCompletionHandler {
      * @param chainMethod The method to call (defaults to 'run' if blank)
      * @param job The completed job record (passed for context)
      * @param logger Logger for error reporting
+     * @return The exception thrown by the chain, or null when it completed (or was skipped
+     *         because the class could not be resolved)
      */
-    private static void invokeChain(String chainClass, String chainMethod, CursorBatch_Job__c job, ICursorBatchLogger logger) {
+    private static Exception invokeChain(String chainClass, String chainMethod, CursorBatch_Job__c job, ICursorBatchLogger logger) {
         String methodToCall = String.isNotBlank(chainMethod) ? chainMethod : 'run';
         
         try {
             Type chainType = Type.forName(chainClass);
             if (chainType == null) {
                 logger.logError('CursorBatchCompletionHandler: Chain class not found: ' + chainClass);
-                return;
+                return null;
             }
             
             Object instance = chainType.newInstance();
@@ -377,7 +445,7 @@ public without sharing class CursorBatchCompletionHandler {
                 Callable callableInstance = (Callable) instance;
                 callableInstance.call(methodToCall, new Map<String, Object>{ 'jobRecord' => job });
                 logger.logInfo('CursorBatchCompletionHandler: Chained to ' + chainClass + '.' + methodToCall + '()');
-                return;
+                return null;
             }
             
             // Fallback: Check if it's a CursorJob chaining to another CursorJob
@@ -385,13 +453,15 @@ public without sharing class CursorBatchCompletionHandler {
             if (chainClass == 'CursorJob' && methodToCall == 'run') {
                 // For CursorJob, we need the job name - this scenario requires explicit config
                 logger.logError('CursorBatchCompletionHandler: Chain to CursorJob requires Callable implementation in ' + chainClass);
-                return;
+                return null;
             }
             
             logger.logError('CursorBatchCompletionHandler: Chain class ' + chainClass + ' must implement Callable interface');
             
         } catch (Exception e) {
             logger.logException('CursorBatchCompletionHandler: Error invoking chain ' + chainClass + '.' + methodToCall, e);
+            return e;
         }
+        return null;
     }
 }

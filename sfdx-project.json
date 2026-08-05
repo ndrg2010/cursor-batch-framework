@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.31",
-      "versionNumber": "0.31.0.NEXT",
+      "versionName": "ver 0.32",
+      "versionNumber": "0.32.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Adds Excel (xls/xlsx) support to the CSV middleware integration: callers can optionally pass worksheetLabel and worksheetPassword in job metadata (the same way as contentVersionId) to select a specific worksheet and unlock password-protected workbooks; both fields are optional and only included in the middleware init payload when provided. Also includes SL-146: persistent logging for the platform-event dispatch handlers (swallowed exceptions now route to LogEntry__c under a shared 'CursorBatch Dispatch' tag) and coordinator catch-block failures now flip the job to Failed via markJobAsFailed instead of leaving rows stuck in Preparing.",
+      "versionDescription": "Hardens the finish() completion callback. First, finish() now fires exactly once per job: completion is treated as a threshold crossing rather than a standing condition, so only the event batch that moves the job across Total_Workers completes it. Previously a late page event or a redelivered final event could re-satisfy the condition and re-invoke finish(), duplicating whatever it chained to. Second, a finish() that throws is now recorded on the job record instead of only a debug log: the exception is appended to Error_Message__c (preserving any existing worker error, truncated at the field limit), a clean 'Completed' is upgraded to 'Completed with Errors' (never downgrading 'Failed'), and the new status is re-mirrored to CursorBatch_Job_Parent__c.Last_Job_Status__c. The same append happens on the coordinator-failure path in CursorBatchCoordinatorFinalizer. The write-back is best-effort and can never break the platform-event transaction. CursorBatchCoordinator.invokeFinishCallback() and CursorBatchWorker.invokeFinishCallback() now return the Exception instead of void, and separate class construction from the finish() call so reflection failures stay log-only and don't falsely mark a job as errored.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -51,7 +51,8 @@
     "CursorBatchFramework@0.28.0-1": "04tfj000000J1RpAAK",
     "CursorBatchFramework@0.29.0-1": "04tfj000000J3VFAA0",
     "CursorBatchFramework@0.30.0-1": "04tfj000000KGYTAA4",
-    "CursorBatchFramework@0.31.0-1": "04tfj000000KlVpAAK"
+    "CursorBatchFramework@0.31.0-1": "04tfj000000KlVpAAK",
+    "CursorBatchFramework@0.32.0-1": "04tfj000000PyKLAA0"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

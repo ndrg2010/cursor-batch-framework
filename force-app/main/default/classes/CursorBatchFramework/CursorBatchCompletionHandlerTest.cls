@@ -705,6 +705,324 @@ private without sharing class CursorBatchCompletionHandlerTest {
     }
     
     // ============================================
+    // Finish Callback Idempotency Tests
+    // ============================================
+    
+    @IsTest
+    static void testFinishCallbackFiresOnceWhenThresholdCrossed() {
+        // Arrange - 2-worker job whose final events all arrive in a single batch
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishOnceJob', 2, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true),
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() should be invoked exactly once by the batch that crosses the threshold');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should be Completed');
+    }
+    
+    @IsTest
+    static void testLatePageEventDoesNotRefireFinishCallback() {
+        // Arrange - Both workers report their final page (job completes), then a non-final page
+        // event for the same job is delivered afterwards. Worker page chaining does not depend on
+        // this handler, so a delayed or redelivered completion-event batch can legitimately land
+        // after every worker's final event has already been counted.
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'LatePageEventJob', 2, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> finalEvents = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true),
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        List<CursorBatch_WorkerComplete__e> latePageEvents = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = false)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(finalEvents);
+        CursorBatch_Job__c afterCompletion = CursorBatchSelector.getJobById(jobRecord.Id);
+        new CursorBatchCompletionHandler().handle(latePageEvents);
+        Test.stopTest();
+        
+        // Assert - the late batch is still counted, but must not complete the job a second time
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() must not fire again for a job that was already complete');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(3, updatedJob.Completed_Batches__c, 'Late page event should still be counted');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Workers finished should stay at the worker count');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Job should remain Completed');
+        Assert.areEqual(afterCompletion.Completed_At__c, updatedJob.Completed_At__c,
+            'Completed_At should keep the timestamp from the first completion');
+    }
+    
+    @IsTest
+    static void testRedeliveredFinalEventDoesNotRefireFinishCallback() {
+        // Arrange - A redelivered final event pushes Workers_Finished past Total_Workers on a
+        // non-stateful job (which has no processed-event idempotency), and must not re-complete it.
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'RedeliveredFinalJob', 1, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() must fire once even when a final event is redelivered');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(2, updatedJob.Workers_Finished__c,
+            'Redelivered event still increments the counter (non-stateful jobs have no idempotency)');
+    }
+    
+    // ============================================
+    // Finish Callback Failure Tests
+    // ============================================
+    
+    @IsTest
+    static void testFinishFailureRecordedOnJob() {
+        // Arrange - a job whose workers all succeed but whose finish() callback throws. The job
+        // row is already committed as Completed before the callback runs, so without the
+        // finish-failure write-back the failure would only exist in a debug log.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishThrowsJob', 1, 'CursorBatchTestUtils.ThrowingFinishCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c,
+            'A failing finish() should upgrade the job status instead of leaving it Completed');
+        Assert.isTrue(updatedJob.Error_Message__c.contains('finish() failed'),
+            'Error message should identify the failure as coming from finish()');
+        Assert.isTrue(updatedJob.Error_Message__c.contains(CursorBatchTestUtils.THROWING_FINISH_MESSAGE),
+            'Error message should include the underlying exception message');
+    }
+    
+    @IsTest
+    static void testFinishFailureAppendsToWorkerError() {
+        // Arrange - one worker fails and one succeeds, so the job already carries a worker error
+        // and 'Completed with Errors'. The finish() failure must be appended, not overwrite it.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishThrowsMixedJob', 2, 'CursorBatchTestUtils.ThrowingFinishCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id, Success__c = false, Error_Message__c = 'worker boom', Is_Final__c = true
+            ),
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c, 'Status should stay Completed with Errors');
+        Assert.isTrue(updatedJob.Error_Message__c.startsWith('worker boom'),
+            'The first worker error should be preserved at the front of the message');
+        Assert.isTrue(updatedJob.Error_Message__c.contains(CursorBatchTestUtils.THROWING_FINISH_MESSAGE),
+            'The finish() failure should be appended to the existing error');
+    }
+    
+    @IsTest
+    static void testFinishFailureDoesNotDowngradeFailedStatus() {
+        // Arrange - every worker fails, so the job is 'Failed'. A subsequent finish() failure
+        // must not soften that to 'Completed with Errors'.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishThrowsFailedJob', 1, 'CursorBatchTestUtils.ThrowingFinishCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id, Success__c = false, Error_Message__c = 'worker boom', Is_Final__c = true
+            )
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Failed', updatedJob.Status__c, 'Failed is more severe and must not be downgraded');
+        Assert.isTrue(updatedJob.Error_Message__c.contains(CursorBatchTestUtils.THROWING_FINISH_MESSAGE),
+            'The finish() failure should still be recorded on a Failed job');
+    }
+    
+    @IsTest
+    static void testFinishFailureMirroredToParent() {
+        // Arrange - the parent is mirrored before the finish callback runs, so it initially reads
+        // 'Completed'; the upgraded status has to be pushed to the parent a second time.
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'FinishThrowsParentJob',
+            Config_Label__c = 'FinishThrowsParentJob',
+            Last_Job_Started_At__c = System.now()
+        );
+        insert parent;
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishThrowsParentJob', 1, 'CursorBatchTestUtils.ThrowingFinishCoordinator'
+        );
+        jobRecord.Job_Parent__c = parent.Id;
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job_Parent__c updatedParent = [
+            SELECT Id, Last_Job_Status__c FROM CursorBatch_Job_Parent__c WHERE Id = :parent.Id
+        ];
+        Assert.areEqual('Completed with Errors', updatedParent.Last_Job_Status__c,
+            'Parent Last_Job_Status__c should reflect the status after the finish() failure');
+    }
+    
+    @IsTest
+    static void testFinishFailureDoesNotBreakEventProcessing() {
+        // Arrange - a finish() failure must never bubble out of the platform-event handler or
+        // roll back the worker counters that were already committed.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishThrowsNoBubbleJob', 1, 'CursorBatchTestUtils.ThrowingFinishCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        try {
+            new CursorBatchCompletionHandler().handle(events);
+        } catch (Exception e) {
+            Assert.fail('handle() should not propagate a finish() failure: ' + e.getMessage());
+        }
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, updatedJob.Workers_Finished__c, 'Worker counters should still be committed');
+        Assert.areEqual(1, updatedJob.Completed_Batches__c, 'Batch counters should still be committed');
+        Assert.isNotNull(updatedJob.Completed_At__c, 'Completed timestamp should still be set');
+    }
+    
+    @IsTest
+    static void testSuccessfulFinishLeavesJobClean() {
+        // Arrange - regression guard: a finish() that returns normally must not touch the status
+        // or write an error message.
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishSucceedsJob', 1, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed', updatedJob.Status__c, 'A clean finish should leave the job Completed');
+        Assert.isNull(updatedJob.Error_Message__c, 'A clean finish should not write an error message');
+    }
+    
+    @IsTest
+    static void testUnconstructableCoordinatorDoesNotFlipStatus() {
+        // Arrange - TestCursorBatchCoordinator has no no-arg constructor, so Type.newInstance()
+        // throws and finish() never runs. That is a reflection failure, not a failure in the
+        // caller's finish() logic, so it is logged only and must not mark the job as errored.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'UnconstructableCoordinatorJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        
+        // Act
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(events);
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed', updatedJob.Status__c,
+            'A coordinator that cannot be constructed should not mark the job as errored');
+        Assert.isNull(updatedJob.Error_Message__c, 'No error message should be written');
+    }
+    
+    @IsTest
+    static void testWorkerInvokeFinishCallbackReturnsException() {
+        // Arrange - covers the CursorJob (worker) finish path directly, without needing a
+        // CursorBatch_Config__mdt record to route through routeFinishCallbackInternal.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'WorkerFinishThrowsJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        Exception thrown = CursorBatchWorker.invokeFinishCallback(
+            'CursorBatchTestUtils.ThrowingFinishWorker', jobRecord, mockLogger
+        );
+        Exception clean = CursorBatchWorker.invokeFinishCallback(
+            'CursorBatchTestUtils.TestCursorBatchWorker', jobRecord, mockLogger
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.isNotNull(thrown, 'A failing worker finish() should return its exception to the caller');
+        Assert.isTrue(thrown.getMessage().contains(CursorBatchTestUtils.THROWING_FINISH_MESSAGE),
+            'The returned exception should be the one thrown by finish()');
+        Assert.isNull(clean, 'A worker finish() that completes should return null');
+    }
+    
+    // ============================================
     // Cancelled Job (Kill Switch) Tests
     // ============================================
     

@@ -448,9 +448,94 @@ public without sharing class CursorBatchTestUtils {
         }
         
         // Note: Does NOT override isJobAlreadyRunning() to test base implementation
-        
+
     }
-    
+
+    // Static counter for FinishCountingCoordinator. The completion handler instantiates the
+    // coordinator by reflection, so instance flags on the test double are not observable.
+    public static Integer finishCountingCoordinator_finishCallCount = 0;
+
+    /**
+     * @description Resets static state between tests for FinishCountingCoordinator.
+     */
+    public static void resetFinishCountingCoordinator() {
+        finishCountingCoordinator_finishCallCount = 0;
+    }
+
+    /**
+     * @description Test coordinator that counts finish() invocations so tests can assert the
+     *              callback fires exactly once. Needs the no-arg constructor because
+     *              CursorBatchCoordinator.invokeFinishCallback() builds it via Type.newInstance().
+     */
+    public class FinishCountingCoordinator extends CursorBatchCoordinator {
+
+        public FinishCountingCoordinator() {
+            super();
+        }
+
+        public override String buildQuery() {
+            return DEFAULT_TEST_QUERY;
+        }
+
+        public override String getWorkerClassName() {
+            return 'CursorBatchTestUtils.TestCursorBatchWorker';
+        }
+
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            super.finish(jobRecord);
+            finishCountingCoordinator_finishCallCount++;
+        }
+
+    }
+
+    /** Message thrown by ThrowingFinishCoordinator and ThrowingFinishWorker, asserted on by tests. */
+    public static final String THROWING_FINISH_MESSAGE = 'Simulated finish() failure';
+
+    /**
+     * @description Test coordinator whose finish() throws, so tests can assert the framework
+     *              records the failure on the job record instead of leaving it green. Needs the
+     *              no-arg constructor because invokeFinishCallback() builds it via Type.newInstance().
+     */
+    public class ThrowingFinishCoordinator extends CursorBatchCoordinator {
+
+        public ThrowingFinishCoordinator() {
+            super();
+        }
+
+        public override String buildQuery() {
+            return DEFAULT_TEST_QUERY;
+        }
+
+        public override String getWorkerClassName() {
+            return 'CursorBatchTestUtils.TestCursorBatchWorker';
+        }
+
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            throw new CursorBatchCoordinator.CursorBatchException(THROWING_FINISH_MESSAGE);
+        }
+
+    }
+
+    /**
+     * @description Test worker whose finish() throws, used to verify the CursorJob (worker) finish
+     *              path reports the failure back to the caller.
+     */
+    public class ThrowingFinishWorker extends CursorBatchWorker {
+
+        public ThrowingFinishWorker() {
+            super();
+        }
+
+        public override void process(List<SObject> records) {
+            // No-op: this double exists only to exercise the finish() path
+        }
+
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            throw new CursorBatchCoordinator.CursorBatchException(THROWING_FINISH_MESSAGE);
+        }
+
+    }
+
     // Static fields for ReschedulingCoordinator state tracking
     public static Boolean reschedulingCoordinator_finishCalled = false;
     public static Boolean reschedulingCoordinator_submitWithDelayCalled = false;

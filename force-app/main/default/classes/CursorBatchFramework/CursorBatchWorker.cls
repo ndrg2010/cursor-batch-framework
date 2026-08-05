@@ -355,38 +355,54 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
     /**
      * @description Invokes the worker's finish() callback method via reflection.
      *              Used by CursorBatchCompletionHandler for CursorJob (metadata-driven) jobs.
+     *              The exception is returned rather than rethrown so callers can record it on
+     *              the job record without a finish() failure aborting the platform-event
+     *              transaction. Callers that don't care may ignore the return value.
      * @param workerClassName Fully qualified name of the worker class
      * @param jobRecord Job record containing completion details
      * @param logger Logger instance for error reporting
+     * @return The exception thrown by finish(), or null when finish() completed (or was skipped
+     *         because the class could not be resolved)
      */
-    public static void invokeFinishCallback(
+    public static Exception invokeFinishCallback(
         String workerClassName,
         CursorBatch_Job__c jobRecord,
         ICursorBatchLogger logger
     ) {
         if (String.isBlank(workerClassName)) {
-            return;
+            return null;
         }
         
+        // Resolving and constructing the worker is kept separate from running finish() so only a
+        // failure in the caller's own finish() logic is reported back. Reflection failures
+        // (missing class, wrong base class, no no-arg constructor) are logged as before.
+        CursorBatchWorker worker;
         try {
             Type workerType = Type.forName(workerClassName);
             if (workerType == null) {
                 logger.logError('CursorBatchWorker: Worker class not found: ' + workerClassName);
-                return;
+                return null;
             }
             
             Object instance = workerType.newInstance();
             if (!(instance instanceof CursorBatchWorker)) {
                 logger.logError('CursorBatchWorker: Class ' + workerClassName + ' must extend CursorBatchWorker');
-                return;
+                return null;
             }
             
-            CursorBatchWorker worker = (CursorBatchWorker) instance;
+            worker = (CursorBatchWorker) instance;
             worker.initializeFinishState(jobRecord);
+        } catch (Exception e) {
+            logger.logException('CursorBatchWorker: Could not construct worker ' + workerClassName + ' to invoke finish()', e);
+            return null;
+        }
+        
+        try {
             worker.finish(jobRecord);
-            
         } catch (Exception e) {
             logger.logException('CursorBatchWorker: Error invoking finish() for ' + workerClassName, e);
+            return e;
         }
+        return null;
     }
 }
