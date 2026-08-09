@@ -50,6 +50,7 @@ Traditional Salesforce batch processing has limitations:
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
   - [Pluggable Logging](#pluggable-logging)
   - [Convention-Based Logger Discovery](#convention-based-logger-discovery)
+  - [Terminal Job Reporting](#terminal-job-reporting)
 - [Migration Guide](#migration-guide)
 - [Governor Limits & Best Practices](#governor-limits--best-practices)
 - [Troubleshooting](#troubleshooting)
@@ -71,13 +72,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000PyKLAA0) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000PyKLAA0) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000QXQ9AAO) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000QXQ9AAO) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000PyKLAA0 --target-org your-org --wait 10
+sf package install --package 04tfj000000QXQ9AAO --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -1977,9 +1978,94 @@ The framework logs key events at each stage:
 | Finalizer retry | INFO | `CursorBatchWorkerFinalizer: Scheduling retry 1 of 3 for worker #1 in 1 min` |
 | Max retries exhausted | ERROR | `CursorBatchWorker (MyJob #1) max retries (3) exhausted at position 0` |
 | Worker completion | INFO | `CursorBatchWorker (MyJob) worker #1 completed. Position: 0, EndPosition: 1000` |
-| Job completion | INFO | `CursorBatchCompletionHandler: Job MyJob completed. Status: Completed, Workers Finished: 48, Failed: 2` |
+| Job completion | INFO / ERROR | `[JOB COMPLETED] Job: MyJob (a0B...) \| Status: Completed \| Workers finished: 50, failed: 0 of 50` |
 | Errors | ERROR | `CursorBatchCoordinator error for MyJob: INVALID_QUERY...` |
 | Exceptions | ERROR | Full stack trace included via `logException()` |
+
+### Terminal Job Reporting
+
+Every job emits exactly one entry describing how it ended, without any worker code. The entry is
+ERROR level for `Failed` and `Completed with Errors`, and INFO for `Completed` and `Cancelled`.
+Workers should not hand-roll this in `finish()`.
+
+The entry covers all terminal paths: normal worker completion, a cursor that returned zero records,
+CSV middleware failure, coordinator retry exhaustion, and the kill switch.
+
+#### Error Scopes
+
+Every framework error carries a scope so you can tell where it came from. The scope appears as a
+prefix in the message and, when your adapter implements `Callable`, as a tag next to your
+`Logger_Tag__c`.
+
+| Scope prefix | Tag | Meaning | Frequency |
+|--------------|-----|---------|-----------|
+| `[JOB FAILED]` | `CursorBatch Job Failure` | Job ended with every worker failed | Once per job |
+| `[JOB COMPLETED WITH ERRORS]` | `CursorBatch Job Partial Failure` | Some workers succeeded, some failed | Once per job |
+| `[JOB FINISH FAILED]` | `CursorBatch Job Finish Failure` | The job-level `finish()` callback threw | Once per job |
+| `[JOB CHAIN FAILED]` | `CursorBatch Job Chain Failure` | `Chain_To_Job__c` / `Chain_To_Class__c` failed | Once per job |
+| `[WORKER FAILED]` | `CursorBatch Worker Failure` | An individual worker page failed | Per worker, plus one batch summary |
+| `[JOB COMPLETED]` / `[JOB CANCELLED]` | *(untagged)* | Clean completion or kill switch | Once per job |
+
+`[JOB FINISH FAILED]` is worth calling out. For metadata-driven jobs the framework reflects the
+once-per-job `finish()` callback onto your **worker** class, so this error is raised from
+`CursorBatchWorker`. It is a job-level failure, not one of the N per-page worker failures, and the
+scope is what distinguishes them.
+
+Adapters that do not implement `Callable` still get the `[SCOPE]` message prefix; only the tag is
+skipped.
+
+#### Tagging
+
+Terminal entries are tagged from `CursorBatch_Config__mdt.Logger_Tag__c`, falling back to
+`CursorBatch Completion` when it is blank. The completion handler runs in the platform-event
+transaction and never sees a `setLogger()` call made inside a worker, so **`Logger_Tag__c` is the
+single source of truth for terminal entries.** If a worker passes a different hardcoded tag to
+`setLogger()`, its own entries and the job's terminal entry will be tagged differently.
+
+#### Recovering Uncatchable Platform Errors
+
+A query timeout and similar platform aborts are not catchable in async Apex. The runtime kills the
+connection and Apex reports only:
+
+```
+System.UnexpectedException: connection was cancelled here
+```
+
+The actionable text exists solely on `AsyncApexJob.ExtendedStatus`, which is what the Apex Jobs page
+shows. Both finalizers read it via `FinalizerContext.getAsyncApexJobId()` — they run in their own
+transaction with fresh governor limits — and append it:
+
+```
+System.UnexpectedException: connection was cancelled here
+Class.MyWorker.process: line 48, column 1
+
+Platform status: [QUERY_TIMEOUT] Your query request was running for too long.
+```
+
+The leading error code is also surfaced as a `CursorBatch Failure <CODE>` tag (for example
+`CursorBatch Failure QUERY_TIMEOUT`), parsed generically so any platform code works without a code
+change. The enriched text flows into `CursorBatch_Job__c.Error_Message__c` and the terminal entry,
+so the code is filterable on the job-level error too.
+
+Salesforce does not guarantee `ExtendedStatus` is committed by the time a finalizer runs. When it is
+unavailable the framework reports the exception alone, exactly as before.
+
+#### Log Volume on Wide Fan-Out
+
+Worker failures reported to the completion handler are summarized as **one entry per job per
+platform-event batch**, not one per event:
+
+```
+[WORKER FAILED] Job: MyJob (a0B...), 50 worker failure(s) in this event batch
+- Platform status: [QUERY_TIMEOUT] Your query request was running for too long.
+- ...and 2 more distinct error(s)
+```
+
+This matters because adapters that persist entries cost DML per entry, and the handler processes a
+whole event batch in one transaction. Per-event logging would make both log volume and DML scale
+with the subscriber batch size, which is a tuning knob rather than a constant. Each individual
+failure is still reported separately by `CursorBatchWorkerFinalizer`, which runs in its own
+transaction per worker.
 
 ## Migration Guide
 
@@ -2227,9 +2313,9 @@ Chain_To_Method__c: run
 | `CursorBatchWorkerTriggerHandler` | Platform Event trigger handler that enqueues Queueable workers from events |
 | `CursorBatchRetryException` | Custom exception to explicitly request page retry with optional delay |
 | `CursorBatchContext` | Value object encapsulating worker execution parameters including retry state and final page tracking |
-| `CursorBatchCompletionHandler` | Handles worker completion events and invokes callbacks (coordinator, worker, or chain class) |
-| `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework |
-| `CursorBatchLogger` | Default `System.debug` logger implementation |
+| `CursorBatchCompletionHandler` | Handles worker completion events, invokes callbacks (coordinator, worker, or chain class), and emits the one job-level entry reporting how each job ended |
+| `CursorBatchSelector` | Centralized selector class for all SOQL queries in the framework, including `getExtendedStatus()` for recovering the real cause of an uncatchable platform abort |
+| `CursorBatchLogger` | Default `System.debug` logger, plus convention-based adapter resolution, error scope tokens and tags, and platform failure-code parsing |
 | `ICursorBatchLogger` | Interface for custom logging integrations |
 | `ICursorBatchQueryBuilder` | Interface for selectors to provide queries for metadata-driven jobs |
 | `ICursorBatchMetadataQueryBuilder` | Interface for query builders that receive pre-parsed runtime metadata as `Map<String, Object>` (extends query builder pattern with a second argument) |

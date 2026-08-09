@@ -57,8 +57,8 @@ public without sharing class CursorBatchSelector {
         List<CursorBatch_Job__c> jobs = [
             SELECT Id, Job_Name__c, Total_Workers__c, Completed_Batches__c, Workers_Finished__c,
                    Failed_Workers__c, Status__c, Coordinator_Class__c, Error_Message__c,
-                   Total_Worker_Retries__c, Completed_At__c, State_JSON__c, Metadata_JSON__c,
-                   Job_Parent__c
+                   Total_Worker_Retries__c, Total_Records__c, Completed_At__c, State_JSON__c,
+                   Metadata_JSON__c, Job_Parent__c
             FROM CursorBatch_Job__c
             WHERE Id IN :jobIds
             FOR UPDATE
@@ -165,6 +165,29 @@ public without sharing class CursorBatchSelector {
         query += ' LIMIT 1';
 
         return Database.queryWithBinds(query, bindVars, AccessLevel.SYSTEM_MODE);
+    }
+
+    /**
+     * @description Reads AsyncApexJob.ExtendedStatus for a finished async job. Platform aborts
+     *              such as a query timeout surface in Apex only as
+     *              'System.UnexpectedException: connection was cancelled here'; the actionable
+     *              text lives here and is what the Apex Jobs page displays. Callable from a
+     *              Finalizer, which runs in its own transaction with fresh governor limits.
+     * @param asyncApexJobId Parent job Id, from FinalizerContext.getAsyncApexJobId()
+     * @return ExtendedStatus value, or null when the job is not found or the Id is null
+     */
+    public static String getExtendedStatus(Id asyncApexJobId) {
+        if (asyncApexJobId == null) {
+            return null;
+        }
+
+        List<AsyncApexJob> jobs = [
+            SELECT ExtendedStatus
+            FROM AsyncApexJob
+            WHERE Id = :asyncApexJobId
+            LIMIT 1
+        ];
+        return jobs.isEmpty() ? null : jobs[0].ExtendedStatus;
     }
 
     // ============== Private Helpers ==============

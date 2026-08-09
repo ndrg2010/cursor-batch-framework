@@ -312,4 +312,135 @@ private without sharing class CursorBatchWorkerFinalizerTest {
         Assert.isTrue(mockLogger.errorMessages.size() > 0, 
             'Should log error about failed cursor reconstruction');
     }
+    
+    // ============================================
+    // Platform Status Enrichment Tests
+    // ============================================
+    
+    @IsTest
+    static void testFailureAppendsRecoveredPlatformStatus() {
+        // Arrange - a query timeout reaches Apex only as an opaque UnexpectedException; the
+        // actionable text exists on AsyncApexJob.ExtendedStatus.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 99);
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(ctx, mockLogger);
+        
+        Exception opaqueEx = new System.AsyncException('connection was cancelled here');
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, opaqueEx,
+            '[QUERY_TIMEOUT] Your query request was running for too long.');
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(mockLogger.hasErrorContaining('Platform status: [QUERY_TIMEOUT]'),
+            'The recovered platform status should be reported alongside the opaque exception');
+        Assert.isTrue(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_WORKER_FAILED + ']'),
+            'Worker failures should be scoped as such');
+    }
+    
+    @IsTest
+    static void testFailureWithoutPlatformStatusIsUnchanged() {
+        // Arrange - ExtendedStatus is not guaranteed to be committed when the finalizer runs
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 99);
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(ctx, mockLogger);
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, new System.AsyncException('boom'), null);
+        Test.stopTest();
+        
+        // Assert
+        Assert.isFalse(mockLogger.hasErrorContaining('Platform status:'),
+            'A blank ExtendedStatus must leave the reported error unchanged');
+        Assert.isTrue(mockLogger.hasErrorContaining('boom'),
+            'The original exception message should still be reported');
+    }
+    
+    @IsTest
+    static void testFailureTagsPlatformErrorCode() {
+        // Arrange
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 99);
+        
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(
+            ctx, CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        
+        // Act - stopTest delivers the published completion event, so the completion handler also
+        // runs and emits its own terminal entry for the now-failed job.
+        Test.startTest();
+        finalizer.executeInternal(false, new System.AsyncException('connection was cancelled here'),
+            '[QUERY_TIMEOUT] Your query request was running for too long.');
+        Test.stopTest();
+        
+        // Assert - the worker failure and the job failure are separate, differently scoped entries
+        Assert.isTrue(
+            CursorBatchTestUtils.hasCapturedTagSetContaining(new Set<String>{
+                'Billing Engine',
+                CursorBatchLogger.TAG_WORKER_FAILURE,
+                'CursorBatch Failure QUERY_TIMEOUT'
+            }),
+            'A worker failure entry should carry the job tag, worker scope, and platform error code. Captured: ' +
+                CursorBatchTestUtils.capturedTagSets
+        );
+        Assert.isFalse(
+            CursorBatchTestUtils.hasCapturedTagSetContaining(new Set<String>{
+                CursorBatchLogger.TAG_WORKER_FAILURE, CursorBatchLogger.TAG_JOB_FAILURE
+            }),
+            'Worker and job scope tags must never land on the same entry. Captured: ' +
+                CursorBatchTestUtils.capturedTagSets
+        );
+    }
+    
+    @IsTest
+    static void testPlatformErrorCodeReachesTheTerminalJobEntry() {
+        // Arrange - the recovered code should survive the hop from finalizer to completion handler
+        // via the completion event and the job record.
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 99);
+        
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(
+            ctx, CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, new System.AsyncException('connection was cancelled here'),
+            '[QUERY_TIMEOUT] Your query request was running for too long.');
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(
+            CursorBatchTestUtils.hasCapturedTagSetContaining(new Set<String>{
+                CursorBatchLogger.TAG_JOB_FAILURE, 'CursorBatch Failure QUERY_TIMEOUT'
+            }),
+            'The terminal job entry should be filterable by the platform error code. Captured: ' +
+                CursorBatchTestUtils.capturedTagSets
+        );
+    }
 }

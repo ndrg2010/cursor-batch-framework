@@ -12,13 +12,33 @@ public without sharing class CursorBatchCompletionHandler {
     /** Maximum length of CursorBatch_Job__c.Error_Message__c (LongTextArea). Used to truncate appended errors. */
     public static final Integer ERROR_MESSAGE_MAX_LENGTH = 32768;
     
+    /** Tag used when a job has no Logger_Tag__c, so terminal entries are never emitted untagged. */
+    public static final String DEFAULT_LOG_TAG = 'CursorBatch Completion';
+    
+    /** Cap on error text embedded in a terminal summary; the full text remains on the job record. */
+    private static final Integer TERMINAL_SUMMARY_ERROR_MAX_LENGTH = 4000;
+    
+    /** Distinct worker errors sampled into the batch failure summary before it is truncated. */
+    private static final Integer WORKER_FAILURE_SAMPLE_LIMIT = 5;
+    
     private ICursorBatchLogger logger;
     
     /**
-     * @description Default constructor initializing the default logger.
+     * @description Default constructor. Resolves the org's logger adapter rather than the
+     *              System.debug default, so the class that decides terminal job status reports
+     *              through the same logging framework as the rest of the framework.
      */
     public CursorBatchCompletionHandler() {
-        this.logger = CursorBatchLogger.getDefault();
+        this.logger = CursorBatchLogger.resolveLogger(DEFAULT_LOG_TAG);
+    }
+    
+    /**
+     * @description Overrides the logger so tests can assert on emitted entries.
+     * @param logger Logger to use
+     */
+    @TestVisible
+    private void setLogger(ICursorBatchLogger logger) {
+        this.logger = logger;
     }
     
     /**
@@ -87,6 +107,12 @@ public without sharing class CursorBatchCompletionHandler {
             Integer workersFinishedCount = 0;  // Tracks distinct workers that finished all pages
             Integer failCount = 0;
             Integer totalRetries = 0;
+            // Collected and reported as one entry after the loop rather than one per event. A
+            // logging adapter that persists entries costs DML per entry, and this loop runs over a
+            // whole platform-event batch, so per-event logging would scale log volume and DML with
+            // the subscriber batch size. Each worker failure is already reported individually by
+            // CursorBatchWorkerFinalizer in its own transaction; this is the batch summary.
+            List<String> workerFailures = new List<String>();
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
                 String eventKey = isStatefulJob ? getEventKey(evt) : null;
@@ -124,8 +150,9 @@ public without sharing class CursorBatchCompletionHandler {
                     if (job.Error_Message__c == null && String.isNotBlank(evt.Error_Message__c)) {
                         job.Error_Message__c = evt.Error_Message__c;
                     }
-                    logger.logError('CursorBatchCompletionHandler: Worker failed for job ' + 
-                        job.Job_Name__c + ': ' + evt.Error_Message__c);
+                    workerFailures.add(
+                        String.isNotBlank(evt.Error_Message__c) ? evt.Error_Message__c : 'No error detail reported'
+                    );
                 }
                 
                 if (String.isNotBlank(eventKey)) {
@@ -137,6 +164,8 @@ public without sharing class CursorBatchCompletionHandler {
                     ));
                 }
             }
+            
+            logWorkerFailures(job, workerFailures);
             
             // Initialize fields if null
             if (job.Completed_Batches__c == null) {
@@ -182,8 +211,6 @@ public without sharing class CursorBatchCompletionHandler {
                 if (isStatefulJob) {
                     completedStatefulJobIds.add(job.Id);
                 }
-                logger.logInfo('CursorBatchCompletionHandler: Job ' + job.Job_Name__c + ' completed. ' +
-                    'Status: ' + job.Status__c + ', Workers Finished: ' + job.Workers_Finished__c + ', Failed: ' + job.Failed_Workers__c);
             }
             
             jobsToUpdate.add(job);
@@ -233,9 +260,51 @@ public without sharing class CursorBatchCompletionHandler {
                 routeFinishCallback(job, logger);
             } else {
                 updateParentLastStatus(job, logger);
-                logger.logInfo('CursorBatchCompletionHandler: Skipping finish callback for cancelled job ' + job.Job_Name__c);
+                logTerminalStatus(job, logger);
             }
         }
+    }
+    
+    /**
+     * @description Reports every worker failure seen for one job in this platform-event batch as a
+     *              single entry. One entry per event would make both log volume and DML scale with
+     *              the subscriber batch size, which is a tuning knob rather than a constant, and a
+     *              wide fan-out job that fails everywhere would bury the job-level outcome under
+     *              hundreds of near-identical entries.
+     * @param job The job whose workers failed
+     * @param failureMessages Error text from each failed event, in the order received
+     */
+    private void logWorkerFailures(CursorBatch_Job__c job, List<String> failureMessages) {
+        if (failureMessages == null || failureMessages.isEmpty()) {
+            return;
+        }
+        
+        List<String> distinctMessages = new List<String>();
+        Set<String> seen = new Set<String>();
+        for (String message : failureMessages) {
+            if (seen.add(message)) {
+                distinctMessages.add(message);
+            }
+        }
+        
+        Set<String> tags = new Set<String>{ CursorBatchLogger.TAG_WORKER_FAILURE };
+        String codeTag = CursorBatchLogger.failureCodeTag(distinctMessages[0]);
+        if (codeTag != null) {
+            tags.add(codeTag);
+        }
+        
+        String summary = 'Job: ' + job.Job_Name__c + ' (' + job.Id + '), ' +
+            failureMessages.size() + ' worker failure(s) in this event batch';
+        Integer sampled = Math.min(distinctMessages.size(), WORKER_FAILURE_SAMPLE_LIMIT);
+        for (Integer i = 0; i < sampled; i++) {
+            summary += '\n- ' + distinctMessages[i];
+        }
+        if (distinctMessages.size() > sampled) {
+            summary += '\n- ...and ' + (distinctMessages.size() - sampled) + ' more distinct error(s)';
+        }
+        
+        CursorBatchLogger.withScopeTags(logger, resolveJobTag(job), tags)
+            .logError(CursorBatchLogger.scoped(CursorBatchLogger.SCOPE_WORKER_FAILED, summary));
     }
     
     private static String getEventKey(CursorBatch_WorkerComplete__e evt) {
@@ -300,16 +369,217 @@ public without sharing class CursorBatchCompletionHandler {
             finishError = routeFinishCallbackInternal(job, logger);
         } catch (Exception e) {
             finishError = e;
-            logger.logException('CursorBatchCompletionHandler: Error in routeFinishCallback for job ' + job.Job_Name__c, e);
+            logger.logException(CursorBatchLogger.scoped(
+                CursorBatchLogger.SCOPE_JOB_FINISH_FAILED,
+                'Error routing the finish callback for job ' + job.Job_Name__c + ' (' + job.Id + ')'
+            ), e);
             try {
                 CursorBatchCoordinator.invokeFinishCallback(job.Coordinator_Class__c, job.Job_Name__c, job, logger);
             } catch (Exception fallbackEx) {
-                logger.logException('CursorBatchCompletionHandler: Fallback coordinator.finish() also failed for ' + job.Job_Name__c, fallbackEx);
+                logger.logException(CursorBatchLogger.scoped(
+                    CursorBatchLogger.SCOPE_JOB_FINISH_FAILED,
+                    'Fallback coordinator.finish() also failed for job ' + job.Job_Name__c + ' (' + job.Id + ')'
+                ), fallbackEx);
             }
         }
         if (finishError != null) {
             recordFinishFailure(job, finishError, logger);
         }
+        // Emitted last so the entry reports the status the job actually ended on:
+        // recordFinishFailure can upgrade 'Completed' to 'Completed with Errors'.
+        logTerminalStatus(job, logger);
+    }
+    
+    /**
+     * @description Emits one entry per job describing how it ended, at ERROR level for
+     *              'Failed' and 'Completed with Errors' and INFO otherwise. This is what gives
+     *              subscribers a single, job-level signal; without it a failing job produced only
+     *              per-worker errors and an INFO line that read the same whether the job succeeded
+     *              or not.
+     *
+     *              Wrapped in try/catch because logging adapters commonly persist entries with
+     *              DML. On the platform-event path this method runs after the terminal job update
+     *              in the same transaction, so an escaping adapter failure would roll that update
+     *              back and leave the job non-terminal.
+     * @param job The job in its terminal state
+     * @param logger Logger to emit through; a taggable adapter is re-resolved with scope tags
+     */
+    public static void logTerminalStatus(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        if (job == null || logger == null) {
+            return;
+        }
+        try {
+            String status = job.Status__c;
+            Boolean isError = (status == 'Failed' || status == 'Completed with Errors');
+            String scopeTag = terminalScopeTag(status);
+            
+            ICursorBatchLogger target = logger;
+            if (scopeTag != null) {
+                Set<String> tags = new Set<String>{ scopeTag };
+                // The platform failure code travels to the job record inside Error_Message__c,
+                // so the terminal entry can carry it without knowing how the job failed.
+                String codeTag = CursorBatchLogger.failureCodeTag(
+                    (String) job.getPopulatedFieldsAsMap().get('Error_Message__c')
+                );
+                if (codeTag != null) {
+                    tags.add(codeTag);
+                }
+                target = CursorBatchLogger.withScopeTags(logger, resolveJobTag(job), tags);
+            }
+            
+            String summary = CursorBatchLogger.scoped(terminalScope(status), buildTerminalSummary(job));
+            if (isError) {
+                target.logError(summary);
+            } else {
+                target.logInfo(summary);
+            }
+        } catch (Exception e) {
+            System.debug(LoggingLevel.ERROR, '[CursorBatch] Terminal status logging failed: ' + e.getMessage());
+        }
+    }
+    
+    /**
+     * @description Maps a terminal status to its scope token.
+     * @param status CursorBatch_Job__c.Status__c value
+     * @return Scope token for the message prefix
+     */
+    private static String terminalScope(String status) {
+        if (status == 'Failed') {
+            return CursorBatchLogger.SCOPE_JOB_FAILED;
+        }
+        if (status == 'Completed with Errors') {
+            return CursorBatchLogger.SCOPE_JOB_COMPLETED_WITH_ERRORS;
+        }
+        if (status == 'Cancelled') {
+            return CursorBatchLogger.SCOPE_JOB_CANCELLED;
+        }
+        return CursorBatchLogger.SCOPE_JOB_COMPLETED;
+    }
+    
+    /**
+     * @description Maps a terminal status to its scope tag. Only error outcomes are tagged;
+     *              a clean completion needs no filterable marker.
+     * @param status CursorBatch_Job__c.Status__c value
+     * @return Scope tag, or null when the outcome is not an error
+     */
+    private static String terminalScopeTag(String status) {
+        if (status == 'Failed') {
+            return CursorBatchLogger.TAG_JOB_FAILURE;
+        }
+        if (status == 'Completed with Errors') {
+            return CursorBatchLogger.TAG_JOB_PARTIAL_FAILURE;
+        }
+        return null;
+    }
+    
+    /**
+     * @description Builds the terminal summary. Reads through getPopulatedFieldsAsMap so a job
+     *              record queried with a narrower field set (or built in memory) cannot throw
+     *              while logging; missing fields are simply omitted.
+     * @param job The job in its terminal state
+     * @return Human-readable one-job summary, with the error text appended when present
+     */
+    @TestVisible
+    private static String buildTerminalSummary(CursorBatch_Job__c job) {
+        Map<String, Object> fields = job.getPopulatedFieldsAsMap();
+        
+        List<String> parts = new List<String>{
+            'Job: ' + fields.get('Job_Name__c') + ' (' + job.Id + ')',
+            'Status: ' + fields.get('Status__c'),
+            'Workers finished: ' + countOrZero(fields.get('Workers_Finished__c')) +
+                ', failed: ' + countOrZero(fields.get('Failed_Workers__c')) +
+                ' of ' + countOrZero(fields.get('Total_Workers__c'))
+        };
+        if (fields.get('Total_Records__c') != null) {
+            parts.add('Records: ' + fields.get('Total_Records__c'));
+        }
+        if (fields.get('Total_Worker_Retries__c') != null) {
+            parts.add('Worker retries: ' + fields.get('Total_Worker_Retries__c'));
+        }
+        if (String.isNotBlank((String) fields.get('Query__c'))) {
+            parts.add('Query: ' + (String) fields.get('Query__c'));
+        }
+        
+        String summary = String.join(parts, ' | ');
+        
+        String errorMessage = (String) fields.get('Error_Message__c');
+        if (String.isNotBlank(errorMessage)) {
+            if (errorMessage.length() > TERMINAL_SUMMARY_ERROR_MAX_LENGTH) {
+                errorMessage = errorMessage.left(TERMINAL_SUMMARY_ERROR_MAX_LENGTH) + '... (truncated)';
+            }
+            summary += '\nError: ' + errorMessage;
+        }
+        return summary;
+    }
+    
+    private static String countOrZero(Object value) {
+        return String.valueOf(value == null ? 0 : value);
+    }
+    
+    /**
+     * @description Resolves the tag for a job's log entries from its configured Logger_Tag__c,
+     *              falling back to DEFAULT_LOG_TAG. The fallback matters because resolveLogger
+     *              skips tagging entirely on a blank tag, which would leave terminal entries
+     *              untagged and hard to find.
+     * @param job The job being logged
+     * @return Tag to apply
+     */
+    private static String resolveJobTag(CursorBatch_Job__c job) {
+        return resolveJobTag(job?.Job_Name__c);
+    }
+    
+    /**
+     * @description Resolves the tag for a job's log entries from its configured Logger_Tag__c,
+     *              falling back to DEFAULT_LOG_TAG. Exposed so the finalizers apply the same
+     *              policy when they emit scoped failures.
+     * @param jobName Job name (CursorBatch_Config__mdt.MasterLabel)
+     * @return Tag to apply
+     */
+    public static String resolveJobTag(String jobName) {
+        if (String.isBlank(jobName)) {
+            return DEFAULT_LOG_TAG;
+        }
+        try {
+            CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(jobName);
+            if (config != null && String.isNotBlank(config.Logger_Tag__c)) {
+                return config.Logger_Tag__c;
+            }
+        } catch (Exception e) {
+            // Config lookup must never break logging; the default tag is good enough.
+        }
+        return DEFAULT_LOG_TAG;
+    }
+    
+    /**
+     * @description Returns a logger tagged for a chaining failure so it is distinguishable from
+     *              the job's own failure and from a worker failure.
+     * @param job The job whose chain failed
+     * @param logger Logger the caller would otherwise have used
+     * @return Logger to emit the chain failure through
+     */
+    private static ICursorBatchLogger chainLogger(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        return CursorBatchLogger.withScopeTags(
+            logger,
+            resolveJobTag(job),
+            new Set<String>{ CursorBatchLogger.TAG_JOB_CHAIN_FAILURE }
+        );
+    }
+    
+    /**
+     * @description Returns a logger tagged for a job-level finish() failure. Exposed because the
+     *              callback is invoked from CursorBatchWorker and CursorBatchCoordinator, and both
+     *              need the same tag policy: the failure happens once per job, not per worker, and
+     *              must not be mistaken for a worker page failure.
+     * @param job The job whose finish() callback threw
+     * @param logger Logger the caller would otherwise have used
+     * @return Logger to emit the finish failure through
+     */
+    public static ICursorBatchLogger finishFailureLogger(CursorBatch_Job__c job, ICursorBatchLogger logger) {
+        return CursorBatchLogger.withScopeTags(
+            logger,
+            resolveJobTag(job),
+            new Set<String>{ CursorBatchLogger.TAG_JOB_FINISH_FAILURE }
+        );
     }
     
     /**
@@ -319,6 +589,9 @@ public without sharing class CursorBatchCompletionHandler {
      *              overwriting so a worker error captured during event handling is preserved, and
      *              only upgrades a clean 'Completed' status — 'Failed' and 'Completed with Errors'
      *              already signal a problem and must not be downgraded.
+     *              Records only; it deliberately does not log. Every path that returns a finish()
+     *              exception has already logged it with a stack trace, and logTerminalStatus
+     *              reports the resulting status right after, so logging here would duplicate both.
      *              Wrapped in try/catch so a failure to record can never break the platform-event
      *              transaction.
      * @param job The completed job record (mutated in memory so the parent mirror stays in sync)
@@ -351,8 +624,6 @@ public without sharing class CursorBatchCompletionHandler {
                 job.Status__c = 'Completed with Errors';
                 updateParentLastStatus(job, logger);
             }
-            logger.logError('CursorBatchCompletionHandler: finish() failed for job ' + job.Job_Name__c +
-                '; recorded on job record. Status: ' + job.Status__c);
         } catch (Exception e) {
             logger.logException('CursorBatchCompletionHandler: Failed to record finish() failure on job ' + job.Job_Name__c, e);
         }
@@ -395,7 +666,10 @@ public without sharing class CursorBatchCompletionHandler {
                 CursorJob.run(config.Chain_To_Job__c);
                 logger.logInfo('CursorBatchCompletionHandler: Chained to job ' + config.Chain_To_Job__c);
             } catch (Exception e) {
-                logger.logException('CursorBatchCompletionHandler: Error chaining to job ' + config.Chain_To_Job__c, e);
+                chainLogger(job, logger).logException(CursorBatchLogger.scoped(
+                    CursorBatchLogger.SCOPE_JOB_CHAIN_FAILED,
+                    'Job: ' + job.Job_Name__c + ' (' + job.Id + ') failed to chain to job ' + config.Chain_To_Job__c
+                ), e);
                 return e;
             }
             return null;
@@ -459,7 +733,11 @@ public without sharing class CursorBatchCompletionHandler {
             logger.logError('CursorBatchCompletionHandler: Chain class ' + chainClass + ' must implement Callable interface');
             
         } catch (Exception e) {
-            logger.logException('CursorBatchCompletionHandler: Error invoking chain ' + chainClass + '.' + methodToCall, e);
+            chainLogger(job, logger).logException(CursorBatchLogger.scoped(
+                CursorBatchLogger.SCOPE_JOB_CHAIN_FAILED,
+                'Job: ' + job.Job_Name__c + ' (' + job.Id + ') failed invoking chain ' +
+                    chainClass + '.' + methodToCall + '()'
+            ), e);
             return e;
         }
         return null;

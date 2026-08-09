@@ -1015,6 +1015,155 @@ public without sharing class CursorBatchTestUtils {
     }
     
     /**
+     * @description Callable logger adapter used to exercise the tagging path in
+     *              CursorBatchLogger.resolveLogger. Point CursorBatchLogger.testAdapterClassName
+     *              at 'CursorBatchTestUtils.MockCallableLoggerAdapter' to have it discovered.
+     *              Entries are collected statically because the framework constructs a new adapter
+     *              instance per scoped emission, which is exactly the behavior under test.
+     */
+    public class MockCallableLoggerAdapter implements ICursorBatchLogger, Callable {
+        
+        private Set<String> tags = new Set<String>();
+        
+        public void logInfo(String message) {
+            capturedInfoMessages.add(message);
+            capturedTagSets.add(tags.clone());
+        }
+        
+        public void logError(String message) {
+            capturedErrorMessages.add(message);
+            capturedTagSets.add(tags.clone());
+        }
+        
+        public void logException(String message, Exception e) {
+            capturedExceptionMessages.add(message);
+            capturedTagSets.add(tags.clone());
+        }
+        
+        public Object call(String action, Map<String, Object> args) {
+            if (action == 'addTag') {
+                String tag = (String) args.get('tag');
+                if (String.isNotBlank(tag)) {
+                    tags.add(tag);
+                }
+            } else if (action == 'addTags') {
+                Set<String> incoming = (Set<String>) args.get('tags');
+                if (incoming != null) {
+                    tags.addAll(incoming);
+                }
+            }
+            return this;
+        }
+    }
+    
+    /**
+     * @description Worker whose finish() logs through the inherited logger, used to prove the
+     *              finish() path tags that logger even though initialize() never runs there.
+     */
+    public class LoggingFinishWorker extends CursorBatchWorker {
+        
+        public LoggingFinishWorker() {
+            super();
+        }
+        
+        public override void process(List<SObject> records) {
+            // Not exercised; this double exists only to log from finish().
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            logger.logInfo('LoggingFinishWorker finished ' + jobRecord.Job_Name__c);
+        }
+    }
+    
+    /**
+     * @description Coordinator whose finish() logs through the inherited logger, covering the
+     *              reflection path where initializeJobName() runs instead of the tagging constructor.
+     */
+    public class LoggingFinishCoordinator extends CursorBatchCoordinator {
+        
+        public LoggingFinishCoordinator() {
+            super();
+        }
+        
+        public override String buildQuery() {
+            return DEFAULT_TEST_QUERY;
+        }
+        
+        public override String getWorkerClassName() {
+            return 'CursorBatchTestUtils.TestCursorBatchWorker';
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            logger.logInfo('LoggingFinishCoordinator finished ' + jobRecord.Job_Name__c);
+        }
+    }
+    
+    /** Apex forbids static members on inner classes, so MockCallableLoggerAdapter collects here. */
+    public static List<Set<String>> capturedTagSets = new List<Set<String>>();
+    public static List<String> capturedInfoMessages = new List<String>();
+    public static List<String> capturedErrorMessages = new List<String>();
+    public static List<String> capturedExceptionMessages = new List<String>();
+    
+    /**
+     * @description Routes logger discovery to MockCallableLoggerAdapter and clears prior captures.
+     */
+    public static void useCallableLoggerAdapter() {
+        CursorBatchLogger.testAdapterClassName = 'CursorBatchTestUtils.MockCallableLoggerAdapter';
+        capturedTagSets = new List<Set<String>>();
+        capturedInfoMessages = new List<String>();
+        capturedErrorMessages = new List<String>();
+        capturedExceptionMessages = new List<String>();
+    }
+    
+    /**
+     * @description Returns the tags carried by the most recent emission.
+     * @return Tag set, or an empty set when nothing has been logged
+     */
+    public static Set<String> lastCapturedTags() {
+        return capturedTagSets.isEmpty() ? new Set<String>() : capturedTagSets[capturedTagSets.size() - 1];
+    }
+    
+    /**
+     * @description Checks whether any single emission carried all of the given tags. Needed
+     *              because one action can produce several differently scoped entries, so
+     *              asserting on the last one alone is unreliable.
+     * @param requiredTags Tags that must all appear on the same entry
+     * @return True when one emission carried every required tag
+     */
+    public static Boolean hasCapturedTagSetContaining(Set<String> requiredTags) {
+        for (Set<String> tagSet : capturedTagSets) {
+            if (tagSet.containsAll(requiredTags)) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    /**
+     * @description Logger that throws on every call, used to prove a failing logging adapter
+     *              cannot roll back the terminal job update.
+     */
+    public class ThrowingCursorBatchLogger implements ICursorBatchLogger {
+        
+        public void logInfo(String message) {
+            throw new CursorBatchTestUtilsException('logInfo failed');
+        }
+        
+        public void logError(String message) {
+            throw new CursorBatchTestUtilsException('logError failed');
+        }
+        
+        public void logException(String message, Exception e) {
+            throw new CursorBatchTestUtilsException('logException failed');
+        }
+    }
+    
+    /**
+     * @description Exception raised by test doubles in this class.
+     */
+    public class CursorBatchTestUtilsException extends Exception {}
+    
+    /**
      * @description Mock implementation of System.FinalizerContext for testing.
      *              Used by both CursorBatchCoordinatorFinalizerTest and CursorBatchWorkerFinalizerTest.
      */

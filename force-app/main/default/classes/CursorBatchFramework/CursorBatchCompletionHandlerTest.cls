@@ -1315,4 +1315,451 @@ private without sharing class CursorBatchCompletionHandlerTest {
         Assert.isTrue(foundParentFailure,
             'Parent update failure should be logged via logException');
     }
+    
+    // ============================================
+    // Terminal Status Logging Tests
+    // ============================================
+    
+    @IsTest
+    static void testTerminalStatusLogsErrorForFailedJob() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TerminalFailedJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator', 40
+        );
+        jobRecord.Status__c = 'Failed';
+        jobRecord.Failed_Workers__c = 2;
+        jobRecord.Error_Message__c = 'worker blew up';
+        update jobRecord;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id), mockLogger
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, mockLogger.errorMessages.size(), 'Should emit exactly one error entry');
+        String entry = mockLogger.errorMessages[0];
+        Assert.isTrue(entry.startsWith('[' + CursorBatchLogger.SCOPE_JOB_FAILED + ']'),
+            'Entry should be scoped as a job failure: ' + entry);
+        Assert.isTrue(entry.contains('TerminalFailedJob'), 'Entry should name the job');
+        Assert.isTrue(entry.contains(jobRecord.Id), 'Entry should include the job Id');
+        Assert.isTrue(entry.contains('worker blew up'), 'Entry should include the recorded error');
+        Assert.areEqual(0, mockLogger.infoMessages.size(), 'A failed job should not also log info');
+    }
+    
+    @IsTest
+    static void testTerminalStatusLogsErrorForCompletedWithErrors() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TerminalPartialJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed with Errors';
+        update jobRecord;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id), mockLogger
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, mockLogger.errorMessages.size(), 'Should emit exactly one error entry');
+        Assert.isTrue(
+            mockLogger.errorMessages[0].startsWith('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED_WITH_ERRORS + ']'),
+            'Entry should be scoped as a partial failure: ' + mockLogger.errorMessages[0]
+        );
+    }
+    
+    @IsTest
+    static void testTerminalStatusLogsInfoForCompletedAndCancelled() {
+        // Arrange
+        CursorBatch_Job__c completed = CursorBatchTestUtils.createTestJobRecord(
+            'TerminalCompletedJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        completed.Status__c = 'Completed';
+        update completed;
+        
+        CursorBatch_Job__c cancelled = CursorBatchTestUtils.createTestJobRecord(
+            'TerminalCancelledJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        cancelled.Status__c = 'Cancelled';
+        update cancelled;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(CursorBatchSelector.getJobById(completed.Id), mockLogger);
+        CursorBatchCompletionHandler.logTerminalStatus(CursorBatchSelector.getJobById(cancelled.Id), mockLogger);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(0, mockLogger.errorMessages.size(),
+            'Neither a clean completion nor a deliberate cancellation is an error');
+        Assert.areEqual(2, mockLogger.infoMessages.size(), 'Both should log at info level');
+        Assert.isTrue(mockLogger.hasInfoContaining('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED + ']'),
+            'Completed job should carry the completed scope');
+        Assert.isTrue(mockLogger.hasInfoContaining('[' + CursorBatchLogger.SCOPE_JOB_CANCELLED + ']'),
+            'Cancelled job should carry the cancelled scope');
+    }
+    
+    @IsTest
+    static void testTerminalStatusFailureDoesNotRollBackJobUpdate() {
+        // Arrange - a logging adapter that persists entries with DML could throw; that must not
+        // roll back the terminal job update it runs alongside.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TerminalThrowingLoggerJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Failed';
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            new CursorBatchTestUtils.ThrowingCursorBatchLogger()
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual('Failed', CursorBatchSelector.getJobById(jobRecord.Id).Status__c,
+            'The terminal update must survive a failing logger');
+    }
+    
+    @IsTest
+    static void testTerminalStatusTagsFailureWithJobTagAndScope() {
+        // Arrange
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TaggedJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TaggedJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Failed';
+        update jobRecord;
+        
+        // Act - base logger must be Callable for the scope tag to be applied
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(
+            new Set<String>{ 'Billing Engine', CursorBatchLogger.TAG_JOB_FAILURE },
+            CursorBatchTestUtils.lastCapturedTags(),
+            'Terminal failure should carry the job tag and the job-failure scope tag'
+        );
+    }
+    
+    @IsTest
+    static void testTerminalStatusFallsBackToDefaultTagWhenConfigTagBlank() {
+        // Arrange
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('UntaggedJob', 1, 20);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'UntaggedJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Failed';
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            CursorBatchLogger.resolveLogger(null)
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(
+            new Set<String>{ CursorBatchCompletionHandler.DEFAULT_LOG_TAG, CursorBatchLogger.TAG_JOB_FAILURE },
+            CursorBatchTestUtils.lastCapturedTags(),
+            'A blank Logger_Tag__c must fall back to the default tag rather than emitting untagged'
+        );
+    }
+    
+    @IsTest
+    static void testTerminalStatusCarriesPlatformFailureCodeTag() {
+        // Arrange - the platform code reaches the job record inside Error_Message__c
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TimedOutJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TimedOutJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Failed';
+        jobRecord.Error_Message__c = 'System.UnexpectedException: connection was cancelled here\n\n' +
+            'Platform status: [QUERY_TIMEOUT] Your query request was running for too long.';
+        update jobRecord;
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.logTerminalStatus(
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(
+            CursorBatchTestUtils.lastCapturedTags().contains('CursorBatch Failure QUERY_TIMEOUT'),
+            'Terminal failure should be filterable by the platform error code, got: ' +
+                CursorBatchTestUtils.lastCapturedTags()
+        );
+    }
+    
+    @IsTest
+    static void testWorkerFailureEventIsScopedAsWorkerNotJob() {
+        // Arrange
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'ScopedWorkerFailJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'page 1 exploded',
+                Is_Final__c = true
+            )
+        };
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.setLogger(mockLogger);
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_WORKER_FAILED + ']'),
+            'A single worker failure should be scoped as a worker failure');
+        Assert.isFalse(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_JOB_FAILED + ']'),
+            'A worker failure must not be reported as a job-level failure while workers remain');
+    }
+    
+    @IsTest
+    static void testWorkerFailuresAggregateToOneEntryPerBatch() {
+        // Arrange - a wide fan-out job failing everywhere. One entry per event would make log
+        // volume and DML scale with the subscriber batch size.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'WideFanOutFailJob', 100, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>();
+        for (Integer i = 0; i < 50; i++) {
+            events.add(new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'worker ' + i + ' died',
+                Is_Final__c = true
+            ));
+        }
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.setLogger(mockLogger);
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, mockLogger.errorMessages.size(),
+            '50 failed events should produce one summary entry, got: ' + mockLogger.errorMessages.size());
+        String entry = mockLogger.errorMessages[0];
+        Assert.isTrue(entry.contains('50 worker failure(s) in this event batch'),
+            'The summary should report the failure count: ' + entry);
+        Assert.isTrue(entry.contains('worker 0 died'), 'The summary should sample the errors');
+        Assert.isTrue(entry.contains('more distinct error(s)'),
+            'The summary should indicate how many errors were not sampled: ' + entry);
+    }
+    
+    @IsTest
+    static void testWorkerFailureSummaryDeduplicatesIdenticalErrors() {
+        // Arrange - a shared cause such as a query timeout produces the same text on every worker
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'SharedCauseFailJob', 100, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>();
+        for (Integer i = 0; i < 20; i++) {
+            events.add(new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = false,
+                Error_Message__c = 'Platform status: [QUERY_TIMEOUT] Your query request was running for too long.',
+                Is_Final__c = true
+            ));
+        }
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.setLogger(mockLogger);
+        
+        // Act
+        Test.startTest();
+        handler.handle(events);
+        Test.stopTest();
+        
+        // Assert
+        String entry = mockLogger.errorMessages[0];
+        Assert.isTrue(entry.contains('20 worker failure(s)'), 'Should still report the true count');
+        Assert.isFalse(entry.contains('more distinct error(s)'),
+            'Identical errors collapse to one sample, so nothing should be reported as omitted: ' + entry);
+    }
+    
+    @IsTest
+    static void testFinishFailureLogsOnceScopedAsJobLevel() {
+        // Arrange - a metadata-driven job whose worker finish() throws. The callback is reflected
+        // onto the worker class, so it must still report as a job-level failure.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('FinishFailJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Query_Builder_Class__c = 'CursorBatchTestUtils';
+        CursorBatchCoordinator.testConfig.Worker_Class__c = 'CursorBatchTestUtils.ThrowingFinishWorker';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishFailJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        update jobRecord;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.routeFinishCallback(
+            CursorBatchSelector.getJobById(jobRecord.Id), mockLogger
+        );
+        Test.stopTest();
+        
+        // Assert - exactly one entry describes the finish failure, and it is scoped as job-level
+        Integer finishFailureEntries = 0;
+        for (String msg : mockLogger.exceptionMessages) {
+            if (msg.contains('[' + CursorBatchLogger.SCOPE_JOB_FINISH_FAILED + ']')) {
+                finishFailureEntries++;
+            }
+        }
+        for (String msg : mockLogger.errorMessages) {
+            if (msg.contains('[' + CursorBatchLogger.SCOPE_JOB_FINISH_FAILED + ']')) {
+                finishFailureEntries++;
+            }
+        }
+        Assert.areEqual(1, finishFailureEntries,
+            'A finish() failure should produce exactly one scoped entry, got: ' +
+                mockLogger.exceptionMessages + ' / ' + mockLogger.errorMessages);
+        Assert.isTrue(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED_WITH_ERRORS + ']'),
+            'The terminal entry should report the status upgraded by the finish failure');
+    }
+    
+    @IsTest
+    static void testWorkerLoggerIsTaggedOnTheFinishPath() {
+        // Arrange - the worker is constructed by reflection purely to call finish(), so
+        // initialize() never runs. Without explicit tagging there, anything a subclass logs
+        // inside finish() would be untagged and subscribers would re-call setLogger to fix it.
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('FinishTagJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'FinishTagJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        // Act
+        Test.startTest();
+        CursorBatchWorker.invokeFinishCallback(
+            'CursorBatchTestUtils.LoggingFinishWorker',
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(
+            CursorBatchTestUtils.hasCapturedTagSetContaining(new Set<String>{ 'Billing Engine' }),
+            'A worker logging inside finish() should carry the job tag. Captured: ' +
+                CursorBatchTestUtils.capturedTagSets
+        );
+    }
+    
+    @IsTest
+    static void testCoordinatorLoggerIsTaggedOnTheFinishPath() {
+        // Arrange - same gap on the coordinator's reflection path, where initializeJobName()
+        // runs instead of the tagging constructor.
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('CoordFinishTagJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Logger_Tag__c = 'Billing Engine';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'CoordFinishTagJob', 1, 'CursorBatchTestUtils.LoggingFinishCoordinator'
+        );
+        
+        // Act
+        Test.startTest();
+        CursorBatchCoordinator.invokeFinishCallback(
+            'CursorBatchTestUtils.LoggingFinishCoordinator',
+            'CoordFinishTagJob',
+            CursorBatchSelector.getJobById(jobRecord.Id),
+            CursorBatchLogger.resolveLogger('Billing Engine')
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(
+            CursorBatchTestUtils.hasCapturedTagSetContaining(new Set<String>{ 'Billing Engine' }),
+            'A coordinator logging inside finish() should carry the job tag. Captured: ' +
+                CursorBatchTestUtils.capturedTagSets
+        );
+    }
+    
+    @IsTest
+    static void testTerminalStatusReportsUpgradedStatusAfterFinishFailure() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('UpgradeStatusJob', 1, 20);
+        CursorBatchCoordinator.testConfig.Query_Builder_Class__c = 'CursorBatchTestUtils';
+        CursorBatchCoordinator.testConfig.Worker_Class__c = 'CursorBatchTestUtils.ThrowingFinishWorker';
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'UpgradeStatusJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        update jobRecord;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger =
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatchCompletionHandler.routeFinishCallback(
+            CursorBatchSelector.getJobById(jobRecord.Id), mockLogger
+        );
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual('Completed with Errors', CursorBatchSelector.getJobById(jobRecord.Id).Status__c,
+            'A throwing finish() should upgrade the status');
+        Assert.isFalse(mockLogger.hasInfoContaining('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED + ']'),
+            'The terminal entry must not claim a clean completion for a job that ended in error');
+    }
 }

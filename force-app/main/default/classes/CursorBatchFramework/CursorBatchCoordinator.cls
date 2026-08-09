@@ -51,17 +51,21 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              this constructor, jobName must be set via initializeJobName() before finish().
      */
     protected CursorBatchCoordinator() {
-        this.logger = CursorBatchLogger.getDefault();
+        this.logger = CursorBatchLogger.resolveLogger(null);
     }
     
     /**
-     * @description Constructs coordinator with job name for configuration lookup. Uses the
-     *              default CursorBatchLogger; call setLogger() in subclass to customize.
+     * @description Constructs coordinator with job name for configuration lookup. Resolves the
+     *              org's logger adapter tagged with the job's Logger_Tag__c; call setLogger() in
+     *              a subclass to override. This instance is also handed to
+     *              CursorBatchCoordinatorFinalizer, so it determines where the max-retry 'Failed'
+     *              report lands for hand-written coordinators.
      * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
      */
     protected CursorBatchCoordinator(String jobName) {
         this();
         this.jobName = jobName;
+        this.logger = CursorBatchLogger.resolveLogger(getConfig(jobName)?.Logger_Tag__c);
     }
     
     /**
@@ -71,6 +75,25 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      */
     public virtual void initializeJobName(String jobName) {
         this.jobName = jobName;
+        applyLoggerTag(jobName);
+    }
+    
+    /**
+     * @description Applies the Logger_Tag__c from job config to the logger via Callable, avoiding
+     *              a compile-time dependency on the adapter. Called after reflection-based
+     *              construction, where the no-arg constructor resolved an untagged logger — without
+     *              this the logger a subclass uses inside finish() stays untagged. Additive, so it
+     *              never replaces a logger set by a subclass constructor.
+     * @param jobName Job name whose Logger_Tag__c should be applied
+     */
+    private void applyLoggerTag(String jobName) {
+        if (String.isBlank(jobName) || !(this.logger instanceof Callable)) {
+            return;
+        }
+        CursorBatch_Config__mdt config = getConfig(jobName);
+        if (config != null && String.isNotBlank(config.Logger_Tag__c)) {
+            ((Callable) this.logger).call('addTag', new Map<String, Object>{ 'tag' => config.Logger_Tag__c });
+        }
     }
     
     /**
@@ -549,6 +572,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     private static CursorBatch_Config__mdt testConfig;
     
     /**
+     * @description Per-transaction cache. Custom metadata cannot change mid-transaction, and
+     *              config is read repeatedly on the completion and logging paths.
+     */
+    private static final Map<String, CursorBatch_Config__mdt> CONFIG_CACHE = new Map<String, CursorBatch_Config__mdt>();
+    
+    /**
      * @description Retrieves the cursor batch configuration for a job.
      * @param jobName Job name to look up
      * @return CursorBatch_Config__mdt record or null if not found
@@ -557,7 +586,13 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         if (Test.isRunningTest() && testConfig != null) {
             return testConfig;
         }
-        return CursorBatchSelector.getConfigByJobName(jobName);
+        if (String.isBlank(jobName)) {
+            return null;
+        }
+        if (!CONFIG_CACHE.containsKey(jobName)) {
+            CONFIG_CACHE.put(jobName, CursorBatchSelector.getConfigByJobName(jobName));
+        }
+        return CONFIG_CACHE.get(jobName);
     }
     
     /**
@@ -777,7 +812,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         try {
             coordinator.finish(jobRecord);
         } catch (Exception e) {
-            logger.logException('CursorBatchCoordinator: Error invoking finish() for ' + coordinatorClassName, e);
+            CursorBatchCompletionHandler.finishFailureLogger(jobRecord, logger).logException(
+                CursorBatchLogger.scoped(
+                    CursorBatchLogger.SCOPE_JOB_FINISH_FAILED,
+                    'Job-level finish() callback threw. Job: ' + jobName +
+                        ' (' + jobRecord.Id + '), callback: ' + coordinatorClassName + '.finish()'
+                ), e);
             return e;
         }
         return null;
@@ -803,7 +843,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         job.Status__c = 'Cancelled';
         job.Completed_At__c = System.now();
         update job;
-        mirrorJobStatusToParent(job, CursorBatchLogger.getDefault());
+        
+        ICursorBatchLogger killLogger = CursorBatchLogger.resolveLogger(getConfig(job.Job_Name__c)?.Logger_Tag__c);
+        mirrorJobStatusToParent(job, killLogger);
+        CursorBatchCompletionHandler.logTerminalStatus(job, killLogger);
         return true;
     }
     

@@ -44,7 +44,18 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
     public void execute(System.FinalizerContext ctx) {
         Boolean success = ctx.getResult() == System.ParentJobResult.SUCCESS;
         Exception ex = !success ? ctx.getException() : null;
-        executeInternal(success, ex);
+        String platformStatus = success ? null : resolvePlatformStatus(ctx.getAsyncApexJobId());
+        executeInternal(success, ex, platformStatus);
+    }
+    
+    /**
+     * @description Handles finalizer logic without a recovered platform status.
+     * @param success True if the job succeeded; false otherwise
+     * @param ex Exception from failed job, or null on success
+     */
+    @TestVisible
+    private void executeInternal(Boolean success, Exception ex) {
+        executeInternal(success, ex, null);
     }
     
     /**
@@ -52,21 +63,25 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
      *              cannot be mocked directly.
      * @param success True if the job succeeded; false otherwise
      * @param ex Exception from failed job, or null on success
+     * @param platformStatus AsyncApexJob.ExtendedStatus for the failed job, or null
      */
     @TestVisible
-    private void executeInternal(Boolean success, Exception ex) {
+    private void executeInternal(Boolean success, Exception ex, String platformStatus) {
         // If coordinator succeeded, nothing to do
         if (success) {
             return;
         }
         
-        String errorMessage = CursorBatchLogger.formatExceptionMessage(ex);
-        logger.logError('CursorBatchCoordinatorFinalizer: Coordinator failed for job ' + jobName + ': ' + errorMessage);
+        // Not logged here: a retryable attempt is reported by retryCoordinator and a terminal
+        // one by markJobFailed, so logging up front would double-report every failure.
+        String errorMessage = CursorBatchLogger.formatExceptionMessage(ex, platformStatus);
         
         // Query current job record and config
         CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(jobRecordId);
         if (jobRecord == null) {
-            logger.logError('CursorBatchCoordinatorFinalizer: Could not find job record ' + jobRecordId);
+            // Neither branch below will run, so this is the only place the failure gets reported.
+            logger.logError('CursorBatchCoordinatorFinalizer: Could not find job record ' + jobRecordId +
+                ' after coordinator failure for ' + jobName + ': ' + errorMessage);
             return;
         }
         
@@ -133,7 +148,9 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
      * @param errorMessage Final error message
      */
     private void markJobFailed(CursorBatch_Job__c jobRecord, String errorMessage) {
-        logger.logError('CursorBatchCoordinatorFinalizer: Max retries exhausted for ' + jobName + 
+        // Info, not error: logTerminalStatus below is the single ERROR for this failed job, and it
+        // reports the same query via the job record.
+        logger.logInfo('CursorBatchCoordinatorFinalizer: Max retries exhausted for ' + jobName + 
             '. Marking job as Failed. Query: ' + query);
         
         jobRecord.Status__c = 'Failed';
@@ -160,6 +177,9 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
             appendFinishError(jobRecord, finishError);
         }
         logger.logInfo('CursorBatchCoordinatorFinalizer: Invoked finish() callback for failed job ' + jobName);
+        
+        // Emitted after the finish callback so any appended error is part of the summary.
+        CursorBatchCompletionHandler.logTerminalStatus(jobRecord, logger);
     }
     
     /**
@@ -179,6 +199,23 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
             update new CursorBatch_Job__c(Id = jobRecord.Id, Error_Message__c = combined);
         } catch (Exception e) {
             logger.logException('CursorBatchCoordinatorFinalizer: Failed to record finish() failure for ' + jobName, e);
+        }
+    }
+    
+    /**
+     * @description Reads the parent job's ExtendedStatus so an opaque platform abort reports the
+     *              underlying reason. Cursor creation timing out is this finalizer's known failure
+     *              mode, and it reaches Apex only as
+     *              'System.UnexpectedException: connection was cancelled here'. Best-effort:
+     *              Salesforce does not guarantee the field is committed when the finalizer runs.
+     * @param asyncApexJobId Parent job Id from the finalizer context
+     * @return ExtendedStatus value, or null when unavailable
+     */
+    private String resolvePlatformStatus(Id asyncApexJobId) {
+        try {
+            return CursorBatchSelector.getExtendedStatus(asyncApexJobId);
+        } catch (Exception e) {
+            return null;
         }
     }
 }

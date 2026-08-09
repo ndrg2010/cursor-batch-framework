@@ -42,18 +42,21 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         this.ctx = ctx;
         this.currentState = null;
         this.stateLoaded = false;
-        applyLoggerTag();
+        applyLoggerTag(ctx?.jobName);
     }
     
     /**
      * @description Applies the Logger_Tag__c from job config to the logger. Uses Callable
      *              interface to avoid compile-time dependency on CursorBatchLoggerAdapter.
+     *              Takes the job name explicitly because the finish() path has a job record but
+     *              no context. Additive, so it never replaces a logger set by a subclass.
+     * @param jobName Job name whose Logger_Tag__c should be applied
      */
-    private void applyLoggerTag() {
-        if (ctx == null || String.isBlank(ctx.jobName) || !(this.logger instanceof Callable)) {
+    private void applyLoggerTag(String jobName) {
+        if (String.isBlank(jobName) || !(this.logger instanceof Callable)) {
             return;
         }
-        CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(ctx.jobName);
+        CursorBatch_Config__mdt config = CursorBatchCoordinator.getConfig(jobName);
         if (config != null && String.isNotBlank(config.Logger_Tag__c)) {
             ((Callable) this.logger).call('addTag', new Map<String, Object>{ 'tag' => config.Logger_Tag__c });
         }
@@ -251,6 +254,10 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         currentState = CursorBatchStateManager.deserializeState(jobRecord?.Job_Name__c, jobRecord?.State_JSON__c);
         stateLoaded = true;
         finishMetadataJson = jobRecord?.Metadata_JSON__c;
+        // initialize() never runs on this path — the worker is constructed by reflection purely to
+        // call finish() — so without this the logger a subclass uses inside finish() stays untagged
+        // and subscribers have to re-call setLogger() there to work around it.
+        applyLoggerTag(jobRecord?.Job_Name__c);
     }
     
     /**
@@ -400,7 +407,15 @@ public abstract without sharing class CursorBatchWorker implements Queueable, Da
         try {
             worker.finish(jobRecord);
         } catch (Exception e) {
-            logger.logException('CursorBatchWorker: Error invoking finish() for ' + workerClassName, e);
+            // Scoped as a job-level failure on purpose: for metadata-driven jobs the once-per-job
+            // finish() callback is reflected onto the worker class, so an unscoped message here
+            // reads like one of the N per-page worker failures.
+            CursorBatchCompletionHandler.finishFailureLogger(jobRecord, logger).logException(
+                CursorBatchLogger.scoped(
+                    CursorBatchLogger.SCOPE_JOB_FINISH_FAILED,
+                    'Job-level finish() callback threw. Job: ' + jobRecord.Job_Name__c +
+                        ' (' + jobRecord.Id + '), callback: ' + workerClassName + '.finish()'
+                ), e);
             return e;
         }
         return null;

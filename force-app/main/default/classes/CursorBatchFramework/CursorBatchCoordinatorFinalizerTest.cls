@@ -361,4 +361,100 @@ private without sharing class CursorBatchCoordinatorFinalizerTest {
             'Status should remain Preparing (not Failed yet)');
     }
     
+    // ============================================
+    // Terminal Logging and Platform Status Tests
+    // ============================================
+    
+    @IsTest
+    static void testMaxRetriesExhaustedLogsExactlyOneError() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 5, 20, 2);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 2  // Already at max
+        );
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
+            jobRecord.Id, 'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            mockLogger, TEST_QUERY
+        );
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, new System.QueryException('Cursor query timeout'));
+        Test.stopTest();
+        
+        // Assert - the terminal entry is the single error; the attempt itself is reported at info
+        Assert.areEqual(1, mockLogger.errorMessages.size(),
+            'A failed job should produce one error entry, got: ' + mockLogger.errorMessages);
+        Assert.isTrue(mockLogger.errorMessages[0].startsWith('[' + CursorBatchLogger.SCOPE_JOB_FAILED + ']'),
+            'The single error should be the scoped terminal entry: ' + mockLogger.errorMessages[0]);
+    }
+    
+    @IsTest
+    static void testMaxRetriesExhaustedAppendsPlatformStatus() {
+        // Arrange - cursor creation timing out is this finalizer's known failure mode
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 5, 20, 2);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 2
+        );
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
+            jobRecord.Id, 'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            mockLogger, TEST_QUERY
+        );
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, new System.AsyncException('connection was cancelled here'),
+            '[QUERY_TIMEOUT] Your query request was running for too long.');
+        Test.stopTest();
+        
+        // Assert
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Failed', updatedJob.Status__c, 'Status should be Failed');
+        Assert.isTrue(updatedJob.Error_Message__c.contains('Platform status: [QUERY_TIMEOUT]'),
+            'The job record should carry the recovered platform status, got: ' + updatedJob.Error_Message__c);
+        Assert.isTrue(mockLogger.hasErrorContaining('[QUERY_TIMEOUT]'),
+            'The terminal entry should surface the underlying platform error');
+    }
+    
+    @IsTest
+    static void testRetryablePathStillReportsTheAttempt() {
+        // Arrange - retryable failures must not be silent now that the up-front error was removed
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 5, 20, 3);
+        
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = 
+            new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        CursorBatchCoordinatorFinalizer finalizer = new CursorBatchCoordinatorFinalizer(
+            jobRecord.Id, 'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            mockLogger, TEST_QUERY
+        );
+        
+        // Act
+        Test.startTest();
+        finalizer.executeInternal(false, new System.AsyncException('connection was cancelled here'),
+            '[QUERY_TIMEOUT] Your query request was running for too long.');
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(mockLogger.hasInfoContaining('Cursor query failed'),
+            'The retry attempt should still be reported');
+        Assert.isTrue(mockLogger.hasInfoContaining('[QUERY_TIMEOUT]'),
+            'The retry report should include the recovered platform status');
+        Assert.areEqual(0, mockLogger.errorMessages.size(),
+            'A retryable attempt is not a job failure, got: ' + mockLogger.errorMessages);
+    }
 }

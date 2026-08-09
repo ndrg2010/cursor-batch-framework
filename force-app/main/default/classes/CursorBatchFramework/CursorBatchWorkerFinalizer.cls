@@ -29,7 +29,18 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
     public void execute(System.FinalizerContext finalizerCtx) {
         Boolean success = finalizerCtx.getResult() == System.ParentJobResult.SUCCESS;
         Exception ex = !success ? finalizerCtx.getException() : null;
-        executeInternal(success, ex);
+        String platformStatus = success ? null : resolvePlatformStatus(finalizerCtx.getAsyncApexJobId());
+        executeInternal(success, ex, platformStatus);
+    }
+    
+    /**
+     * @description Handles finalizer logic without a recovered platform status.
+     * @param success True if the job succeeded; false otherwise
+     * @param ex Exception from failed job, or null on success
+     */
+    @TestVisible
+    private void executeInternal(Boolean success, Exception ex) {
+        executeInternal(success, ex, null);
     }
     
     /**
@@ -37,9 +48,10 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
      *              cannot be mocked directly.
      * @param success True if the job succeeded; false otherwise
      * @param ex Exception from failed job, or null on success
+     * @param platformStatus AsyncApexJob.ExtendedStatus for the failed job, or null
      */
     @TestVisible
-    private void executeInternal(Boolean success, Exception ex) {
+    private void executeInternal(Boolean success, Exception ex, String platformStatus) {
         if (success) {
             // Publish completion event for EVERY successful page
             // Is_Final indicates if this worker has finished all its pages
@@ -47,9 +59,13 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             return;
         }
         
-        String errorMessage = CursorBatchLogger.formatExceptionMessage(ex);
-        logger.logError('CursorBatchWorkerFinalizer: Worker #' + ctx.workerNum + ' failed at position ' + 
-            ctx.startPosition + ': ' + errorMessage);
+        String errorMessage = CursorBatchLogger.formatExceptionMessage(ex, platformStatus);
+        ICursorBatchLogger failureLogger = workerFailureLogger(platformStatus);
+        failureLogger.logError(CursorBatchLogger.scoped(
+            CursorBatchLogger.SCOPE_WORKER_FAILED,
+            'Job: ' + ctx.jobName + ', worker #' + ctx.workerNum + ' failed at position ' +
+                ctx.startPosition + ': ' + errorMessage
+        ));
         
         // Check if we can retry
         Integer maxRetries = CursorBatchCoordinator.getWorkerMaxRetries(ctx.jobName);
@@ -57,10 +73,49 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
             retryWorker(maxRetries, errorMessage);
         } else {
             // Max retries exhausted - publish failure event (worker is done, so isFinal = true)
-            logger.logError('CursorBatchWorkerFinalizer: Worker #' + ctx.workerNum + 
-                ' max retries (' + maxRetries + ') exhausted at position ' + ctx.startPosition);
+            failureLogger.logError(CursorBatchLogger.scoped(
+                CursorBatchLogger.SCOPE_WORKER_FAILED,
+                'Job: ' + ctx.jobName + ', worker #' + ctx.workerNum + ' exhausted max retries (' +
+                    maxRetries + ') at position ' + ctx.startPosition
+            ));
             publishCompletionEvent(false, errorMessage, true);
         }
+    }
+    
+    /**
+     * @description Reads the parent job's ExtendedStatus so an opaque platform abort reports the
+     *              underlying reason. Best-effort: Salesforce does not guarantee the field is
+     *              committed by the time the finalizer runs, and a failure here must not stop the
+     *              worker from reporting its failure at all.
+     * @param asyncApexJobId Parent job Id from the finalizer context
+     * @return ExtendedStatus value, or null when unavailable
+     */
+    private String resolvePlatformStatus(Id asyncApexJobId) {
+        try {
+            return CursorBatchSelector.getExtendedStatus(asyncApexJobId);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+    
+    /**
+     * @description Builds a logger tagged as a worker failure, plus the platform failure code
+     *              when one was recovered, so governor-limit failures are filterable without
+     *              parsing message text.
+     * @param platformStatus Recovered ExtendedStatus, or null
+     * @return Logger to emit worker failures through
+     */
+    private ICursorBatchLogger workerFailureLogger(String platformStatus) {
+        Set<String> tags = new Set<String>{ CursorBatchLogger.TAG_WORKER_FAILURE };
+        String codeTag = CursorBatchLogger.failureCodeTag(platformStatus);
+        if (codeTag != null) {
+            tags.add(codeTag);
+        }
+        return CursorBatchLogger.withScopeTags(
+            logger,
+            CursorBatchCompletionHandler.resolveJobTag(ctx.jobName),
+            tags
+        );
     }
     
     /**
