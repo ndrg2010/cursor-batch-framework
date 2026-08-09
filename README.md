@@ -322,16 +322,13 @@ public class MyCalloutWorker extends CursorBatchWorker {
 
 **With custom logger (e.g., Nebula Logger):**
 
+No constructor and no wiring. Deploy a class named `CursorBatchLoggerAdapter` once, and every worker's inherited `logger` routes through it, tagged from the job's `Logger_Tag__c`. See the [Pluggable Logging](#pluggable-logging) section.
+
 ```apex
 public class MyLoggingWorker extends CursorBatchWorker {
     
-    public MyLoggingWorker() {
-        super();
-        setLogger(new NebulaLoggerAdapter()); // See Pluggable Logging section
-    }
-    
     public override void process(List<SObject> records) {
-        // Processing logic...
+        logger.logInfo('Processing ' + records.size() + ' records');
     }
 }
 ```
@@ -1621,8 +1618,7 @@ public class BillingBatchCoordinator extends CursorBatchCoordinator {
     }
     
     public override void finish(CursorBatch_Job__c jobRecord) {
-        // Set logger based on job name (since no-arg constructor was used)
-        setLogger(MyLoggerAdapter.getInstance(jobRecord.Job_Name__c));
+        // No logger setup needed — the framework already tagged it from Logger_Tag__c
         super.finish(jobRecord);
         
         // Chain to next job based on job name
@@ -1646,7 +1642,7 @@ public class BillingBatchCoordinator extends CursorBatchCoordinator {
 1. **No-arg constructor is required** — The finalizer and completion handler use `Type.newInstance()` which only works with no-arg constructors
 2. **Query is stored on first run** — The framework stores the query in `Query__c` during `submit()`, so retries don't need to reconstruct coordinator state
 3. **Use job name to determine mode** — In `finish()`, check `jobRecord.Job_Name__c` to determine which mode just completed
-4. **Set logger in finish()** — Since the no-arg constructor doesn't know the job name, set the logger at the start of `finish()` if using a custom logger
+4. **Don't set a logger in `finish()`** — The no-arg constructor doesn't know the job name, so before v0.33.0 the logger used inside `finish()` was untagged and the workaround was to call `setLogger()` there. `initializeJobName()` now applies `Logger_Tag__c` before `finish()` runs, and a `setLogger()` call inside `finish()` would replace that tagged logger with an untagged one. See [Convention-Based Logger Discovery](#convention-based-logger-discovery)
 
 ### Parent/Child Pattern for Avoiding Record Locks
 
@@ -1781,44 +1777,52 @@ public class MyCoordinator extends CursorBatchCoordinator {
 
 #### Setting a Custom Logger
 
-Call `setLogger()` in your coordinator or worker constructor:
+Don't. Name your adapter `CursorBatchLoggerAdapter`, deploy it, and every coordinator and worker in the org picks it up with no constructor and no wiring:
 
 ```apex
-public class MyCoordinator extends CursorBatchCoordinator {
-    
-    public MyCoordinator() {
-        super('MyJob');
-        setLogger(new NebulaLoggerAdapter());
-    }
-}
-
 public class MyWorker extends CursorBatchWorker {
-    
-    public MyWorker() {
-        super();
-        setLogger(new NebulaLoggerAdapter());
+
+    public override void process(List<SObject> records) {
+        logger.logInfo('Processing ' + records.size() + ' records');
     }
 }
 ```
 
+See [Convention-Based Logger Discovery](#convention-based-logger-discovery) for the adapter contract and how `Logger_Tag__c` reaches it.
+
+`setLogger()` still exists, but it is for injecting a mock in a test. Calling it from production code means opting out of `Logger_Tag__c` — and calling it inside `finish()` actively strips the tag the framework already applied.
+
+Both integrations below are named `CursorBatchLoggerAdapter` because that is the name the framework looks for, and both implement `Callable` because that is how `Logger_Tag__c` reaches them. Only one such class can exist in an org — pick the one matching your logging framework.
+
 #### Nebula Logger Integration
 
 ```apex
-public class NebulaLoggerAdapter implements ICursorBatchLogger {
+public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
+    
+    private Set<String> tags = new Set<String>();
     
     public void logInfo(String message) {
-        Logger.info(message);
+        Logger.info(message).addTags(new List<String>(tags));
         Logger.saveLog();
     }
     
     public void logError(String message) {
-        Logger.error(message);
+        Logger.error(message).addTags(new List<String>(tags));
         Logger.saveLog();
     }
     
     public void logException(String message, Exception e) {
-        Logger.error(message, e);
+        Logger.error(message, e).addTags(new List<String>(tags));
         Logger.saveLog();
+    }
+    
+    public Object call(String action, Map<String, Object> args) {
+        if (action == 'addTag') {
+            tags.add((String) args.get('tag'));
+        } else if (action == 'addTags') {
+            tags.addAll((Set<String>) args.get('tags'));
+        }
+        return this;
     }
 }
 ```
@@ -1826,18 +1830,33 @@ public class NebulaLoggerAdapter implements ICursorBatchLogger {
 #### Pharos Integration
 
 ```apex
-public class PharosLoggerAdapter implements ICursorBatchLogger {
+public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
+    
+    private Set<String> tags = new Set<String>();
     
     public void logInfo(String message) {
-        pharos.Logger.log('INFO', message);
+        pharos.Logger.log('INFO', tagged(message));
     }
     
     public void logError(String message) {
-        pharos.Logger.log('ERROR', message);
+        pharos.Logger.log('ERROR', tagged(message));
     }
     
     public void logException(String message, Exception e) {
-        pharos.Logger.log(e).setMessage(message);
+        pharos.Logger.log(e).setMessage(tagged(message));
+    }
+    
+    public Object call(String action, Map<String, Object> args) {
+        if (action == 'addTag') {
+            tags.add((String) args.get('tag'));
+        } else if (action == 'addTags') {
+            tags.addAll((Set<String>) args.get('tags'));
+        }
+        return this;
+    }
+    
+    private String tagged(String message) {
+        return tags.isEmpty() ? message : '[' + String.join(new List<String>(tags), ', ') + '] ' + message;
     }
 }
 ```
@@ -1915,15 +1934,32 @@ public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
 
 2. Deploy the class to your org. **That's it!** All coordinators and workers automatically use it.
 
-> **Important:** The `Callable` implementation is required for `Logger_Tag__c` propagation. The framework uses `Callable` to pass tags from metadata config to the adapter without a compile-time dependency. If your adapter doesn't implement `Callable`, logging will work but tags will be silently ignored.
+3. Set `Logger_Tag__c` on each job's `CursorBatch_Config__mdt` record. Write no constructor.
+
+> **Important:** The `Callable` implementation is required for `Logger_Tag__c` propagation. The framework uses `Callable` to pass tags from metadata config to the adapter without a compile-time dependency. If your adapter doesn't implement `Callable`, logging will work but tags will be silently ignored — they could then only ever be hardcoded at the call site.
 
 > **Tip:** See `unpackaged/classes/CursorBatchLoggerAdapter.cls` for a complete template.
 
+#### Where the Tag Gets Applied
+
+As of v0.33.0, `Logger_Tag__c` is applied on every path a subclass can log from:
+
+| Path | Applied by | Covers |
+|------|-----------|--------|
+| Processing | `CursorBatchWorker.initialize()` | Anything logged from `process()` |
+| Worker `finish()` | `CursorBatchWorker.initializeFinishState()` | Anything logged from a worker's `finish()` |
+| Coordinator `finish()` and retry | `CursorBatchCoordinator.initializeJobName()` | Anything logged from a coordinator's `finish()` |
+| Terminal job entry | `CursorBatchCompletionHandler` | The one job-level entry describing how the job ended |
+
+The `finish()` paths matter because the framework constructs your worker or coordinator by reflection purely to call `finish()` — `initialize()` never runs and the tagging constructor never runs. Before v0.33.0 anything logged inside `finish()` was untagged, and the documented workaround was to call `setLogger()` there. **That workaround is now harmful:** tagging happens before `finish()` is invoked, so a `setLogger()` call inside `finish()` discards the tagged instance and everything logged afterwards goes out untagged. Remove those calls.
+
+Tags are applied additively via `Callable.addTag`, so the framework never replaces a logger you supplied.
+
 #### Benefits
 
-- **Zero configuration** — Workers don't need constructors to set up logging
+- **Zero configuration** — Workers and coordinators never need a constructor to set up logging
 - **Org-wide consistency** — All jobs use the same logger automatically
-- **Override when needed** — Call `setLogger()` to use a different logger for specific jobs
+- **Per-job tagging without code** — Change `Logger_Tag__c` on the job's `CursorBatch_Config__mdt` record to retag its entries
 
 #### Simplifying Existing Workers
 
@@ -1936,7 +1972,7 @@ public class BillingBatchWorker extends CursorBatchWorker {
     
     public BillingBatchWorker() {
         super();
-        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance('Billing'));
+        setLogger(new MyLoggerAdapter().addTag('Billing'));
     }
     
     public override void process(List<SObject> records) {
@@ -1945,7 +1981,7 @@ public class BillingBatchWorker extends CursorBatchWorker {
 }
 ```
 
-**After (with convention-based discovery):**
+**After (with convention-based discovery):** delete the constructor and set `Logger_Tag__c = 'Billing'` on the job's `CursorBatch_Config__mdt` record.
 
 ```apex
 public class BillingBatchWorker extends CursorBatchWorker {
@@ -2022,6 +2058,10 @@ transaction and never sees a `setLogger()` call made inside a worker, so **`Logg
 single source of truth for terminal entries.** If a worker passes a different hardcoded tag to
 `setLogger()`, its own entries and the job's terminal entry will be tagged differently.
 
+Since v0.33.0 the same tag is applied to your own entries too, on both the processing path and the
+`finish()` path, so a job's entries and its terminal entry line up under one tag with no code at
+all. See [Where the Tag Gets Applied](#where-the-tag-gets-applied).
+
 #### Recovering Uncatchable Platform Errors
 
 A query timeout and similar platform aborts are not catchable in async Apex. The runtime kills the
@@ -2069,6 +2109,23 @@ transaction per worker.
 
 ## Migration Guide
 
+### Upgrading to v0.33 (breaking guidance change: remove `setLogger()` from `finish()`)
+
+No API changed, but **previously documented guidance is now wrong and silently drops your log tags.**
+
+Before v0.33.0, the framework constructed your worker or coordinator by reflection purely to call `finish()`. `initialize()` never ran on a worker and the tagging constructor never ran on a coordinator, so anything a subclass logged inside `finish()` came out untagged. This README recommended working around it by calling `setLogger()` at the top of `finish()`.
+
+v0.33.0 closes the gap at the source: `CursorBatchWorker.initializeFinishState()` and `CursorBatchCoordinator.initializeJobName()` now apply `Logger_Tag__c` additively via `Callable.addTag` before `finish()` is invoked. The workaround has therefore inverted into a bug — `setLogger()` inside `finish()` runs *after* the framework has tagged the logger and replaces the tagged instance with an untagged one, stripping the tag from every entry that follows.
+
+**What to do:**
+
+1. Delete every `setLogger()` call from `finish()` in your workers and coordinators.
+2. Delete `setLogger()` calls from constructors too. They are no longer needed for tagging and cost you nothing to remove.
+3. Make sure your adapter is named exactly `CursorBatchLoggerAdapter` and implements `Callable` as well as `ICursorBatchLogger`. An adapter without `Callable` can never receive `Logger_Tag__c` — its tags can only ever be hardcoded at the call site.
+4. Set `Logger_Tag__c` on each job's `CursorBatch_Config__mdt` record. That is now the only place a job's tag is configured.
+
+A class with no constructor at all resolves the adapter by convention and gets `Logger_Tag__c` applied on both the processing path and the `finish()` path. See [Where the Tag Gets Applied](#where-the-tag-gets-applied).
+
 ### Upgrading from v0.26 or v0.27 (PlatformEventSubscriberConfig restoration)
 
 Versions 0.26 and 0.27 inadvertently removed the three `PlatformEventSubscriberConfig` files from the package. As a result, **upgrading any org from v0.25 (or earlier) to v0.26 or v0.27 destructively deletes the existing `Cursor*TriggerConfig` records**, causing the framework's Platform Event triggers to fall back to running as the **Automated Process** user. Workers then can't access cursors created by your integration user, and jobs silently stall mid-run.
@@ -2093,7 +2150,6 @@ public class Five9DeleteCoordinator extends CursorBatchCoordinator {
     
     public Five9DeleteCoordinator() {
         super(JOB_NAME);
-        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance());
     }
     
     public override String buildQuery() {

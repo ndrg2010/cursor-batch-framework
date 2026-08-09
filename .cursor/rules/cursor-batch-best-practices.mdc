@@ -56,7 +56,7 @@ public class AccountStatusWorker extends CursorBatchWorker {
 ```
 
 **Thin worker rules**:
-1. No constructor needed — the inherited default constructor handles everything. Only add one if you need to call `setLogger()`.
+1. No constructor needed — the inherited default constructor handles everything. Logging included: the framework resolves `CursorBatchLoggerAdapter` by convention and applies `Logger_Tag__c` on both the processing path and the `finish()` path, so don't call `setLogger()`.
 2. `process()` does one thing: process records
 3. No state management — use `CursorBatchContext` for execution parameters
 4. Don't catch exceptions unless you want to suppress retry (see below)

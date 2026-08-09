@@ -8,7 +8,7 @@ This directory contains metadata that is **NOT included in the CursorBatchFramew
 |----------|-------|---------|
 | **Platform Event Config** | `platformEventSubscriberConfigs/` | Required trigger configuration with org-specific running user |
 | **Sample Implementations** | `classes/Sample*.cls` | Example coordinators and workers demonstrating usage patterns |
-| **Nebula Logger Adapter** | `classes/NebulaLoggerAdapterForCursorBatch.cls` | Optional integration with Nebula Logger |
+| **Logger Adapter** | `classes/CursorBatchLoggerAdapter.cls` | Optional template for routing framework logging into Nebula Logger, Pharos, or a custom logger |
 | **CSV Middleware Credentials** | `namedCredentials/`, `externalCredentials/` | Templates for CSV middleware connectivity |
 
 ---
@@ -218,49 +218,69 @@ CursorJob.run('SampleCsvStatefulJob', new Map<String, Object>{
 
 ---
 
-## 3. Nebula Logger Adapter
+## 3. Logger Adapter
 
-Optional adapter for integrating CursorBatch Framework logging with [Nebula Logger](https://github.com/jongpie/NebulaLogger).
+Optional adapter that routes framework logging into your org's logging framework — [Nebula Logger](https://github.com/jongpie/NebulaLogger), Pharos, a custom logging object, or anything else. `classes/CursorBatchLoggerAdapter.cls` is a fill-in-the-blanks template: it implements `ICursorBatchLogger` and `Callable`, falls back to `System.debug`, and marks with `TODO` every place your logging framework's calls belong.
 
 ### Prerequisites
 
-- Nebula Logger must be installed in your org
-- Your project must have an `ILogger` interface that Nebula Logger implements
+- Your logging framework installed in the org (for Nebula Logger, an `ILogger` interface that Nebula Logger implements)
 
 ### Usage
 
-Set the logger in your coordinator or worker constructor:
+There is no wiring code. The framework discovers the adapter by class name and tags it from metadata.
+
+**1. Deploy a class named exactly `CursorBatchLoggerAdapter`** implementing both `ICursorBatchLogger` and `Callable`. Start from the template and replace the `TODO` markers with your logging framework's calls:
+
+```bash
+sf project deploy start --source-dir unpackaged/classes/CursorBatchLoggerAdapter.cls
+```
+
+**2. Set `Logger_Tag__c`** on each job's `CursorBatch_Config__mdt` record, e.g. `Billing Engine`.
+
+**3. Write no constructor.** Coordinators and workers resolve the adapter by convention and are tagged automatically:
 
 ```apex
-public class MyCoordinator extends CursorBatchCoordinator {
-    
-    public MyCoordinator() {
-        super('MyJob');
-        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance());
-    }
-}
-
 public class MyWorker extends CursorBatchWorker {
-    
-    public MyWorker() {
-        super();
-        setLogger(NebulaLoggerAdapterForCursorBatch.getInstance());
+
+    public override void process(List<SObject> records) {
+        logger.logInfo('Processing ' + records.size() + ' records');  // tagged 'Billing Engine'
+    }
+
+    public override void finish(CursorBatch_Job__c jobRecord) {
+        logger.logInfo('Job done');  // also tagged 'Billing Engine'
     }
 }
 ```
+
+> **Do not call `setLogger()`.** As of v0.33.0 the framework applies `Logger_Tag__c` on both the processing path (`initialize()`) and the `finish()` path (`initializeFinishState()` / `initializeJobName()`). A `setLogger()` call placed inside `finish()` runs *after* the framework has tagged the logger, and replaces that tagged instance with an untagged one — stripping the tag from everything logged afterwards.
+
+> **`Callable` is not optional.** The framework hands `Logger_Tag__c` to the adapter through `Callable.call('addTag', ...)` so it needs no compile-time dependency on a class it doesn't own. An adapter that implements `ICursorBatchLogger` but **not** `Callable` still logs, but can never receive `Logger_Tag__c` — its tags can only ever be hardcoded at the call site.
 
 ### Customization
 
-The provided adapter assumes you have an `ILogger` interface resolved via `Application.Service`. Modify the adapter to match your project's dependency injection pattern:
+Wire the adapter to your logging framework by filling in the `TODO` markers. For Nebula Logger resolved through a dependency-injection layer:
 
 ```apex
-// Current implementation
+// In the constructor
 this.nebulaLogger = (ILogger) Application.Service.newInstance(ILogger.class);
 
-// Direct Nebula Logger usage (alternative)
-// Logger.info(message);
-// Logger.saveLog();
+// In logInfo() / logError() / logException()
+ILogEntryBuilder entry = nebulaLogger.info(LOG_PREFIX + message);
+if (!this.tags.isEmpty()) {
+    entry.addTags(this.tags);
+}
+nebulaLogger.save();
 ```
+
+Or calling Nebula Logger directly, with no DI layer:
+
+```apex
+Logger.info(LOG_PREFIX + message).addTags(new List<String>(this.tags));
+Logger.saveLog();
+```
+
+Keep the `tags` set, `addTag()`, `addTags()`, and `call()` intact — that is the path `Logger_Tag__c` and the framework's scope tags travel through.
 
 ---
 
@@ -287,8 +307,8 @@ sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadQueryB
 sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadWorker.cls
 sf project deploy start --source-dir unpackaged/classes/SampleStatefulLeadReducer.cls
 
-# Nebula Logger adapter only (optional, requires Nebula Logger)
-sf project deploy start --source-dir unpackaged/classes/NebulaLoggerAdapterForCursorBatch.cls
+# Logger adapter only (optional, must be named CursorBatchLoggerAdapter for discovery)
+sf project deploy start --source-dir unpackaged/classes/CursorBatchLoggerAdapter.cls
 ```
 
 ### After Deployment

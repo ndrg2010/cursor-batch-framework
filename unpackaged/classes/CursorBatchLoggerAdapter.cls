@@ -3,13 +3,20 @@
  *              CursorBatchFramework integration. This class is automatically discovered
  *              by CursorJob when it exists in the org.
  * 
- *              Rename this class from NebulaLoggerAdapterForCursorBatch to 
- *              CursorBatchLoggerAdapter to enable convention-based logger discovery.
- * 
  * Usage:
- *      The CursorJob class automatically looks for a class named 'CursorBatchLoggerAdapter'
- *      that implements ICursorBatchLogger. If found, it uses this adapter for logging.
- *      If not found, it falls back to CursorBatchLogger (System.debug).
+ *      The framework looks for a class named 'CursorBatchLoggerAdapter' that implements
+ *      ICursorBatchLogger. If found, it uses this adapter for logging. If not found, it
+ *      falls back to CursorBatchLogger (System.debug). Keep the class name exactly as-is:
+ *      discovery is by name, so a renamed adapter is never found.
+ * 
+ *      Callable is required, not optional. It is how the framework passes
+ *      CursorBatch_Config__mdt.Logger_Tag__c to this adapter without a compile-time
+ *      dependency. An adapter without Callable can never receive Logger_Tag__c.
+ * 
+ *      Do not call setLogger() from coordinators or workers. As of v0.33.0 the framework
+ *      applies Logger_Tag__c on both the processing path and the finish() path, so a
+ *      setLogger() call inside finish() replaces an already-tagged logger with an
+ *      untagged one.
  * 
  * @group CursorBatchFramework
  * @see ICursorBatchLogger
