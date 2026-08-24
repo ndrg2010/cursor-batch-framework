@@ -48,6 +48,12 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
     
     /**
      * @description Handles incoming Platform Events by creating and enqueueing coordinators.
+     *
+     *              Guarded by CursorBatchReplayGuard for the same reason as the worker channel.
+     *              This channel was not the one the event bus rewound on 2026-08-24, but the
+     *              exposure is the same shape and worse per event: a coordinator event carries a
+     *              pre-created job record Id, so a redelivered one would re-run the coordinator
+     *              against an existing job and fan out the entire job a second time.
      * @param events CursorBatch_Coordinator__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_Coordinator__e> events) {
@@ -55,9 +61,102 @@ public without sharing class CursorBatchCoordinatorTriggerHandler {
             return;
         }
         
+        Map<String, CursorBatch_Coordinator__e> eventsByKey = new Map<String, CursorBatch_Coordinator__e>();
+        List<CursorBatchReplayGuard.Candidate> candidates = new List<CursorBatchReplayGuard.Candidate>();
         for (CursorBatch_Coordinator__e evt : events) {
-            processEvent(evt);
+            CursorBatchReplayGuard.Candidate candidate;
+            try {
+                candidate = buildCandidate(evt);
+            } catch (Exception e) {
+                logger.logException('CursorBatchCoordinatorTriggerHandler: Could not identify event for job "' +
+                    evt.Job_Name__c + '"; dispatching unguarded', e);
+            }
+            if (candidate == null) {
+                processEvent(evt);
+                continue;
+            }
+            eventsByKey.put(candidate.eventKey, evt);
+            candidates.add(candidate);
         }
+        
+        CursorBatchReplayGuard.Verdict verdict = new CursorBatchReplayGuard(
+            CursorBatchReplayGuard.CHANNEL_COORDINATOR, logger
+        ).withTerminalJobGate(true).admit(candidates);
+        
+        for (CursorBatchReplayGuard.Candidate candidate : candidates) {
+            // claim(), not a set lookup: candidates retains both entries when one batch carries
+            // the same event twice, and dispatching a coordinator twice re-fans-out a whole job.
+            if (verdict.claim(candidate.eventKey)) {
+                processEvent(eventsByKey.get(candidate.eventKey));
+            } else if (CursorBatchReplayGuard.REASON_STALE == verdict.blockedReasonsByKey.get(candidate.eventKey)) {
+                failStaleJob(candidate);
+            }
+        }
+    }
+    
+    /**
+     * @description Marks a job Failed when the guard rejected its coordinator event as stale.
+     *
+     *              The coordinator never ran, so the job would otherwise sit in Preparing
+     *              forever. That is worse than a visible failure: isJobAlreadyRunning treats
+     *              Preparing as running, so every future submission of that job name would
+     *              silently return null and the job would never run again.
+     *
+     *              Only REASON_STALE is reconciled. JOB_TERMINAL needs nothing, JOB_MISSING has
+     *              no record to write, and DUPLICATE means the coordinator was already dispatched.
+     *              Mirrors handleCsvError, which is the framework's existing shape for "this job
+     *              cannot proceed".
+     * @param candidate The rejected coordinator event
+     */
+    private void failStaleJob(CursorBatchReplayGuard.Candidate candidate) {
+        if (candidate.jobRecordId == null) {
+            return;
+        }
+        try {
+            CursorBatch_Job__c jobRecord = CursorBatchSelector.getJobById(candidate.jobRecordId);
+            if (jobRecord == null || jobRecord.Completed_At__c != null) {
+                return;
+            }
+            jobRecord.Status__c = 'Failed';
+            jobRecord.Error_Message__c = 'Replay guard rejected the coordinator event as stale: it was ' +
+                'published ' + candidate.publishedAt + ' and exceeded Max_Event_Age_Minutes__c. ' +
+                'The job did not start.';
+            jobRecord.Completed_At__c = System.now();
+            jobRecord.Total_Workers__c = jobRecord.Total_Workers__c ?? 0;
+            jobRecord.Workers_Finished__c = jobRecord.Workers_Finished__c ?? 0;
+            jobRecord.Failed_Workers__c = jobRecord.Failed_Workers__c ?? 0;
+            update jobRecord;
+            CursorBatchCompletionHandler.routeFinishCallback(jobRecord, logger);
+        } catch (Exception e) {
+            logger.logException('CursorBatchCoordinatorTriggerHandler: Could not fail the job whose ' +
+                'coordinator event was rejected as stale, so it may stay stuck in Preparing', e);
+        }
+    }
+    
+    /**
+     * @description Normalizes a coordinator event into a guard candidate.
+     *
+     *              Job_Name__c is not a job name on the CSV callback paths -- CSV_Ready carries
+     *              the csvCursorQuery there and CSV_Error carries an error message -- so it is
+     *              passed through as-is and the guard falls back to the job record's own
+     *              Job_Name__c when it does not resolve to a config.
+     * @param evt CursorBatch_Coordinator__e event
+     * @return Candidate for CursorBatchReplayGuard.admit, or null when the event lacks the fields
+     *         to identify itself
+     */
+    private CursorBatchReplayGuard.Candidate buildCandidate(CursorBatch_Coordinator__e evt) {
+        if (String.isBlank(evt.Job_Record_Id__c) || String.isBlank(evt.Coordinator_Class__c)) {
+            return null;
+        }
+        String eventKey = CursorBatchReplayGuard.buildCoordinatorKey(
+            evt.Job_Record_Id__c, evt.Coordinator_Class__c
+        );
+        CursorBatchReplayGuard.Candidate candidate = new CursorBatchReplayGuard.Candidate(
+            eventKey, evt.Job_Record_Id__c, evt.Job_Name__c, evt.CreatedDate
+        );
+        Object replayId = evt.get('ReplayId');
+        candidate.replayId = replayId != null ? String.valueOf(replayId) : null;
+        return candidate;
     }
     
     /**

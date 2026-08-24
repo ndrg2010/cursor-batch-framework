@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <deploymentStatus>Deployed</deploymentStatus>
+    <description>Append-only ledger of Platform Events admitted by CursorBatchReplayGuard, one row per (channel, event identity). The unique Event_Key__c is what makes a redelivered event detectable: the guard inserts before dispatching, and a DUPLICATE_VALUE means the event was already processed. Deliberately has no relationship to CursorBatch_Job__c so rows survive both job completion and job deletion -- the 2026-08-24 redelivery incident replayed events up to 103 hours old, well past the lifetime of any job record. Retention is by age via CursorBatchLedgerCleanup, not by job state.</description>
+    <enableHistory>false</enableHistory>
+    <enableReports>true</enableReports>
+    <label>Cursor Batch Event Ledger</label>
+    <nameField>
+        <displayFormat>CBEL-{0000000}</displayFormat>
+        <label>Ledger Entry Number</label>
+        <type>AutoNumber</type>
+    </nameField>
+    <pluralLabel>Cursor Batch Event Ledger Entries</pluralLabel>
+    <sharingModel>ReadWrite</sharingModel>
+</CustomObject>

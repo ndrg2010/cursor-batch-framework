@@ -67,6 +67,27 @@ public without sharing class CursorBatchSelector {
     }
 
     /**
+     * @description Reads just the fields CursorBatchReplayGuard needs to decide whether a job is
+     *              still a legitimate target for dispatch. Deliberately does not use FOR UPDATE:
+     *              this runs on the Platform Event dispatch path, once per subscriber batch, and
+     *              locking here would serialize worker dispatch across the whole fan-out. The
+     *              guard only reads, so there is nothing to protect from a concurrent write.
+     * @param jobIds Set of job record Ids referenced by the events in this batch
+     * @return Map of Id to CursorBatch_Job__c; jobs that no longer exist are simply absent
+     */
+    public static Map<Id, CursorBatch_Job__c> getJobStatesByIds(Set<Id> jobIds) {
+        if (jobIds == null || jobIds.isEmpty()) {
+            return new Map<Id, CursorBatch_Job__c>();
+        }
+
+        return new Map<Id, CursorBatch_Job__c>([
+            SELECT Id, Job_Name__c, Status__c, Completed_At__c
+            FROM CursorBatch_Job__c
+            WHERE Id IN :jobIds
+        ]);
+    }
+
+    /**
      * @description Queries CursorBatch_Job__c records that are currently running (Preparing, Extracting File, or Processing).
      *              Used to check if a job is already running before starting a new one.
      * @param jobName The job name to search for
@@ -100,7 +121,8 @@ public without sharing class CursorBatchSelector {
                    Worker_Max_Retries__c, Worker_Retry_Delay__c, Active__c, Skip_Duplicate_Check__c,
                    Chain_To_Job__c, Chain_To_Class__c, Chain_To_Method__c,
                    Query_Builder_Class__c, Query_Builder_Method__c, Worker_Class__c, Logger_Tag__c,
-                   State_Reducer_Class__c, Enable_State_Reducer__c, Processing_Type__c
+                   State_Reducer_Class__c, Enable_State_Reducer__c, Processing_Type__c,
+                   Max_Event_Age_Minutes__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true

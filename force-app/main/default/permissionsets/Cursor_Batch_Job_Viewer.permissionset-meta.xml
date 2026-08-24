@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
-    <description>Grants read access to the CursorBatch_Job__c and CursorBatch_Job_Parent__c objects and their tabs.</description>
+    <description>Grants read access to the CursorBatch_Job__c and CursorBatch_Job_Parent__c objects and their tabs, plus the CursorBatch_Event_Ledger__c replay-guard ledger, which exists for post-incident forensics and is unreadable without it.</description>
     <hasActivationRequired>false</hasActivationRequired>
     <label>Cursor Batch Job Viewer</label>
     <license>Salesforce</license>
@@ -21,6 +21,16 @@
         <allowRead>true</allowRead>
         <modifyAllRecords>false</modifyAllRecords>
         <object>CursorBatch_Job_Parent__c</object>
+        <viewAllFields>true</viewAllFields>
+        <viewAllRecords>true</viewAllRecords>
+    </objectPermissions>
+    <objectPermissions>
+        <allowCreate>false</allowCreate>
+        <allowDelete>false</allowDelete>
+        <allowEdit>false</allowEdit>
+        <allowRead>true</allowRead>
+        <modifyAllRecords>false</modifyAllRecords>
+        <object>CursorBatch_Event_Ledger__c</object>
         <viewAllFields>true</viewAllFields>
         <viewAllRecords>true</viewAllRecords>
     </objectPermissions>

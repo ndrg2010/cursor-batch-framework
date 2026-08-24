@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Job_Record_Id__c</fullName>
+    <description>Id of the CursorBatch_Job__c this event belonged to, stored as text rather than a relationship so the ledger row outlives the job record.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>The batch job this event belonged to. Text, not a link, so the entry survives job deletion.</inlineHelpText>
+    <label>Job Record Id</label>
+    <length>18</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

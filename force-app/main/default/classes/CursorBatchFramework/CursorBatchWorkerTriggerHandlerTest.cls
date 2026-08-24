@@ -400,6 +400,369 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         );
     }
 
+    // =====================================================================================
+    // Replay guard wiring
+    // =====================================================================================
+    //
+    // The guard's own layers are tested in CursorBatchReplayGuardTest, which can build
+    // Candidates directly. These tests cover only what the handler is responsible for:
+    // deriving the right identity from the event, and honouring the verdict before anything
+    // is enqueued.
+
+    @IsTest
+    static void guardBlocksDispatchForATerminalJob() {
+        // This is the shape of the 2026-08-24 incident: worker events arriving for a job that
+        // completed days earlier. Before the guard, every one of them enqueued a worker.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        String queryId = CursorBatchContext.extractQueryId(cursor);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = queryId,
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = 1,
+                Job_Record_Id__c = jobRecord.Id,
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(events);
+        Test.stopTest();
+
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'A blocked event must not be ledgered, because it was never processed.');
+    }
+
+    @IsTest
+    static void guardLedgersTheShardIdentityOfADispatchedEvent() {
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        String queryId = CursorBatchContext.extractQueryId(cursor);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = queryId,
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = 7,
+                Job_Record_Id__c = jobRecord.Id,
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(events);
+        Test.stopTest();
+
+        List<CursorBatch_Event_Ledger__c> ledger = [
+            SELECT Event_Key__c, Channel__c, Worker_Number__c, Cursor_Query_Id__c, Job_Name__c
+            FROM CursorBatch_Event_Ledger__c
+        ];
+        Assert.areEqual(1, ledger.size(), 'A dispatched worker event must leave one ledger row.');
+        Assert.areEqual(CursorBatchReplayGuard.buildWorkerKey(jobRecord.Id, queryId, 7),
+            ledger[0].Event_Key__c,
+            'The handler must key the event on job, cursor and shard.');
+        Assert.areEqual(CursorBatchReplayGuard.CHANNEL_WORKER, ledger[0].Channel__c,
+            'The row must be attributed to the worker channel.');
+        Assert.areEqual(7, ledger[0].Worker_Number__c, 'The shard must be recorded for forensics.');
+        Assert.areEqual(queryId, ledger[0].Cursor_Query_Id__c, 'The cursor must be recorded for forensics.');
+    }
+
+    @IsTest
+    static void guardAdmitsARedispatchAfterTheCoordinatorRebuiltItsCursor() {
+        // A coordinator retry fans out the same shard against a new cursor. That is legitimate and
+        // must not be mistaken for a replay, which is why the queryId is part of the identity.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        String firstQueryId = CursorBatchContext.extractQueryId(CursorBatchTestUtils.createTestCursor());
+        insert new CursorBatch_Event_Ledger__c(
+            Event_Key__c = CursorBatchReplayGuard.buildWorkerKey(jobRecord.Id, firstQueryId, 1),
+            Channel__c = CursorBatchReplayGuard.CHANNEL_WORKER
+        );
+
+        String retryQueryId = firstQueryId + '-rebuilt';
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = retryQueryId,
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = 1,
+                Job_Record_Id__c = jobRecord.Id,
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(events);
+        Test.stopTest();
+
+        Assert.areEqual(2, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'The re-fanned shard must be admitted and ledgered under its new cursor identity.');
+    }
+
+    @IsTest
+    static void unidentifiableEventIsStillDispatched() {
+        // Worker_Number__c is null, so there is no shard identity to key on. Dropping the event
+        // would silently lose work the framework itself published, so it dispatches unguarded and
+        // processEvent reports whatever goes wrong.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = CursorBatchContext.extractQueryId(cursor),
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = null,
+                Job_Record_Id__c = jobRecord.Id,
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+
+        Boolean threw = false;
+        Test.startTest();
+        try {
+            new CursorBatchWorkerTriggerHandler().handle(events);
+        } catch (Exception e) {
+            threw = true;
+        }
+        Test.stopTest();
+
+        Assert.isFalse(threw, 'An event with no shard identity must not break the batch.');
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'An event that cannot be identified cannot be ledgered either.');
+    }
+
+    @IsTest
+    static void malformedJobRecordIdIsDispatchedUnguarded() {
+        // Job_Record_Id__c is a text field on the event, so a malformed value throws on the
+        // implicit Id conversion while the candidate is being built.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+
+        List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>{
+            new CursorBatch_Worker__e(
+                Job_Name__c = 'TestJob',
+                Cursor_Query_Id__c = CursorBatchContext.extractQueryId(cursor),
+                Start_Position__c = 0,
+                End_Position__c = 10,
+                Page_Size__c = 10,
+                Worker_Number__c = 1,
+                Job_Record_Id__c = 'not-a-real-id',
+                Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+            )
+        };
+
+        Boolean threw = false;
+        Test.startTest();
+        try {
+            new CursorBatchWorkerTriggerHandler().handle(events);
+        } catch (Exception e) {
+            threw = true;
+        }
+        Test.stopTest();
+
+        Assert.isFalse(threw, 'A malformed job record Id must be logged and absorbed, not propagated.');
+    }
+
+    @IsTest
+    static void twoIdenticalEventsInOneBatchDispatchOnce() {
+        // The regression test for the guard's in-batch dedupe. A redelivery burst routinely puts
+        // the same event in one subscriber batch twice; asking a stateless set twice returns true
+        // both times and dispatches the shard twice, which is the exact double-execution the
+        // guard exists to prevent. One ledger row means one dispatch.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        String queryId = CursorBatchContext.extractQueryId(cursor);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+
+        CursorBatch_Worker__e duplicate = new CursorBatch_Worker__e(
+            Job_Name__c = 'TestJob',
+            Cursor_Query_Id__c = queryId,
+            Start_Position__c = 0,
+            End_Position__c = 10,
+            Page_Size__c = 10,
+            Worker_Number__c = 1,
+            Job_Record_Id__c = jobRecord.Id,
+            Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+        );
+
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(
+            new List<CursorBatch_Worker__e>{ duplicate, duplicate.clone(false, true, false, false) }
+        );
+        Test.stopTest();
+
+        Assert.areEqual(1, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'The same shard delivered twice in one batch must be admitted, and dispatched, exactly once.');
+    }
+
+    @IsTest
+    static void staleEventIsReportedAsAFailedWorkerSoTheJobCanFinish() {
+        // Blocking a live shard is only safe if the job can still reach a terminal status.
+        // Total_Workers__c still counts the rejected shard, so without a failure report
+        // Workers_Finished__c + Failed_Workers__c can never reach it: the job sits in Processing
+        // forever and, because isJobAlreadyRunning treats Processing as running, every future
+        // submission of that job name silently returns null.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+
+        // The event must be genuinely published: a constructed one carries a null CreatedDate, and
+        // the guard treats unknown age as unknowable rather than stale. Publishing stamps a real
+        // CreatedDate, and advancing the guard clock past it is what makes it read as stale.
+        CursorBatchReplayGuard.nowOverride = System.now().addHours(5);
+
+        Test.startTest();
+        EventBus.publish(new CursorBatch_Worker__e(
+            Job_Name__c = 'TestJob',
+            Cursor_Query_Id__c = CursorBatchContext.extractQueryId(cursor),
+            Start_Position__c = 0,
+            End_Position__c = 10,
+            Page_Size__c = 10,
+            Worker_Number__c = 1,
+            Job_Record_Id__c = jobRecord.Id,
+            Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+        ));
+        // First delivery runs the worker trigger, which blocks the shard and publishes the
+        // failure report. The second delivers that report to the completion trigger.
+        Test.getEventBus().deliver();
+        Test.getEventBus().deliver();
+        Test.stopTest();
+
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c WHERE Channel__c = :CursorBatchReplayGuard.CHANNEL_WORKER],
+            'Precondition: the stale event must have been blocked, not dispatched.');
+        CursorBatch_Job__c reloaded = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, reloaded.Failed_Workers__c,
+            'The rejected shard must be reported as a failed worker so the job can reach a terminal status.');
+        Assert.areEqual('Failed', reloaded.Status__c,
+            'A job whose only shard was rejected must end Failed rather than stalling in Processing.');
+        Assert.isNotNull(reloaded.Completed_At__c,
+            'The job must be genuinely terminal, so isJobAlreadyRunning stops blocking future submissions.');
+        Assert.isTrue(reloaded.Error_Message__c.contains('stale'),
+            'The job record must say why the shard never ran; a log entry alone is not discoverable.');
+    }
+
+    @IsTest
+    static void terminalJobRejectionIsNotReportedAsAFailedWorker() {
+        // A replay of the 2026-08-24 shape resolves to JOB_TERMINAL, not STALE, because job state
+        // is evaluated first. That ordering is what keeps reconciliation from amplifying: ~51,000
+        // rejected events must produce zero follow-on events, and must not touch counters on a job
+        // that already finished.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Workers_Finished__c = 1;
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+
+        CursorBatchReplayGuard.nowOverride = System.now().addHours(5);
+
+        Test.startTest();
+        EventBus.publish(new CursorBatch_Worker__e(
+            Job_Name__c = 'TestJob',
+            Cursor_Query_Id__c = CursorBatchContext.extractQueryId(cursor),
+            Start_Position__c = 0,
+            End_Position__c = 10,
+            Page_Size__c = 10,
+            Worker_Number__c = 1,
+            Job_Record_Id__c = jobRecord.Id,
+            Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+        ));
+        Test.getEventBus().deliver();
+        Test.getEventBus().deliver();
+        Test.stopTest();
+
+        CursorBatch_Job__c reloaded = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(0, reloaded.Failed_Workers__c,
+            'A replay for an already-completed job must not add a failure to its counters.');
+        Assert.areEqual('Completed', reloaded.Status__c,
+            'A replay must not disturb the terminal status the job legitimately reached.');
+    }
+
+    @IsTest
+    static void publishedEventIsLedgeredWithItsRealReplayId() {
+        // The one thing the unit tests cannot fake: a genuinely published event, carrying a real
+        // ReplayId and a real CreatedDate assigned by the bus. This proves the trigger path feeds
+        // the guard usable values, not just that the guard works on hand-built candidates.
+        CursorBatchTestUtils.resetTestWorker();
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        String queryId = CursorBatchContext.extractQueryId(cursor);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+
+        Test.startTest();
+        EventBus.publish(new CursorBatch_Worker__e(
+            Job_Name__c = 'TestJob',
+            Cursor_Query_Id__c = queryId,
+            Start_Position__c = 0,
+            End_Position__c = 10,
+            Page_Size__c = 10,
+            Worker_Number__c = 3,
+            Job_Record_Id__c = jobRecord.Id,
+            Worker_Class__c = 'CursorBatchTestUtils.TestCursorBatchWorker'
+        ));
+        Test.stopTest();
+
+        List<CursorBatch_Event_Ledger__c> ledger = [
+            SELECT Event_Key__c, Replay_Id__c, Event_Published_At__c
+            FROM CursorBatch_Event_Ledger__c
+        ];
+        Assert.areEqual(1, ledger.size(), 'A published worker event must be ledgered by the trigger.');
+        Assert.areEqual(CursorBatchReplayGuard.buildWorkerKey(jobRecord.Id, queryId, 3),
+            ledger[0].Event_Key__c,
+            'The ledgered key must match what a redelivery of this event would compute.');
+        Assert.isTrue(String.isNotBlank(ledger[0].Replay_Id__c),
+            'A real delivery must record its ReplayId, which is the only customer-visible handle on bus position.');
+        Assert.isNotNull(ledger[0].Event_Published_At__c,
+            'A real delivery must record its publish time, which is what the staleness layer compares against.');
+    }
+
     @IsTest
     static void testTriggerFiresOnEventPublish() {
         // Arrange - This test actually fires the trigger by publishing Platform Events

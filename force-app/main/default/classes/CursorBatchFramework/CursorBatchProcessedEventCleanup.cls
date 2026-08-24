@@ -1,9 +1,18 @@
 /**
- * @description Queueable that deletes CursorBatch_Processed_Event__c records for completed
- *              stateful jobs in chunks using Database.Cursor. Enqueued by CursorBatchCompletionHandler
- *              so cleanup does not run in the handler transaction (avoids governor and latency issues).
+ * @description Deprecated. Deletes CursorBatch_Processed_Event__c records for completed stateful
+ *              jobs in chunks using Database.Cursor.
+ *
+ *              Nothing in the framework calls this any more. Deleting idempotency markers when a
+ *              job completed is precisely what left the 2026-08-24 redelivery unguarded: the
+ *              replay arrived after completion, found no marker, and was admitted. Idempotency
+ *              now lives in CursorBatch_Event_Ledger__c, is retained by age rather than by job
+ *              state, and is swept by CursorBatchLedgerCleanup.
+ *
+ *              Retained only so an org that references it directly still compiles. Use it to
+ *              drain leftover CursorBatch_Processed_Event__c rows, then stop.
  * @group CursorBatchFramework
- * @see CursorBatchCompletionHandler
+ * @see CursorBatchLedgerCleanup
+ * @see CursorBatchReplayGuard
  */
 public without sharing class CursorBatchProcessedEventCleanup implements Queueable {
     

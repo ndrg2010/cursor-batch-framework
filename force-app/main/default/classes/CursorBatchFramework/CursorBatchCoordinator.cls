@@ -144,12 +144,18 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              dedicated trigger user. This is required for cursor access by workers.
      *              By default, checks both CursorBatch_Job__c records and AsyncApexJob to prevent 
      *              duplicate jobs. Override isJobAlreadyRunning() to customize duplicate detection logic.
+     *
+     *              Also where the replay-guard ledger gets swept. Submission is the right place
+     *              for it: far rarer than event delivery, already performing DML, and the
+     *              once-a-day check is a free cached custom-setting read. See
+     *              CursorBatchLedgerCleanup for why it is not done on job completion.
      * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
     public Id submit() {
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(null);
+            CursorBatchLedgerCleanup.maybeSweep(logger);
             return this.jobRecordId;
         }
         return null;
@@ -165,6 +171,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(delayMinutes);
+            CursorBatchLedgerCleanup.maybeSweep(logger);
             return this.jobRecordId;
         }
         return null;

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Worker_Number__c</fullName>
+    <description>Worker number from the worker event, identifying which shard of the cursor this dispatch covered. Blank for the coordinator and completion channels.</description>
+    <externalId>false</externalId>
+    <label>Worker Number</label>
+    <precision>18</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+    <unique>false</unique>
+</CustomField>

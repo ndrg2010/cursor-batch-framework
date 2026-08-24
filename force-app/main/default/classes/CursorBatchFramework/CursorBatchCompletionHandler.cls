@@ -1,9 +1,16 @@
 /**
  * @description Handles CursorBatch_WorkerComplete__e Platform Events. Updates job tracking
  *              records and invokes coordinator callbacks when all workers have completed.
- *              Idempotency (processed-event insert, lookup, and cleanup) runs only for jobs
- *              that have a state reducer configured; non-stateful jobs do not use idempotency tracking.
+ *
+ *              Idempotency runs through CursorBatchReplayGuard for every job, not just the
+ *              stateful ones. It used to be limited to jobs with a state reducer -- 7 of 62
+ *              configurations in the org that hit the 2026-08-24 redelivery -- and its marker
+ *              rows were deleted the moment a job completed, so even the protected jobs were
+ *              defenceless against a replay arriving after completion. The guard's ledger is
+ *              retained by age instead, and is written in this same transaction as the counter
+ *              updates so a rollback takes both.
  * @group CursorBatchFramework
+ * @see CursorBatchReplayGuard
  * @see CursorBatchWorkerFinalizer
  * @see CursorBatchCoordinator
  */
@@ -43,14 +50,23 @@ public without sharing class CursorBatchCompletionHandler {
     
     /**
      * @description Handles worker completion events by updating tracking records and invoking
-     *              callbacks when all workers finish. Idempotency runs only for stateful jobs
-     *              (insert per event, lookup, delete on completion); non-stateful jobs have no
-     *              processed-event DML or idempotency SOQL.
-     *              Job updates are committed before inserting processed-event records so that
-     *              transient insert failures do not roll back the critical job state. If the
-     *              insert fails, a replayed event may apply the same delta again; reducer
-     *              authors should design for occasional double-application (e.g. idempotent
-     *              or commutative reducers).
+     *              callbacks when all workers finish.
+     *
+     *              Every event passes through CursorBatchReplayGuard first, so a redelivered
+     *              completion cannot apply its counters or its state delta a second time. The
+     *              guard's ledger write and the counter updates share this transaction: a
+     *              rollback takes both, leaving the events legitimately eligible for redelivery,
+     *              rather than committing the effect and losing the marker.
+     *
+     *              Only the guard's exactly-once layer is enabled here; the job-state and
+     *              staleness layers are both off. Delivery order across batches is not
+     *              guaranteed, so a non-final page event can legitimately arrive after the last
+     *              worker's final event has already pushed the job terminal, and a completion
+     *              event is a report rather than a dispatch -- blocking one discards the record
+     *              that work already happened, and is the one rejection nothing can reconcile.
+     *              The ledger is exact, so it needs no heuristic help, and the duplicate finish()
+     *              a late event might otherwise cause is prevented by the completion transition
+     *              check further down.
      * @param events CursorBatch_WorkerComplete__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_WorkerComplete__e> events) {
@@ -71,28 +87,11 @@ public without sharing class CursorBatchCompletionHandler {
         // Query job records
         Map<Id, CursorBatch_Job__c> jobsMap = CursorBatchSelector.getJobsByIds(eventsByJob.keySet());
         
-        // Idempotency: already-processed (Job, ReplayId) from previous transactions. Only for
-        // stateful jobs (reducer configured) to protect shared state from replay; no insert/cleanup for non-stateful jobs.
-        Set<String> statefulEventKeysInBatch = new Set<String>();
-        for (Id jobId : eventsByJob.keySet()) {
-            CursorBatch_Job__c job = jobsMap.get(jobId);
-            if (job != null && CursorBatchStateManager.getReducer(job.Job_Name__c) != null) {
-                for (CursorBatch_WorkerComplete__e evt : eventsByJob.get(jobId)) {
-                    String key = getEventKey(evt);
-                    if (String.isNotBlank(key)) {
-                        statefulEventKeysInBatch.add(key);
-                    }
-                }
-            }
-        }
-        Set<String> alreadyProcessedKeys = getAlreadyProcessedEventKeys(statefulEventKeysInBatch);
-        Set<String> processedInThisBatch = new Set<String>();
-        List<CursorBatch_Processed_Event__c> processedEventsToInsert = new List<CursorBatch_Processed_Event__c>();
+        CursorBatchReplayGuard.Verdict verdict = runReplayGuard(eventsByJob, jobsMap);
         
         // One entry per job Id (no duplicate job records in list).
         List<CursorBatch_Job__c> jobsToUpdate = new List<CursorBatch_Job__c>();
         List<CursorBatch_Job__c> completedJobs = new List<CursorBatch_Job__c>();
-        Set<Id> completedStatefulJobIds = new Set<Id>();
         
         for (Id jobId : eventsByJob.keySet()) {
             CursorBatch_Job__c job = jobsMap.get(jobId);
@@ -100,7 +99,6 @@ public without sharing class CursorBatchCompletionHandler {
                 logger.logError('CursorBatchCompletionHandler: Job not found: ' + jobId);
                 continue;
             }
-            Boolean isStatefulJob = CursorBatchStateManager.getReducer(job.Job_Name__c) != null;
             
             List<CursorBatch_WorkerComplete__e> jobEvents = eventsByJob.get(jobId);
             Integer batchSuccessCount = 0;  // Tracks page/batch completions
@@ -115,9 +113,11 @@ public without sharing class CursorBatchCompletionHandler {
             List<String> workerFailures = new List<String>();
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
-                String eventKey = isStatefulJob ? getEventKey(evt) : null;
-                if (String.isNotBlank(eventKey) && (alreadyProcessedKeys.contains(eventKey) || processedInThisBatch.contains(eventKey))) {
-                    continue; // Replay or duplicate in same batch: skip
+                String eventKey = getEventKey(evt);
+                // claim(), not a set lookup: one batch can carry the same event twice, and a
+                // non-consuming check would count its counters and its state delta twice.
+                if (String.isNotBlank(eventKey) && !verdict.claim(eventKey)) {
+                    continue; // Replay, or a duplicate within this batch
                 }
                 
                 // Aggregate worker retry counts
@@ -136,8 +136,7 @@ public without sharing class CursorBatchCompletionHandler {
                                 job.State_JSON__c = newStateJson;
                             }
                         } catch (Exception e) {
-                            String evtKey = getEventKey(evt);
-                            logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + (String.isNotBlank(evtKey) ? ', eventKey=' + evtKey : '') + ', skipping delta', e);
+                            logger.logException('CursorBatchCompletionHandler: State reduction failed for job ' + job.Job_Name__c + (String.isNotBlank(eventKey) ? ', eventKey=' + eventKey : '') + ', skipping delta', e);
                         }
                     }
                     // Only count toward Workers_Finished if this is the final page
@@ -155,14 +154,6 @@ public without sharing class CursorBatchCompletionHandler {
                     );
                 }
                 
-                if (String.isNotBlank(eventKey)) {
-                    processedInThisBatch.add(eventKey);
-                    processedEventsToInsert.add(new CursorBatch_Processed_Event__c(
-                        Cursor_Batch_Job__c = jobId,
-                        Replay_Id__c = getReplayIdString(evt),
-                        Processed_Event_Key__c = eventKey
-                    ));
-                }
             }
             
             logWorkerFailures(job, workerFailures);
@@ -173,6 +164,14 @@ public without sharing class CursorBatchCompletionHandler {
             }
             if (job.Workers_Finished__c == null) {
                 job.Workers_Finished__c = 0;
+            }
+            // Defensive rather than load-bearing: the field defaults to 0, so it is null only if
+            // something explicitly nulled it. Guarded anyway because
+            // CursorBatchWorkerCompleteTrigger has no try/catch, so an NPE here would roll back
+            // the whole subscriber batch rather than failing this one job -- the two counters
+            // above are guarded for the same reason.
+            if (job.Failed_Workers__c == null) {
+                job.Failed_Workers__c = 0;
             }
             
             job.Completed_Batches__c += batchSuccessCount;
@@ -208,9 +207,6 @@ public without sharing class CursorBatchCompletionHandler {
                     job.Completed_At__c = System.now();
                 }
                 completedJobs.add(job);
-                if (isStatefulJob) {
-                    completedStatefulJobIds.add(job.Id);
-                }
             }
             
             jobsToUpdate.add(job);
@@ -218,38 +214,6 @@ public without sharing class CursorBatchCompletionHandler {
         
         if (!jobsToUpdate.isEmpty()) {
             update jobsToUpdate;
-        }
-        
-        // Idempotency DML: insert processed-event records (stateful jobs only); wrapped so failure does not roll back job updates
-        if (!processedEventsToInsert.isEmpty()) {
-            try {
-                insert processedEventsToInsert;
-            } catch (Exception e) {
-                logger.logException('CursorBatchCompletionHandler: Failed to record processed events for idempotency', e);
-            }
-        }
-        
-        // Clean up idempotency records for completed stateful jobs only. In test run inline delete
-        // so tests don't depend on async; otherwise enqueue one Queueable per chunk of 200 job IDs
-        // (CursorBatchProcessedEventCleanup.MAX_JOB_IDS_PER_QUERY) to clean all completed jobs.
-        if (!completedStatefulJobIds.isEmpty()) {
-            try {
-                if (Test.isRunningTest()) {
-                    delete [SELECT Id FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c IN :completedStatefulJobIds];
-                } else {
-                    List<Id> idList = new List<Id>(completedStatefulJobIds);
-                    Integer chunkSize = 200;
-                    for (Integer i = 0; i < idList.size(); i += chunkSize) {
-                        Set<Id> chunk = new Set<Id>();
-                        for (Integer j = i; j < Math.min(i + chunkSize, idList.size()); j++) {
-                            chunk.add(idList[j]);
-                        }
-                        System.enqueueJob(new CursorBatchProcessedEventCleanup(chunk));
-                    }
-                }
-            } catch (Exception e) {
-                logger.logException('CursorBatchCompletionHandler: Failed to clean up processed events for completed jobs', e);
-            }
         }
         
         // Invoke callbacks for completed jobs using 4-path finish logic.
@@ -307,13 +271,46 @@ public without sharing class CursorBatchCompletionHandler {
             .logError(CursorBatchLogger.scoped(CursorBatchLogger.SCOPE_WORKER_FAILED, summary));
     }
     
-    private static String getEventKey(CursorBatch_WorkerComplete__e evt) {
-        Id jobId = evt.Job_Id__c;
-        String replayIdStr = getReplayIdString(evt);
-        if (jobId == null || String.isBlank(replayIdStr)) {
-            return null;
+    /**
+     * @description Runs the replay guard over every event in this batch.
+     *
+     *              The job records have already been queried for the counter update, so their
+     *              names are passed through on each candidate and the guard does not need a
+     *              second query. The job-state layer stays off; see handle() for why.
+     * @param eventsByJob Events grouped by job Id
+     * @param jobsMap Job records already queried for this batch
+     * @return Verdict naming which events may be counted
+     */
+    private CursorBatchReplayGuard.Verdict runReplayGuard(
+        Map<Id, List<CursorBatch_WorkerComplete__e>> eventsByJob,
+        Map<Id, CursorBatch_Job__c> jobsMap
+    ) {
+        List<CursorBatchReplayGuard.Candidate> candidates = new List<CursorBatchReplayGuard.Candidate>();
+        for (Id jobId : eventsByJob.keySet()) {
+            CursorBatch_Job__c job = jobsMap.get(jobId);
+            for (CursorBatch_WorkerComplete__e evt : eventsByJob.get(jobId)) {
+                String eventKey = getEventKey(evt);
+                if (String.isBlank(eventKey)) {
+                    // No ReplayId means no identity to dedupe on, which is the case in tests
+                    // where events are constructed rather than published. Such events are
+                    // counted, matching the pre-guard behaviour.
+                    continue;
+                }
+                CursorBatchReplayGuard.Candidate candidate = new CursorBatchReplayGuard.Candidate(
+                    eventKey, jobId, job?.Job_Name__c, evt.CreatedDate
+                );
+                candidate.replayId = getReplayIdString(evt);
+                candidates.add(candidate);
+            }
         }
-        return jobId + '#' + replayIdStr;
+        
+        return new CursorBatchReplayGuard(
+            CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE, logger
+        ).withTerminalJobGate(false).withStalenessGate(false).admit(candidates);
+    }
+    
+    private static String getEventKey(CursorBatch_WorkerComplete__e evt) {
+        return CursorBatchReplayGuard.buildCompletionKey(evt.Job_Id__c, getReplayIdString(evt));
     }
     
     private static String getReplayIdString(CursorBatch_WorkerComplete__e evt) {
@@ -321,24 +318,6 @@ public without sharing class CursorBatchCompletionHandler {
         return replayId != null ? String.valueOf(replayId) : null;
     }
     
-    private static Set<String> getAlreadyProcessedEventKeys(Set<String> eventKeys) {
-        if (eventKeys == null || eventKeys.isEmpty()) {
-            return new Set<String>();
-        }
-        List<String> keyList = new List<String>(eventKeys);
-        List<CursorBatch_Processed_Event__c> existing = [
-            SELECT Processed_Event_Key__c
-            FROM CursorBatch_Processed_Event__c
-            WHERE Processed_Event_Key__c IN :keyList
-        ];
-        Set<String> result = new Set<String>();
-        for (CursorBatch_Processed_Event__c pe : existing) {
-            if (String.isNotBlank(pe.Processed_Event_Key__c)) {
-                result.add(pe.Processed_Event_Key__c);
-            }
-        }
-        return result;
-    }
     
     /**
      * @description Routes the finish callback for a completed job using 4-path logic.

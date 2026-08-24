@@ -38,6 +38,193 @@ private without sharing class CursorBatchCoordinatorTriggerHandlerTest {
         Assert.isTrue(true, 'Handler should gracefully handle empty events list');
     }
     
+    // =====================================================================================
+    // Replay guard wiring
+    // =====================================================================================
+    //
+    // This channel was not the one the event bus rewound on 2026-08-24, but the exposure is
+    // worse per event: a coordinator event carries a pre-created job record Id, so a
+    // redelivered one would re-run the coordinator against an existing job and fan the whole
+    // job out a second time. The guard's layers are tested in CursorBatchReplayGuardTest;
+    // these cover the handler's own responsibilities.
+
+    @IsTest
+    static void guardBlocksRedispatchForATerminalJob() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+
+        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
+            new CursorBatch_Coordinator__e(
+                Job_Name__c = 'TestJob',
+                Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+                Job_Record_Id__c = jobRecord.Id,
+                Delay_Minutes__c = null
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchCoordinatorTriggerHandler().handle(events);
+        Test.stopTest();
+
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'A coordinator event for a completed job must be blocked, and a blocked event is never ledgered.');
+    }
+
+    @IsTest
+    static void guardLedgersADispatchedCoordinatorEvent() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+
+        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
+            new CursorBatch_Coordinator__e(
+                Job_Name__c = 'TestJob',
+                Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+                Job_Record_Id__c = jobRecord.Id,
+                Delay_Minutes__c = null
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchCoordinatorTriggerHandler().handle(events);
+        Test.stopTest();
+
+        List<CursorBatch_Event_Ledger__c> ledger = [
+            SELECT Event_Key__c, Channel__c FROM CursorBatch_Event_Ledger__c
+        ];
+        Assert.areEqual(1, ledger.size(), 'A dispatched coordinator event must leave one ledger row.');
+        Assert.areEqual(
+            CursorBatchReplayGuard.buildCoordinatorKey(jobRecord.Id, 'CursorBatchTestUtils.TestCursorBatchCoordinator'),
+            ledger[0].Event_Key__c,
+            'The handler must key the event on job record and coordinator class.');
+        Assert.areEqual(CursorBatchReplayGuard.CHANNEL_COORDINATOR, ledger[0].Channel__c,
+            'The row must be attributed to the coordinator channel.');
+    }
+
+    @IsTest
+    static void guardKeepsCsvCallbacksDistinctFromTheInitialDispatch() {
+        // All three events carry the same job record Id. If the key did not include the class,
+        // the CSV_Ready callback would be blocked as a replay of the dispatch that preceded it.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        jobRecord.Status__c = 'Extracting File';
+        update jobRecord;
+
+        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
+            new CursorBatch_Coordinator__e(
+                Job_Name__c = 'TestJob',
+                Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+                Job_Record_Id__c = jobRecord.Id
+            ),
+            new CursorBatch_Coordinator__e(
+                Job_Name__c = 'csv-cursor-query-123',
+                Coordinator_Class__c = 'CSV_Ready',
+                Job_Record_Id__c = jobRecord.Id
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchCoordinatorTriggerHandler().handle(events);
+        Test.stopTest();
+
+        Assert.areEqual(2, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'A dispatch and a CSV_Ready callback on the same job must both be admitted.');
+    }
+
+    @IsTest
+    static void redeliveredCoordinatorEventIsBlocked() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+        String coordinatorClass = 'CursorBatchTestUtils.TestCursorBatchCoordinator';
+        insert new CursorBatch_Event_Ledger__c(
+            Event_Key__c = CursorBatchReplayGuard.buildCoordinatorKey(jobRecord.Id, coordinatorClass),
+            Channel__c = CursorBatchReplayGuard.CHANNEL_COORDINATOR
+        );
+
+        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>{
+            new CursorBatch_Coordinator__e(
+                Job_Name__c = 'TestJob',
+                Coordinator_Class__c = coordinatorClass,
+                Job_Record_Id__c = jobRecord.Id
+            )
+        };
+
+        Test.startTest();
+        new CursorBatchCoordinatorTriggerHandler().handle(events);
+        Test.stopTest();
+
+        Assert.areEqual(1, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'A redelivered coordinator event must collide with the existing marker rather than re-fanning out the job.');
+    }
+
+    @IsTest
+    static void staleCoordinatorEventFailsTheJobRatherThanStrandingIt() {
+        // The coordinator never ran, so without this the job sits in Preparing forever -- and
+        // because isJobAlreadyRunning treats Preparing as running, every future submission of
+        // that job name would silently return null and the job would never run again.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+
+        // Published rather than constructed: a constructed event has a null CreatedDate, and the
+        // guard treats an unknowable age as not stale. Advancing the guard clock past the real
+        // publish time is what trips the staleness layer.
+        CursorBatchReplayGuard.nowOverride = System.now().addHours(5);
+
+        Test.startTest();
+        EventBus.publish(new CursorBatch_Coordinator__e(
+            Job_Name__c = 'TestJob',
+            Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            Job_Record_Id__c = jobRecord.Id
+        ));
+        Test.getEventBus().deliver();
+        Test.stopTest();
+
+        CursorBatch_Job__c reloaded = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Failed', reloaded.Status__c,
+            'A job whose coordinator event was rejected as stale must be failed, not left in Preparing.');
+        Assert.isNotNull(reloaded.Completed_At__c,
+            'The job must be genuinely terminal so future submissions are no longer blocked.');
+        Assert.isTrue(reloaded.Error_Message__c.contains('stale'),
+            'The job record must say why it never started.');
+    }
+
+    @IsTest
+    static void twoIdenticalCoordinatorEventsInOneBatchDispatchOnce() {
+        // Dispatching a coordinator twice re-fans-out an entire job, so the in-batch dedupe
+        // matters more here per event than on any other channel.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 2, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0
+        );
+
+        CursorBatch_Coordinator__e duplicate = new CursorBatch_Coordinator__e(
+            Job_Name__c = 'TestJob',
+            Coordinator_Class__c = 'CursorBatchTestUtils.TestCursorBatchCoordinator',
+            Job_Record_Id__c = jobRecord.Id
+        );
+
+        Test.startTest();
+        new CursorBatchCoordinatorTriggerHandler().handle(
+            new List<CursorBatch_Coordinator__e>{ duplicate, duplicate.clone(false, true, false, false) }
+        );
+        Test.stopTest();
+
+        Assert.areEqual(1, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c],
+            'The same coordinator event delivered twice in one batch must be dispatched exactly once.');
+    }
+
     @IsTest
     static void testHandleWithValidEvent() {
         // Arrange

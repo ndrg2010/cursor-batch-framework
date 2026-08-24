@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Event_Key__c</fullName>
+    <description>Deterministic identity of the Platform Event, composed by CursorBatchReplayGuard. Unique, so inserting a second row for the same event fails with DUPLICATE_VALUE -- that failure is how a redelivery is detected. Format is channel-prefixed: W#jobRecordId#cursorQueryId#workerNumber, C#jobRecordId#coordinatorClass, or jobRecordId#replayId for the completion channel. A key longer than 255 characters is replaced by its SHA-256 digest; the components remain readable in their own fields.</description>
+    <externalId>true</externalId>
+    <label>Event Key</label>
+    <length>255</length>
+    <required>true</required>
+    <type>Text</type>
+    <unique>true</unique>
+</CustomField>

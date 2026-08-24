@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <customSettingsType>Hierarchy</customSettingsType>
+    <description>Org-level runtime state for the CursorBatch framework. A hierarchy custom setting rather than custom metadata because the framework writes to it: getOrgDefaults() is a free cached read with no SOQL cost, which is what makes the ledger retention sweep affordable to trigger from the job submission path.</description>
+    <enableFeeds>false</enableFeeds>
+    <label>Cursor Batch Settings</label>
+    <visibility>Public</visibility>
+</CustomObject>

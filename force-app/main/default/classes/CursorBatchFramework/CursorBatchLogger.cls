@@ -32,6 +32,7 @@ public without sharing class CursorBatchLogger implements ICursorBatchLogger {
     public static final String SCOPE_JOB_FINISH_FAILED = 'JOB FINISH FAILED';
     public static final String SCOPE_JOB_CHAIN_FAILED = 'JOB CHAIN FAILED';
     public static final String SCOPE_WORKER_FAILED = 'WORKER FAILED';
+    public static final String SCOPE_EVENT_REPLAY_BLOCKED = 'EVENT REPLAY BLOCKED';
     
     // ============== Scope tags ==============
     // Applied alongside Logger_Tag__c so subscribers can filter by scope without parsing messages.
@@ -41,6 +42,7 @@ public without sharing class CursorBatchLogger implements ICursorBatchLogger {
     public static final String TAG_JOB_FINISH_FAILURE = 'CursorBatch Job Finish Failure';
     public static final String TAG_JOB_CHAIN_FAILURE = 'CursorBatch Job Chain Failure';
     public static final String TAG_WORKER_FAILURE = 'CursorBatch Worker Failure';
+    public static final String TAG_REPLAY_BLOCKED = 'CursorBatch Replay Blocked';
     
     /** Prefix for the tag derived from a platform error code in AsyncApexJob.ExtendedStatus. */
     public static final String TAG_FAILURE_CODE_PREFIX = 'CursorBatch Failure ';

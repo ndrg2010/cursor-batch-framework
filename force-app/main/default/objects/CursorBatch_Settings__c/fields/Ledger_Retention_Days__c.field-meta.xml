@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Ledger_Retention_Days__c</fullName>
+    <description>How long CursorBatch_Event_Ledger__c rows are kept. Blank uses the framework default of 7 days. This must exceed the longest replay the event bus could deliver: the 2026-08-24 incident replayed events 103 hours old on a channel whose documented retention is 24 hours, so a value below about 5 days leaves a window in which a replay finds no marker and is admitted.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Days of event ledger history to keep. Blank uses 7. Values below 5 risk missing a long replay.</inlineHelpText>
+    <label>Ledger Retention (days)</label>
+    <precision>4</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

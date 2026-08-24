@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Replay_Id__c</fullName>
+    <description>Platform Event ReplayId at the time of admission. Diagnostic rather than functional for the dispatch channels, whose keys are derived from job identity, but it is the only customer-visible handle on bus position and is what a redelivery investigation needs.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Platform Event ReplayId recorded when this event was admitted.</inlineHelpText>
+    <label>Replay Id</label>
+    <length>255</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

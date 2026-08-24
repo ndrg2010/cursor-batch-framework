@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Max_Event_Age_Minutes__c</fullName>
+    <description>Staleness threshold for CursorBatchReplayGuard. A Platform Event whose own CreatedDate is older than this is rejected without being dispatched. Blank uses the framework default of 60 minutes. Set to -1 to disable the age gate for this job, which is only appropriate for a job whose events can legitimately sit undelivered for hours.</description>
+    <externalId>false</externalId>
+    <fieldManageability>SubscriberControlled</fieldManageability>
+    <inlineHelpText>Reject events older than this many minutes. Leave blank for the default of 60. Set to -1 to disable the age check for this job.</inlineHelpText>
+    <label>Max Event Age (min)</label>
+    <precision>9</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

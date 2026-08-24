@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Cursor_Query_Id__c</fullName>
+    <description>Cursor queryId (SOQL) or csvCursorQuery session id (CSV) the event carried. Part of the worker key: a legitimate coordinator retry builds a new cursor and so produces a new queryId, which is what lets a genuine re-fan-out through while a redelivery of the same queryId is blocked.</description>
+    <externalId>false</externalId>
+    <label>Cursor Query Id</label>
+    <length>255</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

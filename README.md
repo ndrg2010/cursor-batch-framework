@@ -36,6 +36,7 @@ Traditional Salesforce batch processing has limitations:
   - [Option B: Custom Coordinator Classes](#option-b-custom-coordinator-classes)
   - [Option C: CSV / Excel File Processing](#option-c-csv--excel-file-processing)
 - [Architecture](#architecture)
+  - [Replay Guard](#replay-guard)
 - [Configuration Reference](#configuration-reference)
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
 - [Advanced Usage](#advanced-usage)
@@ -72,13 +73,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000QXQ9AAO) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000QXQ9AAO) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000TKL7AAO) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000TKL7AAO) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000QXQ9AAO --target-org your-org --wait 10
+sf package install --package 04tfj000000TKL7AAO --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -684,7 +685,7 @@ This matters because a `CursorBatch_WorkerComplete__e` batch can legitimately ar
 | Scenario | Why it happens |
 |----------|----------------|
 | Late page event | Worker page chaining doesn't depend on the completion handler, so a delayed non-final page event can land after every worker has reported its final page |
-| Redelivered event | Platform Event delivery is at-least-once. Non-stateful jobs have no processed-event idempotency (that's only enabled for stateful jobs), so a redelivered final event reaches the handler |
+| Redelivered event | Platform Event delivery is at-least-once. [Replay Guard](#replay-guard) blocks a redelivered final event, but the guard's job-state layer is deliberately off on this channel (a late page event is legitimate), so the transition check remains the backstop |
 
 Without the transition check, either case would fire `finish()` a second time and duplicate whatever it chains to — a chained job, a callout, a notification.
 
@@ -791,6 +792,99 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
                           └───────────────────────┘
 ```
 
+### Replay Guard
+
+Platform Event delivery is **at-least-once**. The bus can re-deliver events a subscriber has already acknowledged, and when it does, nothing about the event says so — a redelivered event is byte-identical to the original. Every one of the framework's three subscribers therefore runs incoming events through `CursorBatchReplayGuard` before acting on them.
+
+This is not theoretical. On 2026-08-24 a production event bus rewound the committed subscriber offset for `CursorBatch_Worker__e` and re-delivered ~51,000 already-acknowledged events, the oldest 103 hours old on a channel whose documented retention is 24 hours. In that hour the channel recorded 43 publishes against 51,085 deliveries. Because the worker trigger enqueued a job on every delivery without checking whether it had seen the event before, the redelivery executed real business logic a second time: **314,453 asynchronous jobs in about ninety minutes, against a baseline of 10,000–15,000 per day.**
+
+The guard applies three independent layers, cheapest first.
+
+| Layer | Cost | Rejects | Applied on |
+|-------|------|---------|-----------|
+| **1. Job state** | One non-locking SOQL per subscriber batch | Events whose `CursorBatch_Job__c` is missing, terminal, or has `Completed_At__c` set | Dispatch channels |
+| **2. Staleness** | None — the event carries its own `CreatedDate` | Events older than `Max_Event_Age_Minutes__c` (default 60) | Dispatch channels |
+| **3. Exactly-once** | One DML per subscriber batch | Events whose identity is already in `CursorBatch_Event_Ledger__c` | All three channels |
+
+They are independent on purpose. Any one of them stops a replay, so a loosened age threshold or a purged ledger does not leave a subscriber defenceless. Layers 1 and 2 would each have absorbed the 2026-08-24 event on their own — the replayed events were hours to days old, and every one belonged to a job that had already completed. Layer 3 covers the in-flight window the other two cannot.
+
+Job state is tested first even though staleness is the cheaper predicate. The job query has already run for the whole batch, so the ordering is free, and it makes a rejection reason of `STALE` mean specifically "the job is live and this shard arrived late" — the only case that can be safely reconciled, and the reason a replay of the 2026-08-24 shape produces no follow-on work at all.
+
+**Event identity** is per channel:
+
+| Channel | Key | Why |
+|---------|-----|-----|
+| `CursorBatch_Worker__e` | `W#jobRecordId#cursorQueryId#workerNumber` | Worker events are published exactly once per worker at fan-out; pages and retries chain with `System.enqueueJob` and never republish. Including the cursor queryId is what keeps a legitimate coordinator retry working — a retry builds a fresh cursor, so it gets a fresh key, while a redelivery carries the original queryId and collides |
+| `CursorBatch_Coordinator__e` | `C#jobRecordId#coordinatorClass` | The job record is created per submission, so it identifies the run. The class component keeps the `CSV_Ready` and `CSV_Error` callbacks from colliding with the initial dispatch for the same job |
+| `CursorBatch_WorkerComplete__e` | `jobRecordId#replayId` | A worker publishes one completion per page plus one final, so there is no job-derived identity; the bus ReplayId is the only thing that distinguishes them |
+
+Keys longer than 255 characters are stored as a SHA-256 digest. The components stay readable in their own ledger fields either way.
+
+**The completion channel runs on the exactly-once layer alone.** Both heuristic layers are disabled there, because a completion event is a *report* rather than a dispatch — blocking one doesn't prevent work, it discards the record that work already happened. Two specific reasons:
+
+- Delivery order across batches is not guaranteed, so a non-final page event can legitimately arrive after the last worker's final event has already pushed the job terminal. Rejecting it would lose a `Completed_Batches__c` increment.
+- It is the one rejection nothing can reconcile. The dispatch channels can report a rejected shard as a failed worker (below); there is nothing to report when the report itself is what got dropped, so the job would simply never reach a terminal status.
+
+The ledger is exact rather than heuristic, and its retention already exceeds the observed replay horizon, so it needs no help here. The duplicate `finish()` a late event might otherwise cause is prevented by the completion transition check in `CursorBatchCompletionHandler`.
+
+#### A blocked dispatch never strands its job
+
+Blocking an event is only safe if the job can still finish. `Total_Workers__c` still counts a shard the guard rejected, so without reconciliation `Workers_Finished__c + Failed_Workers__c` could never reach it: the job would sit in `Processing` forever, `finish()` would never fire, and because `isJobAlreadyRunning` treats `Processing` as running, **every future submission of that job name would silently return `null`**. One dropped event would retire the job permanently — a worse outcome than the replay.
+
+So a `STALE` rejection is reconciled:
+
+| Channel | Reconciliation |
+|---------|----------------|
+| `CursorBatch_Worker__e` | Publishes the same completion event a worker publishes after exhausting its retries, so the shard counts as a failed worker. The terminal transition, parent mirror, and `finish()` routing all stay in `CursorBatchCompletionHandler` where they belong |
+| `CursorBatch_Coordinator__e` | Marks the job `Failed` with the reason, mirroring `handleCsvError` — the coordinator never ran, so there is no fan-out to report against |
+
+Only `STALE` is reconciled. `JOB_TERMINAL` and `JOB_MISSING` have no live job to report against, and `DUPLICATE` means the work was already dispatched and will report on its own — reporting it again would double-count. Either way the job record carries the reason, so a rejection is discoverable without reading logs.
+
+#### Ledger retention
+
+`CursorBatch_Event_Ledger__c` has no relationship to `CursorBatch_Job__c`, so markers survive both job completion and job deletion. That matters: the framework previously deleted its idempotency markers the moment a job completed, which is exactly why the 2026-08-24 replay — arriving long after completion — found nothing to collide with.
+
+Retention is by age, defaulting to **7 days**, comfortably past the 103-hour replay actually observed. Configure it on the `CursorBatch_Settings__c` hierarchy custom setting:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `Ledger_Retention_Days__c` | 7 | Days of ledger history to keep. Values below about 5 leave a window in which a long replay finds no marker. A value below 1 is treated as a misconfiguration and ignored |
+| `Last_Ledger_Sweep__c` | — | When the sweep last ran. Clear it to force a sweep on the next job submission |
+
+**Nothing needs scheduling.** Unlocked packages support no post-install script, so instead of asking you to remember a setup step, `CursorBatchCoordinator` checks on job submission whether a sweep is due and enqueues `CursorBatchLedgerCleanup` at most once every 24 hours. The check is a `getOrgDefaults()` read, which is free — no SOQL, no governor consumption — and job submission is orders of magnitude rarer than event delivery.
+
+If you would rather sweep in a known window, schedule it explicitly. Doing so stamps the same timestamp, so the self-throttled path stands down:
+
+```apex
+System.schedule(
+    'CursorBatch Ledger Cleanup',
+    '0 0 2 * * ?',
+    new CursorBatchLedgerCleanupSchedule()
+);
+```
+
+The sweep is deliberately **not** triggered on job completion. During the 2026-08-24 replay 11,425 jobs went terminal inside 28 minutes; a completion-triggered sweep would have enqueued 11,425 cleanup jobs on top of the 314,453 already in flight. A cleanup mechanism that multiplies during a replay storm is worse than no cleanup at all.
+
+#### There is no off switch, and that's deliberate
+
+The guard is always on, for every job. A guard that can be disabled isn't a guarantee — and "disabled and forgotten" is precisely the state the framework was already in when the 2026-08-24 replay arrived.
+
+There is exactly one opt-out, and it is deliberately the narrowest one: `Max_Event_Age_Minutes__c = -1` disables the staleness layer for a single job. That's the only layer that can reject a legitimate event, because an age threshold is a judgment call. The other two can't be wrong by construction — an event for a job that's gone or already terminal is never legitimate, and a key collision means literally the same event — so there's nothing to opt out of.
+
+So if a job's delivery timing is genuinely unpredictable, widen or disable its age gate and keep the two exact layers. That's strictly better than a blanket off switch, which would surrender the protections that have no false-positive risk in order to relax the one that does.
+
+#### Observability
+
+Rejections are logged at **ERROR**, not INFO, and **once per transaction** rather than once per event.
+
+Both choices come from the incident. The org's logging threshold was `WARN`, which suppressed exactly the dispatch-path INFO lines that would have made diagnosis immediate — it took nine separate forensic audits instead. And per-entry logging is what turned the replay into an org-wide outage: 676,439 log events in one hour, 79.7% of the org's entire hourly platform-event publish allocation, which then breached that allocation and stopped *all* custom platform event publishing org-wide for fifteen minutes. A guard that logged per blocked event would reproduce that precisely.
+
+Entries carry the `CursorBatch Replay Blocked` tag and the `EVENT REPLAY BLOCKED` scope, so you can alert on them directly. Worth pairing with a delivered/published ratio alert per `(channel, subscriber)` on `PlatformEventUsageMetric` — that ratio is what detected the incident in the first place, and it sits above 1.0 during a redelivery.
+
+#### Failure behavior
+
+If the ledger write fails for a reason other than a duplicate key, the guard **admits the event** and logs the failure. Layers 1 and 2 remain in force, and silently dropping legitimate batch work because a bookkeeping insert failed is the worse outcome. This matches the ordering the framework already uses elsewhere: job state first, markers best-effort.
+
 ## Configuration Reference
 
 ### CursorBatch_Config__mdt Fields
@@ -808,6 +902,14 @@ Database.Cursor cursor = (Database.Cursor) JSON.deserialize(
 | `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
 | `Processing_Type__c` | Text(10) | `SOQL` | Data source type: `SOQL` for cursor-based queries, `CSV` for file-based processing via external middleware |
 | `Enable_State_Reducer__c` | Checkbox | `false` | When enabled, uses built-in `CursorBatchCounterReducer` for additive numeric counter state (no custom reducer class needed). Ignored when `State_Reducer_Class__c` is set |
+
+#### Replay Guard Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Max_Event_Age_Minutes__c` | Number | 60 | Reject Platform Events older than this. Blank uses 60. Set to `-1` to disable the age check for a job whose events can legitimately sit undelivered for hours. This is the guard's only opt-out, and it narrows only the staleness layer — see [There is no off switch](#there-is-no-off-switch-and-thats-deliberate) |
+
+The guard itself is always on and needs no configuration. See [Replay Guard](#replay-guard).
 
 #### CursorJob Settings (Metadata-Driven Jobs)
 
@@ -1526,12 +1628,12 @@ public class MyStatefulWorker extends CursorBatchWorker {
 - Workers do **not** write shared state directly; they emit deltas that are merged later in `CursorBatchCompletionHandler`
 - Deltas are only applied after a page succeeds and its completion event is processed
 - Reducers should be deterministic, preferably idempotent, and commutative (order of delta application must not affect the final result) because event delivery order across batches is not guaranteed
-- If recording the processed event fails after state has been updated, a replayed event may apply the same delta again; design reducers for occasional double-application (e.g. idempotent or commutative)
+- [Replay Guard](#replay-guard) writes its idempotency marker in the same transaction as the state update, so a rollback takes both and a redelivery cannot apply the same delta twice. Reducers should still be idempotent or commutative, because the guard fails open if the ledger write itself errors
 - The final reduced state is persisted on `CursorBatch_Job__c.State_JSON__c` and is available to `worker.finish()`
 - State reads are lazy — SOQL only runs when the worker calls `getCurrentState()`, so pages that only emit deltas incur zero read overhead
 - Serialized state and deltas are validated against the 131,072-character field limit; oversized values are discarded with an error log
-- Idempotency tracking (via `CursorBatch_Processed_Event__c`) runs only for stateful jobs; non-stateful jobs have zero overhead
-- Processed event records are cleaned up asynchronously via `CursorBatchProcessedEventCleanup` when a stateful job completes
+- Idempotency applies to **every** job as of v0.34, via [Replay Guard](#replay-guard) and `CursorBatch_Event_Ledger__c`. It was previously limited to stateful jobs, and its markers were deleted on job completion — which is why a replay arriving after completion was admitted
+- Ledger markers are retained by age and swept automatically; see [Ledger retention](#ledger-retention)
 
 #### Per-Worker Page-to-Page State
 
@@ -2109,6 +2211,28 @@ transaction per worker.
 
 ## Migration Guide
 
+### Upgrading to v0.34 (Replay Guard)
+
+**Every Platform Event now passes through [Replay Guard](#replay-guard) before a subscriber acts on it.** This is the framework's response to a production incident in which a rewound subscriber offset re-delivered ~51,000 already-acknowledged worker events and turned them into 314,453 asynchronous jobs. Read that section for the full mechanism; this covers what changes for an existing org.
+
+**No code change and no configuration are required.** The guard is always on, its defaults are the protective ones, and nothing about the worker, coordinator, or job API changed.
+
+Five things are worth knowing:
+
+1. **Two new objects deploy with the package.** `CursorBatch_Event_Ledger__c` holds one row per admitted event; `CursorBatch_Settings__c` holds retention config and the sweep timestamp. At roughly 30,000 events a day across all three channels and the default 7-day retention, expect the ledger to settle around 200,000 rows. Tune `Ledger_Retention_Days__c` if that matters, but keep it above 5 — the replay this guard exists for reached back 103 hours.
+
+2. **Idempotency now covers every job, not just stateful ones.** It used to apply only to jobs with a state reducer — 7 of 62 configurations in the org that hit the incident. There is nothing to configure; the guard replaces that path entirely.
+
+3. **Markers are no longer deleted when a job completes.** `CursorBatchCompletionHandler` used to purge them on completion, which is precisely why a replay arriving after completion was admitted. Retention is by age now, swept automatically. `CursorBatch_Processed_Event__c` and `CursorBatchProcessedEventCleanup` are deprecated and no longer written to or called — drain any leftover rows at your leisure, then drop them.
+
+4. **A blocked event is logged at ERROR under the `CursorBatch Replay Blocked` tag.** If you have alerting on ERROR-level framework entries, expect to hear from it the first time an event is genuinely rejected. That is the point, but it is worth knowing before it happens.
+
+5. **A job whose dispatch event is rejected as stale is marked `Failed`, not left running.** See [A blocked dispatch never strands its job](#a-blocked-dispatch-never-strands-its-job). This is deliberate: a visibly failed job can be re-run, whereas a job stuck in `Processing` blocks every future submission of that name. If you see a job fail with a replay-guard reason on `Error_Message__c`, raise `Max_Event_Age_Minutes__c` for it and re-run.
+
+`Max_Event_Age_Minutes__c` is the one knob, and it measures **delivery lag only** — the gap between the event being published and being processed. It is not affected by how long the work leading up to the publish took, because every publish in this framework happens at the moment the work is ready. A CSV job whose middleware indexes for six hours still produces a `CSV_Ready` callback that is seconds old on arrival. The default of 60 minutes is roughly 25x the p95 delivery latency measured in production, and `-1` disables the check for a job whose timing is genuinely unpredictable.
+
+There is deliberately no switch that turns the guard off; see [There is no off switch](#there-is-no-off-switch-and-thats-deliberate) for why the age sentinel is the better tool.
+
 ### Upgrading to v0.33 (breaking guidance change: remove `setLogger()` from `finish()`)
 
 No API changed, but **previously documented guidance is now wrong and silently drops your log tags.**
@@ -2318,6 +2442,34 @@ Chain_To_Method__c: run
 - Verify `CursorBatchWorkerTrigger` is active
 - Deploy `CursorBatchWorkerTriggerConfig` subscriber config (see [Post-Install Setup](#post-install-setup))
 - Review debug logs for errors
+- Look for `EVENT REPLAY BLOCKED` entries under the `CursorBatch Replay Blocked` tag — [Replay Guard](#replay-guard) may be rejecting the events
+
+### Replay Guard is blocking events it shouldn't
+
+Query the guard's own reporting first. Every rejection is logged at ERROR with the reason (`STALE`, `JOB_MISSING`, `JOB_TERMINAL`, or `DUPLICATE`) and a sample of the keys involved, aggregated to one entry per transaction:
+
+```sql
+SELECT Message__c, Timestamp__c FROM LogEntry__c
+WHERE Message__c LIKE '%EVENT REPLAY BLOCKED%'
+ORDER BY Timestamp__c DESC
+```
+
+The reason tells you which layer fired and therefore what to do:
+
+| Reason | Meaning | Likely fix |
+|--------|---------|------------|
+| `STALE` | Delivery lagged past `Max_Event_Age_Minutes__c` on a job that is still live | Raise the threshold for that job, or set `-1` if its events legitimately arrive hours late. The affected job is marked `Failed` with the reason on `Error_Message__c`, so it can simply be re-run |
+| `JOB_TERMINAL` | The job had already completed, failed, or been cancelled | Usually correct. If the job was cancelled, this is the kill switch working |
+| `JOB_MISSING` | The `CursorBatch_Job__c` record no longer exists | Usually correct — check whether something is deleting job records mid-run |
+| `DUPLICATE` | The event's key was already in the ledger | Usually correct. If a legitimate coordinator retry is being blocked, confirm the retry is rebuilding its cursor rather than reusing the queryId |
+
+A `STALE` rejection is the one to actually act on, because it is the only reason that indicates the guard stopped work that should have run.
+
+Only `STALE` is worth unblocking, and the fix is to widen that job's `Max_Event_Age_Minutes__c` (or set `-1`) and re-run the job. The other three reasons mean the guard is working; suppressing them would re-enable double-execution.
+
+### Ledger row count growing without bound
+
+The sweep runs off the job submission path, so it needs at least one job submission per day to fire. If jobs stopped running, or `Last_Ledger_Sweep__c` is stuck, either clear that field to force a sweep on the next submission or schedule `CursorBatchLedgerCleanupSchedule` explicitly. See [Ledger retention](#ledger-retention).
 
 ### finish() callback not firing
 
@@ -2378,7 +2530,10 @@ Chain_To_Method__c: run
 | `ICursorBatchStateReducer` | Interface for reducer-managed shared state in `CursorJob` |
 | `CursorBatchCounterReducer` | Built-in reducer for additive numeric counters — enables shared state with just a checkbox toggle (`Enable_State_Reducer__c`), no custom reducer class needed |
 | `CursorBatchStateManager` | Helper for reducer resolution, serialization, and delta reduction |
-| `CursorBatchProcessedEventCleanup` | Queueable that asynchronously deletes `CursorBatch_Processed_Event__c` records for completed stateful jobs using `Database.Cursor`-based pagination |
+| `CursorBatchReplayGuard` | Decides which Platform Events a subscriber may act on. Three independent layers — staleness, job state, and an exactly-once ledger key. See [Replay Guard](#replay-guard) |
+| `CursorBatchLedgerCleanup` | Queueable that deletes aged `CursorBatch_Event_Ledger__c` rows using `Database.Cursor`-based pagination. Self-throttled to once per 24 hours off the job submission path, so nothing needs scheduling |
+| `CursorBatchLedgerCleanupSchedule` | Optional `Schedulable` wrapper around `CursorBatchLedgerCleanup`, for orgs that prefer a predictable sweep window |
+| `CursorBatchProcessedEventCleanup` | **Deprecated** — deleted `CursorBatch_Processed_Event__c` records for completed stateful jobs. Nothing calls it; use it to drain leftover rows, then stop |
 | `CursorBatchCsvWorker` | Abstract base for CSV file workers. Receives `List<Map<String, Object>>` rows instead of `List<SObject>` — all other features (reducers, retry, chaining) work identically |
 | `CursorBatchCsvCallbackCoordinator` | Handles CSV middleware callback — receives row count via Platform Event and triggers worker fan-out |
 | `CsvCursorClient` | HTTP client for the CSV middleware (Content Session API v1). Manages session init, status polling, paginated row fetches, and session deletion via Named Credential |
@@ -2390,7 +2545,9 @@ Chain_To_Method__c: run
 | `CursorBatch_Config__mdt` | Custom Metadata | Job configuration (parallelism, page size, retry settings, CursorJob settings) |
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing). Includes optional `Job_Parent__c` lookup to the per-config parent record |
 | `CursorBatch_Job_Parent__c` | Custom Object | Per-config parent record aggregating all runs of a metadata-defined job. One per `CursorBatch_Config__mdt` (keyed by `Config_Developer_Name__c` external ID). Tracks `Last_Job_Status__c` and `Last_Job_Started_At__c`, exposes a Jobs related list, and supports a customer-managed `Description__c` |
-| `CursorBatch_Processed_Event__c` | Custom Object | Idempotency tracking for stateful jobs — stores (Job, ReplayId) pairs to detect replayed Platform Events. Master-Detail to `CursorBatch_Job__c` with cascade delete |
+| `CursorBatch_Event_Ledger__c` | Custom Object | Append-only idempotency ledger for [Replay Guard](#replay-guard) — one row per admitted event, keyed on a unique `Event_Key__c`. Deliberately has **no** relationship to `CursorBatch_Job__c` so markers outlive both job completion and job deletion. Retained by age via `CursorBatchLedgerCleanup` |
+| `CursorBatch_Settings__c` | Hierarchy Custom Setting | Org-level runtime state: `Ledger_Retention_Days__c` and `Last_Ledger_Sweep__c`. A custom setting rather than custom metadata because the framework writes to it, and `getOrgDefaults()` is a free cached read |
+| `CursorBatch_Processed_Event__c` | Custom Object | **Deprecated** — superseded by `CursorBatch_Event_Ledger__c`. Covered stateful jobs only, and its rows were deleted on job completion, so a replay arriving after completion found no marker. No longer written to; existing rows are inert |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count, metadata JSON) |
 | `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state) |
@@ -2409,6 +2566,7 @@ Chain_To_Method__c: run
 | `State_Reducer_Class__c` | v0.15 | Text(255) | Class implementing `ICursorBatchStateReducer` for reducer-based shared state |
 | `Processing_Type__c` | v0.21 | Text(10) | Data source type: `SOQL` or `CSV` |
 | `Enable_State_Reducer__c` | v0.21 | Checkbox | Enables built-in `CursorBatchCounterReducer` without a custom reducer class |
+| `Max_Event_Age_Minutes__c` | v0.34 | Number | Staleness threshold for [Replay Guard](#replay-guard); `-1` disables the age check for that job |
 
 ### Triggers
 

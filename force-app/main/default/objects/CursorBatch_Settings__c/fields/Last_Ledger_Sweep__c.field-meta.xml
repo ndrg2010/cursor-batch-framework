@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Last_Ledger_Sweep__c</fullName>
+    <description>When CursorBatchLedgerCleanup was last enqueued. Stamped by the coordinator on job submission and used to throttle the sweep to once per day. Clearing this field forces a sweep on the next job submission.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>When the event ledger was last swept. Clear this to force a sweep on the next job submission.</inlineHelpText>
+    <label>Last Ledger Sweep</label>
+    <required>false</required>
+    <type>DateTime</type>
+</CustomField>

@@ -616,14 +616,24 @@ private without sharing class CursorBatchCompletionHandlerTest {
     // ============================================
     
     @IsTest
-    static void testHandleCompletedJobDeletesProcessedEvents() {
-        // When a stateful job reaches terminal status, processed-event records for that job are deleted.
+    static void testCompletedJobNoLongerPurgesItsIdempotencyMarkers() {
+        // The regression this replaces. Idempotency markers used to be deleted the moment a job
+        // reached terminal status, which is exactly why the 2026-08-24 redelivery -- which arrived
+        // long after completion -- found nothing to collide with and was admitted. Markers now
+        // live in CursorBatch_Event_Ledger__c and are retained by age, so completing a job must
+        // leave them alone.
         CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
         config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
         CursorBatchCoordinator.testConfig = config;
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
+        insert new CursorBatch_Event_Ledger__c(
+            Event_Key__c = CursorBatchReplayGuard.buildCompletionKey(jobRecord.Id, '9001'),
+            Channel__c = CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE,
+            Job_Record_Id__c = jobRecord.Id
+        );
+        
         List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
             new CursorBatch_WorkerComplete__e(
                 Job_Id__c = jobRecord.Id,
@@ -640,13 +650,17 @@ private without sharing class CursorBatchCompletionHandlerTest {
         };
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
-        Integer remaining = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        Assert.areEqual(0, remaining, 'Processed events for completed stateful job should be deleted');
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed', updatedJob.Status__c, 'Precondition: the job must have reached terminal status');
+        Assert.areEqual(1, [SELECT COUNT() FROM CursorBatch_Event_Ledger__c WHERE Job_Record_Id__c = :jobRecord.Id],
+            'Completing a job must not delete its ledger markers; a replay can arrive days later.');
     }
     
     @IsTest
-    static void testNonStatefulJobNoProcessedEventsInsertedOrCleaned() {
-        // Non-stateful jobs (no reducer) do not use idempotency: no insert, no cleanup delete.
+    static void testDeprecatedProcessedEventObjectIsNoLongerWritten() {
+        // CursorBatch_Processed_Event__c is superseded. Nothing in the framework should touch it,
+        // so an org can drain and drop it once the upgrade has settled.
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
@@ -666,19 +680,19 @@ private without sharing class CursorBatchCompletionHandlerTest {
         };
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
-        Integer count = [SELECT COUNT() FROM CursorBatch_Processed_Event__c WHERE Cursor_Batch_Job__c = :jobRecord.Id];
-        Assert.areEqual(0, count, 'Non-stateful job should have no processed-event records inserted or cleaned');
+        
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Processed_Event__c],
+            'The deprecated processed-event object must no longer be written to.');
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         Assert.areEqual('Completed', updatedJob.Status__c, 'Job should still complete normally');
     }
     
     @IsTest
-    static void testHandleReplayedEventsSkippedWhenProcessedEventsExist() {
-        // Idempotency runs only for stateful jobs. Verify stateful job path: use config with State_Reducer_Class__c.
-        // (Replay skip cannot be asserted in unit test because ReplayId is not editable on platform events.)
-        CursorBatch_Config__mdt config = CursorBatchTestUtils.createTestConfig('TestJob', 2, 20);
-        config.State_Reducer_Class__c = 'CursorBatchTestUtils.TestStateReducer';
-        CursorBatchCoordinator.testConfig = config;
+    static void testIdempotencyNowAppliesToNonStatefulJobsToo() {
+        // Idempotency used to be limited to jobs with a state reducer -- 7 of 62 configurations in
+        // the org that hit the redelivery. A job with no reducer now goes through the same guard.
+        // (The replay itself is asserted in CursorBatchReplayGuardTest: ReplayId is not writable on
+        // a constructed platform event, so a replay cannot be staged through this handler.)
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
             'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
         );
@@ -698,10 +712,76 @@ private without sharing class CursorBatchCompletionHandlerTest {
         };
         CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
         handler.handle(events);
+        
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
-        Assert.areEqual(2, updatedJob.Completed_Batches__c, 'Stateful job should process both events');
+        Assert.areEqual(2, updatedJob.Completed_Batches__c, 'Both events should still be counted');
         Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Both workers should be counted');
         Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete');
+    }
+    
+    @IsTest
+    static void testDuplicateCompletionInOneBatchIsCountedOnce() {
+        // Guards the same in-batch dedupe defect on this channel, where the cost is a double
+        // increment that can push totalDone past Total_Workers__c a batch early and fire finish()
+        // while workers are still running. The pre-guard code deduped per event; the guard has to
+        // keep doing so.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        // Events are constructed here, so ReplayId is null and the guard has nothing to key on.
+        // Seeding the ledger with the key a real delivery would produce lets the duplicate be
+        // detected the same way it would be in production.
+        String eventKey = CursorBatchReplayGuard.buildCompletionKey(jobRecord.Id, '7001');
+        insert new CursorBatch_Event_Ledger__c(
+            Event_Key__c = eventKey,
+            Channel__c = CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE,
+            Job_Record_Id__c = jobRecord.Id
+        );
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        };
+        new CursorBatchCompletionHandler().handle(events);
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, updatedJob.Completed_Batches__c,
+            'One completion event must produce one batch increment.');
+        Assert.areEqual('Processing', updatedJob.Status__c,
+            'One of two workers finishing must not complete the job.');
+    }
+    
+    @IsTest
+    static void testNullFailedWorkersDoesNotAbortTheEventBatch() {
+        // Failed_Workers__c is nillable with no default, and CursorBatchWorkerCompleteTrigger has
+        // no try/catch, so incrementing a null would throw an NPE that rolls the whole subscriber
+        // batch back rather than failing one job.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        jobRecord.Failed_Workers__c = null;
+        update jobRecord;
+        
+        List<CursorBatch_WorkerComplete__e> events = new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(
+                Job_Id__c = jobRecord.Id,
+                Success__c = true,
+                Error_Message__c = null,
+                Is_Final__c = true
+            )
+        };
+        
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        Boolean threw = false;
+        try {
+            handler.handle(events);
+        } catch (Exception e) {
+            threw = true;
+        }
+        
+        Assert.isFalse(threw, 'A null Failed_Workers__c must not be able to abort the event batch.');
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(0, updatedJob.Failed_Workers__c, 'A null counter must be initialized to zero.');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'The job must still reach terminal status.');
     }
     
     // ============================================
