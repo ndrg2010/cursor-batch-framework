@@ -73,13 +73,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000TKL7AAO) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000TKL7AAO) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Xe57AAC) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Xe57AAC) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000TKL7AAO --target-org your-org --wait 10
+sf package install --package 04tfj000000Xe57AAC --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -344,7 +344,7 @@ Create a `CursorBatch_Config__mdt` record:
 | **Active__c** | `true` | Enable/disable the job |
 | **Parallel_Count__c** | `10` | Number of parallel workers (default: 50) |
 | **Page_Size__c** | `100` | Records per fetch (default: 20) |
-| **Coordinator_Max_Retries__c** | `3` | Max retries for cursor query timeouts |
+| **Coordinator_Max_Retries__c** | `3` | Max retries for cursor query timeouts (effective maximum 5, a platform limit) |
 | **Worker_Max_Retries__c** | `3` | Max retries for failed pages |
 | **Worker_Retry_Delay__c** | `1` | Base delay (minutes) for retry backoff |
 
@@ -470,9 +470,12 @@ The `Database.getCursor()` call can timeout on large datasets, throwing an uncat
 2. **Finalizer attached** — A `CursorBatchCoordinatorFinalizer` is attached to detect failures
 3. **Automatic retry** — If the cursor query fails, the finalizer increments `Total_Cursor_Retries__c` and re-enqueues the coordinator using `Type.newInstance()` (requires no-arg constructor)
 4. **Stored query reused** — On retry, the coordinator uses the query stored in `Query__c` rather than calling `buildQuery()` again, ensuring retries work even for coordinators with multiple query modes
-5. **Max retries** — After `Coordinator_Max_Retries__c` attempts (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
+5. **Max retries** — After `Coordinator_Max_Retries__c` retries (default: 3), the job is marked `Failed` and the `finish()` callback is invoked
+6. **Re-enqueue failure is terminal** — If the finalizer cannot schedule the retry (the coordinator cannot be re-instantiated, or the platform refuses the enqueue), the job is marked `Failed` with the reason on `Error_Message__c` and `finish()` is invoked, instead of being left in `Preparing`
 
-> **Important:** Both coordinator retries and `finish()` callbacks use reflection (`Type.newInstance()`) to instantiate the coordinator. Your coordinator class **must have a no-arg constructor** for these features to work.
+> **Important:** Both coordinator retries and `finish()` callbacks use reflection (`Type.newInstance()`) to instantiate the coordinator. Your coordinator class **must have a no-arg constructor** for these features to work. As of v0.35 a coordinator without one fails the job on its first retry rather than stranding it.
+
+> **Platform limit: 5 retries.** Salesforce allows a transaction finalizer to re-enqueue a Queueable that failed with an unhandled exception at most **five consecutive times**; the sixth `System.enqueueJob` throws `System.AsyncException` ("Maximum stack depth has been reached"). The framework therefore clamps `Coordinator_Max_Retries__c` to 5 and logs a warning when a job is configured higher — a setting of 20 still yields 1 initial attempt plus 5 retries. Before v0.35 that sixth enqueue was caught and logged at INFO, leaving the job in `Preparing` forever with `Total_Cursor_Retries__c = 6`; see [Troubleshooting](#job-stuck-at-preparing). If a cursor query times out repeatedly, the fix is a more selective query (indexed filters, narrower date windows), not more retries — the same query is retried immediately and rarely succeeds on the sixth try if it failed on the first five.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -896,7 +899,7 @@ If the ledger write fails for a reason other than a duplicate key, the guard **a
 | `Active__c` | Checkbox | — | Must be `true` to run |
 | `Parallel_Count__c` | Number | 50 | Max concurrent workers |
 | `Page_Size__c` | Number | 20 | Records per cursor fetch |
-| `Coordinator_Max_Retries__c` | Number | 3 | Max retry attempts for coordinator cursor query timeouts |
+| `Coordinator_Max_Retries__c` | Number | 3 | Max retry attempts for coordinator cursor query timeouts. Effective maximum is 5: Salesforce lets a finalizer re-enqueue a failed job at most 5 consecutive times, so higher values are clamped to 5 and a warning is logged (see [Retry Handling for Cursor Timeouts](#retry-handling-for-cursor-timeouts)) |
 | `Worker_Max_Retries__c` | Number | 3 | Max retry attempts for failed worker page processing |
 | `Worker_Retry_Delay__c` | Number | 1 | Base delay in minutes for worker retry exponential backoff |
 | `Skip_Duplicate_Check__c` | Checkbox | `false` | When enabled, allows multiple instances of the same job to run concurrently (bypasses duplicate detection) |
@@ -2418,7 +2421,7 @@ Chain_To_Method__c: run
 
 ### Error Handling
 
-- **Coordinator retry**: Cursor query timeouts are automatically retried up to `Coordinator_Max_Retries__c` times
+- **Coordinator retry**: Cursor query timeouts are automatically retried up to `Coordinator_Max_Retries__c` times (clamped to the platform's 5 consecutive finalizer re-enqueues); if a retry cannot be re-enqueued the job is marked `Failed` rather than left in `Preparing`
 - **Worker retry**: Failed pages are automatically retried up to `Worker_Max_Retries__c` times with exponential backoff
 - **Explicit retry**: Throw `CursorBatchRetryException` from `process()` to request retry with optional delay
 - Workers automatically track failures via finalizers
@@ -2479,7 +2482,8 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 
 ### Job stuck at "Preparing"
 
-- Large datasets may require longer cursor query times
+- Large datasets may require longer cursor query times. `Total_Cursor_Retries__c` advancing every ~2 minutes with `Retry N: ... [QUERY_TIMEOUT]` in `Error_Message__c` means the cursor query is timing out and being retried; make the query more selective rather than raising `Coordinator_Max_Retries__c`
+- On versions before v0.35 with `Coordinator_Max_Retries__c` above 5: the record shows `Total_Cursor_Retries__c = 6`, `Error_Message__c` starts with `Retry 6:`, and `AsyncApexJob` has exactly six failed coordinator runs with no seventh. The platform refused the sixth consecutive finalizer re-enqueue and the finalizer swallowed it (see [Retry Handling for Cursor Timeouts](#retry-handling-for-cursor-timeouts)). Because `Preparing` counts as running, every later submission of that job name silently returns `null` until the record is moved to a terminal status. Set `Status__c = 'Failed'` and `Completed_At__c` on the record (and `Last_Job_Status__c` on its `Job_Parent__c`), then upgrade
 
 ### Job stuck at "Extracting File"
 

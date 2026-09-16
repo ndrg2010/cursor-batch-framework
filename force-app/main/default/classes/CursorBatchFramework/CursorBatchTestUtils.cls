@@ -422,6 +422,39 @@ public without sharing class CursorBatchTestUtils {
         
     }
     
+    /** Apex forbids static members on inner classes, so RetryableTestCoordinator records here. */
+    public static Integer retryableCoordinatorFinishCount = 0;
+    public static CursorBatch_Job__c retryableCoordinatorFinishedJob;
+    
+    /**
+     * @description Coordinator with a public no-arg constructor, which is what the finalizer's
+     *              retry path needs to re-instantiate a coordinator via Type.newInstance().
+     *              TestCursorBatchCoordinator deliberately lacks one (it is constructed by job
+     *              name in ~120 tests), so use this class when a test needs the finalizer to get
+     *              past instantiation and reach the enqueue. finish() records to the statics above
+     *              so tests can verify the callback ran on a reflectively created instance.
+     */
+    public class RetryableTestCoordinator extends CursorBatchCoordinator {
+        
+        public RetryableTestCoordinator() {
+            super();
+        }
+        
+        public override String buildQuery() {
+            return DEFAULT_TEST_QUERY;
+        }
+        
+        public override String getWorkerClassName() {
+            return 'CursorBatchTestUtils.TestCursorBatchWorker';
+        }
+        
+        public override void finish(CursorBatch_Job__c jobRecord) {
+            super.finish(jobRecord);
+            retryableCoordinatorFinishCount++;
+            retryableCoordinatorFinishedJob = jobRecord;
+        }
+    }
+    
     /**
      * @description Test coordinator that uses the base isJobAlreadyRunning() implementation
      *              to test real duplicate prevention logic.

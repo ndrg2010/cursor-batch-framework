@@ -2,10 +2,10 @@
 <CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
     <fullName>Coordinator_Max_Retries__c</fullName>
     <defaultValue>3</defaultValue>
-    <description>Maximum number of retry attempts when Database.getCursor() times out during coordinator execution.</description>
+    <description>Maximum number of retry attempts when Database.getCursor() times out during coordinator execution. Effective maximum is 5: Salesforce allows a transaction finalizer to re-enqueue a failed Queueable at most 5 consecutive times, so higher values are clamped to 5 by the framework and a warning is logged.</description>
     <externalId>false</externalId>
     <fieldManageability>SubscriberControlled</fieldManageability>
-    <inlineHelpText>How many times the coordinator should retry if the cursor query times out. Increase for very large or complex queries. Default is 3.</inlineHelpText>
+    <inlineHelpText>How many times the coordinator retries when the cursor query times out. Default is 3. Do not set above 5: Salesforce lets a finalizer re-enqueue a failed job at most 5 consecutive times, so higher values are clamped to 5 and a warning is logged. If a query keeps timing out, make it more selective (indexed fields, narrower filters) rather than raising this.</inlineHelpText>
     <label>Coordinator Max Retries</label>
     <precision>2</precision>
     <required>false</required>

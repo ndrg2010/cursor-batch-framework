@@ -8,6 +8,25 @@
  */
 public without sharing class CursorBatchCoordinatorFinalizer implements System.Finalizer {
     
+    /**
+     * @description Platform ceiling on coordinator retries. Salesforce lets a finalizer re-enqueue
+     *              a Queueable that failed with an unhandled exception at most five consecutive
+     *              times; the sixth System.enqueueJob throws System.AsyncException ("Maximum stack
+     *              depth has been reached"). Coordinator_Max_Retries__c is clamped to this value so
+     *              a higher setting cannot push the finalizer into an enqueue that is guaranteed to
+     *              fail. The counter resets only when the Queueable completes without an unhandled
+     *              exception, which for the coordinator means the job has left Preparing anyway.
+     * @see https://developer.salesforce.com/docs/atlas.en-us.apexcode.meta/apexcode/apex_transaction_finalizers.htm
+     */
+    public static final Integer PLATFORM_FINALIZER_RETRY_LIMIT = 5;
+    
+    /**
+     * @description Test seam: when true, retryCoordinator() throws the platform's AsyncException
+     *              in place of System.enqueueJob so the re-enqueue failure path can be exercised.
+     */
+    @TestVisible
+    private static Boolean simulateEnqueueFailure = false;
+    
     private Id jobRecordId;
     private String jobName;
     private String coordinatorClassName;
@@ -85,7 +104,7 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
             return;
         }
         
-        Integer maxRetries = CursorBatchCoordinator.getCoordinatorMaxRetries(jobName);
+        Integer maxRetries = resolveMaxRetries();
         Integer currentRetryCount = jobRecord.Total_Cursor_Retries__c != null 
             ? Integer.valueOf(jobRecord.Total_Cursor_Retries__c) 
             : 0;
@@ -95,8 +114,26 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
             retryCoordinator(jobRecord, currentRetryCount, maxRetries, errorMessage);
         } else {
             // Max retries exhausted: mark job as failed
-            markJobFailed(jobRecord, errorMessage);
+            markJobFailed(jobRecord, 'Max retries exhausted', errorMessage);
         }
+    }
+    
+    /**
+     * @description Reads Coordinator_Max_Retries__c and clamps it to the platform's finalizer
+     *              re-enqueue limit. Without the clamp a setting above the limit is not "more
+     *              retries": the finalizer would still stop at the platform ceiling, but by
+     *              attempting an enqueue that throws instead of by marking the job Failed.
+     * @return Effective maximum number of coordinator retries for this job
+     */
+    private Integer resolveMaxRetries() {
+        Integer configuredMax = CursorBatchCoordinator.getCoordinatorMaxRetries(jobName);
+        if (configuredMax <= PLATFORM_FINALIZER_RETRY_LIMIT) {
+            return configuredMax;
+        }
+        logger.logInfo('WARN: CursorBatchCoordinatorFinalizer: Coordinator_Max_Retries__c=' + configuredMax +
+            ' for ' + jobName + ' exceeds the platform finalizer re-enqueue limit of ' +
+            PLATFORM_FINALIZER_RETRY_LIMIT + '; using ' + PLATFORM_FINALIZER_RETRY_LIMIT + '.');
+        return PLATFORM_FINALIZER_RETRY_LIMIT;
     }
     
     /**
@@ -122,40 +159,56 @@ public without sharing class CursorBatchCoordinatorFinalizer implements System.F
         Type coordinatorType = Type.forName(coordinatorClassName);
         if (coordinatorType == null) {
             logger.logError('CursorBatchCoordinatorFinalizer: Could not find coordinator class: ' + coordinatorClassName);
-            markJobFailed(jobRecord, 'Could not find coordinator class: ' + coordinatorClassName);
+            markJobFailed(jobRecord, 'Could not find coordinator class: ' + coordinatorClassName, errorMessage);
             return;
         }
         
         try {
+            // newInstance() throws when the coordinator has no public no-arg constructor
+            // (a documented requirement), and enqueueJob throws when the platform's consecutive
+            // re-enqueue limit is hit. Both mean the same thing for this job.
             CursorBatchCoordinator coordinator = (CursorBatchCoordinator) coordinatorType.newInstance();
             coordinator.initializeJobName(jobName);
             coordinator.setJobRecordId(jobRecordId);
             
-            System.enqueueJob(coordinator);
-            logger.logInfo('CursorBatchCoordinatorFinalizer: Re-enqueued coordinator for retry');
+            if (simulateEnqueueFailure) {
+                throw new System.AsyncException('Maximum stack depth has been reached.');
+            }
+            if (!Test.isRunningTest()) {
+                System.enqueueJob(coordinator);
+            }
+            logger.logInfo('CursorBatchCoordinatorFinalizer: Re-enqueued coordinator for retry ' + newRetryCount);
             
         } catch (Exception e) {
-            // In test context, System.enqueueJob may fail - this is expected
-            // The job record has already been updated with retry count, so we just log
-            logger.logInfo('CursorBatchCoordinatorFinalizer: Could not enqueue coordinator (may be in test context): ' + e.getMessage());
+            // Terminal, not a soft failure: this finalizer is the last thing that will ever run
+            // for the job, so if the retry cannot be enqueued nothing else can move the record
+            // out of Preparing. The retry count above was already persisted, so the record
+            // shows how many attempts actually ran. Reported at info because markJobFailed's
+            // terminal entry is the single ERROR for the job and carries this message.
+            String reason = 'Could not re-enqueue coordinator for retry ' + newRetryCount + ' of ' + maxRetries +
+                ' (' + e.getTypeName() + ': ' + e.getMessage() + ')';
+            logger.logInfo('WARN: CursorBatchCoordinatorFinalizer: ' + reason + ' for ' + jobName + '. Marking job as Failed.');
+            markJobFailed(jobRecord, reason, errorMessage);
         }
     }
     
     /**
-     * @description Marks the job as failed when max retries are exhausted and invokes 
-     *              the coordinator's finish() callback.
+     * @description Marks the job as failed and invokes the coordinator's finish() callback.
+     *              Reached when retries are exhausted, when the coordinator class cannot be
+     *              resolved, or when a retry cannot be re-enqueued.
      * @param jobRecord Job record to update
-     * @param errorMessage Final error message
+     * @param reason Why the job is terminal (e.g. 'Max retries exhausted')
+     * @param lastError Error from the coordinator attempt that triggered this finalizer
      */
-    private void markJobFailed(CursorBatch_Job__c jobRecord, String errorMessage) {
+    private void markJobFailed(CursorBatch_Job__c jobRecord, String reason, String lastError) {
         // Info, not error: logTerminalStatus below is the single ERROR for this failed job, and it
         // reports the same query via the job record.
-        logger.logInfo('CursorBatchCoordinatorFinalizer: Max retries exhausted for ' + jobName + 
+        logger.logInfo('CursorBatchCoordinatorFinalizer: ' + reason + ' for ' + jobName + 
             '. Marking job as Failed. Query: ' + query);
         
         jobRecord.Status__c = 'Failed';
         jobRecord.Query__c = query;
-        jobRecord.Error_Message__c = 'Max retries exhausted. Last error: ' + errorMessage;
+        jobRecord.Error_Message__c = reason + '. Last error: ' + lastError;
         jobRecord.Completed_At__c = System.now();
         // Ensure worker counts are set for failed coordinator scenarios
         jobRecord.Total_Workers__c = jobRecord.Total_Workers__c ?? 0;
