@@ -73,13 +73,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Xe57AAC) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000Xe57AAC) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000b1OXAAY) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000b1OXAAY) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000Xe57AAC --target-org your-org --wait 10
+sf package install --package 04tfj000000b1OXAAY --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -2213,6 +2213,14 @@ failure is still reported separately by `CursorBatchWorkerFinalizer`, which runs
 transaction per worker.
 
 ## Migration Guide
+
+### Upgrading to v0.36 (high-volume event metadata)
+
+**No action is required.** The three platform events (`CursorBatch_Coordinator__e`, `CursorBatch_Worker__e`, `CursorBatch_WorkerComplete__e`) are now declared `HighVolume` in the package source. Earlier versions declared them `StandardVolume`, but Salesforce has deprecated standard-volume events and already creates these definitions as high-volume, so orgs on earlier versions are running high-volume events today. This version makes the source match what is deployed; behavior does not change, and no `PlatformEventMigration` is needed.
+
+To confirm an org's events are high-volume, check the REST `limits` resource: `DailyStandardVolumePlatformEvents` stays at its maximum remaining because nothing publishes standard-volume events, while `HourlyPublishedPlatformEvents` moves as jobs run.
+
+Because the events are high-volume, `EventBus.publish` returning success means the event was queued, not published; Salesforce completes the publish asynchronously. Apex publish callbacks can report the final result, but this framework deliberately does not use them: callbacks share a 5 MB per-30-minute org-wide allocation (about 1.6 KB per instance), and once it is exhausted `EventBus.publish` throws an uncatchable `System.UnexpectedException`. At the framework's peak completion volume that would turn a rare lost event into many.
 
 ### Upgrading to v0.34 (Replay Guard)
 

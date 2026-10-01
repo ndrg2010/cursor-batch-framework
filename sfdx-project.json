@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.35",
-      "versionNumber": "0.35.0.NEXT",
+      "versionName": "ver 0.36",
+      "versionNumber": "0.36.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Coordinator retry stranding fix. A CursorBatch_Job__c could sit in Preparing forever after its cursor query timed out repeatedly: Salesforce allows a transaction finalizer to re-enqueue a Queueable that failed with an unhandled exception at most five consecutive times, and the sixth System.enqueueJob throws System.AsyncException (Maximum stack depth has been reached). CursorBatchCoordinatorFinalizer wrote the incremented retry count first, then caught that exception and logged it at INFO as 'may be in test context', so a job configured with Coordinator_Max_Retries__c above 5 ended with Total_Cursor_Retries__c = 6, no seventh AsyncApexJob, and no terminal status. Because isJobAlreadyRunning treats Preparing as running, every later submission of that job name silently returned null. Seen in production on 2026-09-09 and 2026-09-12 for a job configured with 20 retries. The finalizer now clamps Coordinator_Max_Retries__c to the platform limit of 5 (logging a warning when a job is configured higher), and treats any failure to re-enqueue the retry - the platform refusing the enqueue, or a coordinator class without a public no-arg constructor - as terminal: the job is marked Failed with the reason on Error_Message__c, the parent record is mirrored, and finish() is invoked, exactly as when retries are exhausted. The field's help text now states the effective ceiling. No metadata was added or removed.",
+      "versionDescription": "Platform event metadata now declares HighVolume. CursorBatch_Coordinator__e, CursorBatch_Worker__e and CursorBatch_WorkerComplete__e were declared StandardVolume, but Salesforce has deprecated standard-volume events and already creates these definitions as high-volume, both on new installs and in existing orgs, so the source now matches what is deployed. No behavior changes and no migration is needed. No Apex, fields, or other metadata changed.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -57,7 +57,9 @@
     "CursorBatchFramework@0.33.0-2": "04tfj000000QXQ9AAO",
     "CursorBatchFramework@0.34.0-1": "04tfj000000TKEfAAO",
     "CursorBatchFramework@0.34.0-2": "04tfj000000TKL7AAO",
-    "CursorBatchFramework@0.35.0-1": "04tfj000000Xe57AAC"
+    "CursorBatchFramework@0.35.0-1": "04tfj000000Xe57AAC",
+    "CursorBatchFramework@0.36.0-1": "04tfj000000b0x7AAA",
+    "CursorBatchFramework@0.36.0-2": "04tfj000000b1OXAAY"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

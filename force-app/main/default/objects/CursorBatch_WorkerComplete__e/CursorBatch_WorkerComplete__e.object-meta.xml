@@ -2,7 +2,7 @@
 <CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
     <deploymentStatus>Deployed</deploymentStatus>
     <description>Platform Event published when a cursor batch worker completes processing.</description>
-    <eventType>StandardVolume</eventType>
+    <eventType>HighVolume</eventType>
     <label>Cursor Batch Worker Complete</label>
     <pluralLabel>Cursor Batch Worker Complete Events</pluralLabel>
     <publishBehavior>PublishImmediately</publishBehavior>
