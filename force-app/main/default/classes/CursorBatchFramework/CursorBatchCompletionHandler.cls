@@ -28,6 +28,31 @@ public without sharing class CursorBatchCompletionHandler {
     /** Distinct worker errors sampled into the batch failure summary before it is truncated. */
     private static final Integer WORKER_FAILURE_SAMPLE_LIMIT = 5;
     
+    // ============== Report sources ==============
+    // Values for CursorBatch_WorkerComplete__e.Reported_By__c. Events from publishers older than
+    // v0.37 leave it blank and are counted exactly like REPORTED_BY_WORKER.
+    
+    /** The worker's own finalizer, reporting how its page went. */
+    public static final String REPORTED_BY_WORKER = 'Worker';
+    /** The worker trigger, reporting a shard the replay guard rejected as stale. */
+    public static final String REPORTED_BY_REPLAY_GUARD = 'Replay Guard';
+    /** The worker trigger, reporting a shard it could not enqueue. */
+    public static final String REPORTED_BY_DISPATCH = 'Dispatch';
+    /**
+     * CursorBatchStalledJobWatchdog, presuming that a worker which never reported has failed.
+     * A presumption rather than a record of what happened, so it is only counted while the job
+     * still has workers unaccounted for.
+     */
+    public static final String REPORTED_BY_WATCHDOG = 'Watchdog';
+    
+    /** Statuses after which a job no longer takes watchdog reports. */
+    private static final Set<String> TERMINAL_STATUSES = new Set<String>{
+        'Completed', 'Completed with Errors', 'Failed', 'Cancelled'
+    };
+    
+    /** Failure reports passed to each EventBus.publish call. */
+    private static final Integer FAILURE_REPORT_PUBLISH_BATCH_SIZE = 200;
+    
     private ICursorBatchLogger logger;
     
     /**
@@ -67,6 +92,9 @@ public without sharing class CursorBatchCompletionHandler {
      *              The ledger is exact, so it needs no heuristic help, and the duplicate finish()
      *              a late event might otherwise cause is prevented by the completion transition
      *              check further down.
+     *
+     *              Reports from CursorBatchStalledJobWatchdog are counted last and only into the
+     *              gap the other reports leave; see countPresumedFailures.
      * @param events CursorBatch_WorkerComplete__e events from the Platform Event trigger
      */
     public void handle(List<CursorBatch_WorkerComplete__e> events) {
@@ -111,6 +139,8 @@ public without sharing class CursorBatchCompletionHandler {
             // the subscriber batch size. Each worker failure is already reported individually by
             // CursorBatchWorkerFinalizer in its own transaction; this is the batch summary.
             List<String> workerFailures = new List<String>();
+            Boolean wasTerminal = isTerminal(job);
+            List<CursorBatch_WorkerComplete__e> watchdogReports = new List<CursorBatch_WorkerComplete__e>();
             
             for (CursorBatch_WorkerComplete__e evt : jobEvents) {
                 String eventKey = getEventKey(evt);
@@ -118,6 +148,11 @@ public without sharing class CursorBatchCompletionHandler {
                 // non-consuming check would count its counters and its state delta twice.
                 if (String.isNotBlank(eventKey) && !verdict.claim(eventKey)) {
                     continue; // Replay, or a duplicate within this batch
+                }
+                
+                if (evt.Reported_By__c == REPORTED_BY_WATCHDOG) {
+                    watchdogReports.add(evt);
+                    continue;
                 }
                 
                 // Aggregate worker retry counts
@@ -174,6 +209,16 @@ public without sharing class CursorBatchCompletionHandler {
                 job.Failed_Workers__c = 0;
             }
             
+            Integer presumedFailures = countPresumedFailures(
+                job, watchdogReports.size(), workersFinishedCount, failCount, wasTerminal
+            );
+            if (presumedFailures > 0) {
+                failCount += presumedFailures;
+                if (job.Error_Message__c == null && String.isNotBlank(watchdogReports[0].Error_Message__c)) {
+                    job.Error_Message__c = watchdogReports[0].Error_Message__c;
+                }
+            }
+            
             job.Completed_Batches__c += batchSuccessCount;
             job.Workers_Finished__c += workersFinishedCount;
             job.Failed_Workers__c += failCount;
@@ -227,6 +272,43 @@ public without sharing class CursorBatchCompletionHandler {
                 logTerminalStatus(job, logger);
             }
         }
+    }
+    
+    /**
+     * @description Decides how many watchdog reports in this batch to count as failed workers.
+     *
+     *              The watchdog presumes a silent worker failed; it cannot know that it did. So its
+     *              reports fill only the gap the first-hand reports leave, and never touch a job
+     *              that was already terminal before this batch. Without that, a real completion
+     *              that turns up late, two overlapping watchdog runs, or a completion backlog the
+     *              watchdog published behind would count a worker twice -- and a job closed by
+     *              the watchdog would be re-completed, firing finish() again, when a late report
+     *              crossed the threshold a second time.
+     * @param job Job record, with its counters already initialized
+     * @param reportCount Watchdog reports for this job in this batch
+     * @param finishedInBatch Workers this batch reported as finished
+     * @param failedInBatch Workers this batch reported as failed, not counting watchdog reports
+     * @param wasTerminal Whether the job was already terminal before this batch
+     * @return Number of watchdog reports to count as failed workers
+     */
+    private static Integer countPresumedFailures(
+        CursorBatch_Job__c job,
+        Integer reportCount,
+        Integer finishedInBatch,
+        Integer failedInBatch,
+        Boolean wasTerminal
+    ) {
+        if (reportCount == 0 || wasTerminal || job.Total_Workers__c == null) {
+            return 0;
+        }
+        Decimal unaccounted = job.Total_Workers__c
+            - (job.Workers_Finished__c + finishedInBatch)
+            - (job.Failed_Workers__c + failedInBatch);
+        return Math.max(0, Math.min(reportCount, unaccounted.intValue()));
+    }
+    
+    private static Boolean isTerminal(CursorBatch_Job__c job) {
+        return job.Completed_At__c != null || TERMINAL_STATUSES.contains(job.Status__c);
     }
     
     /**
@@ -300,6 +382,7 @@ public without sharing class CursorBatchCompletionHandler {
                     eventKey, jobId, job?.Job_Name__c, evt.CreatedDate
                 );
                 candidate.replayId = getReplayIdString(evt);
+                candidate.workerNumber = evt.Worker_Number__c != null ? evt.Worker_Number__c.intValue() : null;
                 candidates.add(candidate);
             }
         }
@@ -307,6 +390,79 @@ public without sharing class CursorBatchCompletionHandler {
         return new CursorBatchReplayGuard(
             CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE, logger
         ).withTerminalJobGate(false).withStalenessGate(false).admit(candidates);
+    }
+    
+    /**
+     * @description Builds the completion event that reports a worker as failed on its behalf, for a
+     *              shard whose own finalizer will never report: the shard was never dispatched, or
+     *              it went silent. Shared by the worker trigger and the stalled-job watchdog so that
+     *              every such report looks like a worker that exhausted its retries, and the
+     *              terminal transition stays in this class.
+     * @param jobId Job the shard belongs to
+     * @param workerNumber Worker number of the shard, or null when the reporter cannot tell which
+     * @param reportedBy One of the REPORTED_BY_* values
+     * @param errorMessage Why the shard is being reported as failed
+     * @return Event ready to publish
+     */
+    public static CursorBatch_WorkerComplete__e buildFailureReport(
+        Id jobId,
+        Integer workerNumber,
+        String reportedBy,
+        String errorMessage
+    ) {
+        return new CursorBatch_WorkerComplete__e(
+            Job_Id__c = jobId,
+            Success__c = false,
+            Is_Final__c = true,
+            Retry_Count__c = 0,
+            Worker_Number__c = workerNumber,
+            Reported_By__c = reportedBy,
+            Error_Message__c = errorMessage
+        );
+    }
+    
+    /**
+     * @description Publishes reports built by buildFailureReport and logs any that could not be
+     *              published. A report that does not go out leaves its job in Processing until the
+     *              stalled-job watchdog picks it up again.
+     *
+     *              Kept in this class, saved below API 67.0, on purpose. From 67.0 Apex runs
+     *              database operations with the running user's permissions by default, and the
+     *              watchdog runs as whichever user's job submission armed it; these reports have
+     *              to go out regardless of who that was.
+     * @param reports Reports to publish
+     * @param logger Logger for publish failures; may be null
+     * @return Number of reports that could not be published
+     */
+    public static Integer publishFailureReports(List<CursorBatch_WorkerComplete__e> reports, ICursorBatchLogger logger) {
+        if (reports == null || reports.isEmpty()) {
+            return 0;
+        }
+        
+        Integer failures = 0;
+        String firstError = null;
+        for (Integer start = 0; start < reports.size(); start += FAILURE_REPORT_PUBLISH_BATCH_SIZE) {
+            List<CursorBatch_WorkerComplete__e> batch = new List<CursorBatch_WorkerComplete__e>();
+            for (Integer i = start; i < Math.min(start + FAILURE_REPORT_PUBLISH_BATCH_SIZE, reports.size()); i++) {
+                batch.add(reports[i]);
+            }
+            for (Database.SaveResult result : EventBus.publish(batch)) {
+                if (result.isSuccess()) {
+                    continue;
+                }
+                failures++;
+                if (firstError == null && !result.getErrors().isEmpty()) {
+                    Database.Error err = result.getErrors()[0];
+                    firstError = err.getStatusCode() + ': ' + err.getMessage();
+                }
+            }
+        }
+        
+        if (failures > 0 && logger != null) {
+            logger.logError('CursorBatchCompletionHandler: ' + failures + ' failure report(s) could not be published, ' +
+                'so their jobs may not reach a terminal status. First error: ' + firstError);
+        }
+        return failures;
     }
     
     private static String getEventKey(CursorBatch_WorkerComplete__e evt) {

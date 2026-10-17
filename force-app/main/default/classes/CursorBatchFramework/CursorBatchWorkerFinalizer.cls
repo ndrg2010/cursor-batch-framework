@@ -162,20 +162,34 @@ public without sharing class CursorBatchWorkerFinalizer implements System.Finali
      * @param isFinal True if this worker has finished all its pages (success or exhausted retries)
      */
     private void publishCompletionEvent(Boolean success, String errorMessage, Boolean isFinal) {
-        CursorBatch_WorkerComplete__e evt = new CursorBatch_WorkerComplete__e(
-            Job_Id__c = ctx.jobRecordId,
-            Success__c = success,
-            Error_Message__c = errorMessage,
-            Retry_Count__c = ctx.retryCount,
-            Is_Final__c = isFinal,
-            State_Delta__c = success ? ctx.stateDeltaJson : null
-        );
-        
-        Database.SaveResult result = EventBus.publish(evt);
+        Database.SaveResult result = EventBus.publish(buildCompletionEvent(success, errorMessage, isFinal));
         if (!result.isSuccess()) {
             for (Database.Error err : result.getErrors()) {
                 logger.logError('CursorBatchWorkerFinalizer: Failed to publish completion event: ' + err.getMessage());
             }
         }
+    }
+    
+    /**
+     * @description Builds this worker's completion event. Carries the worker number so the
+     *              completion ledger row identifies the shard, which is what makes a worker that
+     *              never reports findable from data alone.
+     * @param success True if worker succeeded; false if failed
+     * @param errorMessage Error details if failed; null if successful
+     * @param isFinal True if this worker has finished all its pages (success or exhausted retries)
+     * @return Event ready to publish
+     */
+    @TestVisible
+    private CursorBatch_WorkerComplete__e buildCompletionEvent(Boolean success, String errorMessage, Boolean isFinal) {
+        return new CursorBatch_WorkerComplete__e(
+            Job_Id__c = ctx.jobRecordId,
+            Success__c = success,
+            Error_Message__c = errorMessage,
+            Retry_Count__c = ctx.retryCount,
+            Is_Final__c = isFinal,
+            State_Delta__c = success ? ctx.stateDeltaJson : null,
+            Worker_Number__c = ctx.workerNum,
+            Reported_By__c = CursorBatchCompletionHandler.REPORTED_BY_WORKER
+        );
     }
 }

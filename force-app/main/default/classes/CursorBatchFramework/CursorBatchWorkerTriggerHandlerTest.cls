@@ -805,4 +805,133 @@ private without sharing class CursorBatchWorkerTriggerHandlerTest {
         Assert.isTrue(CursorBatchTestUtils.testWorker_processCallCount >= 0, 
             'Trigger should have fired and handler should have processed the worker event');
     }
+    
+    // ============================================
+    // Shards reported on their own behalf
+    // ============================================
+    
+    private static CursorBatch_Worker__e workerEvent(Id jobRecordId, String queryId, Integer workerNumber, String workerClass) {
+        return new CursorBatch_Worker__e(
+            Job_Name__c = 'TestJob',
+            Cursor_Query_Id__c = queryId,
+            Start_Position__c = 0,
+            End_Position__c = 10,
+            Page_Size__c = 10,
+            Worker_Number__c = workerNumber,
+            Job_Record_Id__c = jobRecordId,
+            Worker_Class__c = workerClass
+        );
+    }
+    
+    private static List<CursorBatch_Event_Ledger__c> completionLedgerRows() {
+        return [
+            SELECT Worker_Number__c FROM CursorBatch_Event_Ledger__c
+            WHERE Channel__c = :CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE
+        ];
+    }
+    
+    @IsTest
+    static void staleShardReportCarriesItsWorkerNumber() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        CursorBatchReplayGuard.nowOverride = System.now().addHours(5);
+        
+        Test.startTest();
+        EventBus.publish(workerEvent(
+            jobRecord.Id, CursorBatchContext.extractQueryId(cursor), 4, 'CursorBatchTestUtils.TestCursorBatchWorker'
+        ));
+        Test.getEventBus().deliver();
+        Test.getEventBus().deliver();
+        Test.stopTest();
+        
+        List<CursorBatch_Event_Ledger__c> rows = completionLedgerRows();
+        Assert.areEqual(1, rows.size(), 'The stale shard must be reported exactly once.');
+        Assert.areEqual(4, rows[0].Worker_Number__c, 'The report must name the shard that was rejected.');
+    }
+    
+    @IsTest
+    static void shardThatCannotBeEnqueuedIsReportedAsFailed() {
+        // Logging the failure alone left the job one worker short forever.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(new List<CursorBatch_Worker__e>{
+            workerEvent(jobRecord.Id, CursorBatchContext.extractQueryId(cursor), 2, 'NonExistentWorkerClass')
+        });
+        Test.stopTest();
+        
+        CursorBatch_Job__c reloaded = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, reloaded.Failed_Workers__c, 'A shard that could not be enqueued must count as a failed worker.');
+        Assert.areEqual('Failed', reloaded.Status__c, 'A job whose only shard never ran must end Failed, not stay Processing.');
+        Assert.isTrue(reloaded.Error_Message__c.contains('Worker #2 was never enqueued'),
+            'The job record must say why the shard never ran. Got: ' + reloaded.Error_Message__c);
+        Assert.areEqual(2, completionLedgerRows()[0].Worker_Number__c, 'The report must name the shard.');
+    }
+    
+    @IsTest
+    static void shardWhoseCursorCannotBeRebuiltIsReportedAsFailed() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(new List<CursorBatch_Worker__e>{
+            workerEvent(jobRecord.Id, null, 1, 'CursorBatchTestUtils.TestCursorBatchWorker')
+        });
+        Test.stopTest();
+        
+        CursorBatch_Job__c reloaded = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, reloaded.Failed_Workers__c, 'A shard with no cursor to read must count as a failed worker.');
+        Assert.isTrue(reloaded.Error_Message__c.contains('cursor could not be reconstructed'),
+            'The job record must say why the shard never ran. Got: ' + reloaded.Error_Message__c);
+    }
+    
+    @IsTest
+    static void enqueuedShardIsNotReportedAsFailed() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'CursorBatchTestUtils.TestCursorBatchCoordinator'
+        );
+        
+        Test.startTest();
+        new CursorBatchWorkerTriggerHandler().handle(new List<CursorBatch_Worker__e>{
+            workerEvent(jobRecord.Id, CursorBatchContext.extractQueryId(cursor), 1, 'CursorBatchTestUtils.TestCursorBatchWorker')
+        });
+        Test.stopTest();
+        
+        Assert.areEqual(0, completionLedgerRows().size(), 'A shard that was enqueued reports for itself.');
+        Assert.areEqual(0, CursorBatchSelector.getJobById(jobRecord.Id).Failed_Workers__c,
+            'A shard that was enqueued must not be counted as failed.');
+    }
+    
+    @IsTest
+    static void dispatchFailureWithAMalformedJobIdIsNotReported() {
+        // The completion handler converts Job_Id__c to an Id, so a malformed value would throw there
+        // and roll back the whole completion batch, taking other jobs' reports with it.
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 1, 10);
+        Database.Cursor cursor = CursorBatchTestUtils.createTestCursor();
+        CursorBatch_Worker__e evt = workerEvent(null, CursorBatchContext.extractQueryId(cursor), 1, 'NonExistentWorkerClass');
+        evt.Job_Record_Id__c = 'not-a-real-id';
+        
+        Boolean threw = false;
+        Test.startTest();
+        try {
+            new CursorBatchWorkerTriggerHandler().handle(new List<CursorBatch_Worker__e>{ evt });
+        } catch (Exception e) {
+            threw = true;
+        }
+        Test.stopTest();
+        
+        Assert.isFalse(threw, 'A malformed job record Id must be absorbed.');
+        Assert.areEqual(0, completionLedgerRows().size(), 'There is no valid job to report a malformed shard against.');
+    }
 }

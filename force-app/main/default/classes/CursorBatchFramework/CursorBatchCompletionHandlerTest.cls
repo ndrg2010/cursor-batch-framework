@@ -1842,4 +1842,176 @@ private without sharing class CursorBatchCompletionHandlerTest {
         Assert.isFalse(mockLogger.hasInfoContaining('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED + ']'),
             'The terminal entry must not claim a clean completion for a job that ended in error');
     }
+    
+    // ============================================
+    // Watchdog Report Tests
+    // ============================================
+    
+    private static CursorBatch_Job__c createJobMissingOneWorker(String jobName, Integer totalWorkers) {
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            jobName, totalWorkers, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        jobRecord.Workers_Finished__c = totalWorkers - 1;
+        jobRecord.Completed_Batches__c = totalWorkers - 1;
+        update jobRecord;
+        return jobRecord;
+    }
+    
+    private static CursorBatch_WorkerComplete__e watchdogReport(Id jobId) {
+        return CursorBatchCompletionHandler.buildFailureReport(
+            jobId,
+            null,
+            CursorBatchCompletionHandler.REPORTED_BY_WATCHDOG,
+            'Stalled-job watchdog: 1 worker(s) never reported completion.'
+        );
+    }
+    
+    @IsTest
+    static void testWatchdogReportFillsTheGapAndFinishesTheJob() {
+        CursorBatch_Job__c jobRecord = createJobMissingOneWorker('WatchdogGapJob', 3);
+        
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(
+            new List<CursorBatch_WorkerComplete__e>{ watchdogReport(jobRecord.Id) }
+        );
+        Test.stopTest();
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, updatedJob.Failed_Workers__c, 'The silent worker should be counted as failed.');
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'Workers that reported must stay finished.');
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c,
+            'Closing the gap must finish the job like any other worker failure.');
+        Assert.isTrue(updatedJob.Error_Message__c.startsWith('Stalled-job watchdog'),
+            'The watchdog reason must land on the job record. Got: ' + updatedJob.Error_Message__c);
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() must run once the watchdog closes the job.');
+    }
+    
+    @IsTest
+    static void testDuplicateWatchdogReportsCountTheWorkerOnce() {
+        // Two overlapping watchdog runs each report the same silent worker.
+        CursorBatch_Job__c jobRecord = createJobMissingOneWorker('WatchdogDuplicateJob', 2);
+        
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(new List<CursorBatch_WorkerComplete__e>{
+            watchdogReport(jobRecord.Id), watchdogReport(jobRecord.Id)
+        });
+        Test.stopTest();
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(1, updatedJob.Failed_Workers__c,
+            'Watchdog reports must never count more workers than are unaccounted for.');
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() must run once.');
+    }
+    
+    @IsTest
+    static void testWatchdogReportForATerminalJobIsIgnored() {
+        CursorBatchTestUtils.resetFinishCountingCoordinator();
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'WatchdogTerminalJob', 2, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        jobRecord.Workers_Finished__c = 2;
+        jobRecord.Status__c = 'Completed';
+        jobRecord.Completed_At__c = System.now();
+        update jobRecord;
+        
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(
+            new List<CursorBatch_WorkerComplete__e>{ watchdogReport(jobRecord.Id) }
+        );
+        Test.stopTest();
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(0, updatedJob.Failed_Workers__c, 'A finished job must not take a watchdog failure.');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'A finished job must keep its status.');
+        Assert.isNull(updatedJob.Error_Message__c, 'A finished job must not pick up the watchdog message.');
+        Assert.areEqual(0, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'A finished job must not have finish() fired again.');
+    }
+    
+    @IsTest
+    static void testRealReportInTheSameBatchTakesPrecedenceOverTheWatchdog() {
+        // The silent worker's real report turns up in the same batch as the watchdog's, ahead of
+        // or behind it. The first-hand report wins and the presumption is dropped.
+        CursorBatch_Job__c jobRecord = createJobMissingOneWorker('WatchdogPrecedenceJob', 2);
+        
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(new List<CursorBatch_WorkerComplete__e>{
+            watchdogReport(jobRecord.Id),
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        });
+        Test.stopTest();
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual(2, updatedJob.Workers_Finished__c, 'The real report must be counted.');
+        Assert.areEqual(0, updatedJob.Failed_Workers__c, 'The watchdog presumption must be dropped.');
+        Assert.areEqual('Completed', updatedJob.Status__c, 'The job must complete cleanly.');
+        Assert.isNull(updatedJob.Error_Message__c, 'The dropped presumption must leave no error behind.');
+    }
+    
+    @IsTest
+    static void testLateRealReportAfterTheWatchdogDoesNotRefireFinish() {
+        CursorBatch_Job__c jobRecord = createJobMissingOneWorker('WatchdogLateRealJob', 2);
+        
+        Test.startTest();
+        new CursorBatchCompletionHandler().handle(
+            new List<CursorBatch_WorkerComplete__e>{ watchdogReport(jobRecord.Id) }
+        );
+        new CursorBatchCompletionHandler().handle(new List<CursorBatch_WorkerComplete__e>{
+            new CursorBatch_WorkerComplete__e(Job_Id__c = jobRecord.Id, Success__c = true, Is_Final__c = true)
+        });
+        Test.stopTest();
+        
+        CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
+        Assert.areEqual('Completed with Errors', updatedJob.Status__c,
+            'A late real report must not re-complete a job the watchdog already closed.');
+        Assert.areEqual(1, CursorBatchTestUtils.finishCountingCoordinator_finishCallCount,
+            'finish() must not fire a second time.');
+    }
+    
+    @IsTest
+    static void testWatchdogReportsStayOutOfTheWorkerFailureSummary() {
+        // The watchdog logs its own entry for the job; repeating it as a worker failure would
+        // double-report one event under two scopes.
+        CursorBatch_Job__c jobRecord = createJobMissingOneWorker('WatchdogSummaryJob', 2);
+        CursorBatchTestUtils.MockCursorBatchLogger mockLogger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchCompletionHandler handler = new CursorBatchCompletionHandler();
+        handler.setLogger(mockLogger);
+        
+        Test.startTest();
+        handler.handle(new List<CursorBatch_WorkerComplete__e>{ watchdogReport(jobRecord.Id) });
+        Test.stopTest();
+        
+        Assert.isFalse(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_WORKER_FAILED + ']'),
+            'A watchdog report must not appear in the worker failure summary.');
+        Assert.isTrue(mockLogger.hasErrorContaining('[' + CursorBatchLogger.SCOPE_JOB_COMPLETED_WITH_ERRORS + ']'),
+            'The job-level terminal entry must still be emitted.');
+    }
+    
+    @IsTest
+    static void testCompletionLedgerRowCarriesTheWorkerNumber() {
+        // The worker number on the ledger row is what identifies a worker that never reported.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'LedgerWorkerNumberJob', 2, 'CursorBatchTestUtils.FinishCountingCoordinator'
+        );
+        
+        Test.startTest();
+        EventBus.publish(new CursorBatch_WorkerComplete__e(
+            Job_Id__c = jobRecord.Id,
+            Success__c = true,
+            Is_Final__c = true,
+            Worker_Number__c = 7,
+            Reported_By__c = CursorBatchCompletionHandler.REPORTED_BY_WORKER
+        ));
+        Test.stopTest();
+        
+        List<CursorBatch_Event_Ledger__c> rows = [
+            SELECT Worker_Number__c FROM CursorBatch_Event_Ledger__c
+            WHERE Channel__c = :CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE AND Job_Record_Id__c = :jobRecord.Id
+        ];
+        Assert.areEqual(1, rows.size(), 'A delivered completion must be ledgered.');
+        Assert.areEqual(7, rows[0].Worker_Number__c, 'The ledger row must record which worker reported.');
+    }
 }

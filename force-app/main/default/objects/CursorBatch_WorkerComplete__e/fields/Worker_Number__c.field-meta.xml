@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Worker_Number__c</fullName>
+    <description>Worker number of the shard this report is about, matching Worker_Number__c on the CursorBatch_Worker__e that dispatched it. Copied onto the CursorBatch_Event_Ledger__c row so a worker that never reported can be identified from data rather than from event logs. Blank on reports published before v0.37 and on watchdog reports, which cannot tell which worker went silent.</description>
+    <externalId>false</externalId>
+    <isFilteringDisabled>false</isFilteringDisabled>
+    <isNameField>false</isNameField>
+    <isSortingDisabled>false</isSortingDisabled>
+    <label>Worker Number</label>
+    <precision>18</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+    <unique>false</unique>
+</CustomField>

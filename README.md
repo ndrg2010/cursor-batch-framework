@@ -37,6 +37,7 @@ Traditional Salesforce batch processing has limitations:
   - [Option C: CSV / Excel File Processing](#option-c-csv--excel-file-processing)
 - [Architecture](#architecture)
   - [Replay Guard](#replay-guard)
+  - [Stalled-Job Watchdog](#stalled-job-watchdog)
 - [Configuration Reference](#configuration-reference)
 - [Important: Cursor Snapshot Behavior](#important-cursor-snapshot-behavior)
 - [Advanced Usage](#advanced-usage)
@@ -73,13 +74,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000b1OXAAY) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000b1OXAAY) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000cx0fAAA) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000cx0fAAA) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000b1OXAAY --target-org your-org --wait 10
+sf package install --package 04tfj000000cx0fAAA --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -843,6 +844,8 @@ So a `STALE` rejection is reconciled:
 
 Only `STALE` is reconciled. `JOB_TERMINAL` and `JOB_MISSING` have no live job to report against, and `DUPLICATE` means the work was already dispatched and will report on its own — reporting it again would double-count. Either way the job record carries the reason, so a rejection is discoverable without reading logs.
 
+Since v0.37 the worker trigger also reports a shard it admitted but could not enqueue — a cursor that cannot be rebuilt, a worker class that does not exist — as a failed worker, with `Reported_By__c = 'Dispatch'`. Anything that still goes silent, such as a worker whose finalizer the platform never ran, is caught by the [Stalled-Job Watchdog](#stalled-job-watchdog).
+
 #### Ledger retention
 
 `CursorBatch_Event_Ledger__c` has no relationship to `CursorBatch_Job__c`, so markers survive both job completion and job deletion. That matters: the framework previously deleted its idempotency markers the moment a job completed, which is exactly why the 2026-08-24 replay — arriving long after completion — found nothing to collide with.
@@ -888,6 +891,71 @@ Entries carry the `CursorBatch Replay Blocked` tag and the `EVENT REPLAY BLOCKED
 
 If the ledger write fails for a reason other than a duplicate key, the guard **admits the event** and logs the failure. Layers 1 and 2 remain in force, and silently dropping legitimate batch work because a bookkeeping insert failed is the worse outcome. This matches the ordering the framework already uses elsewhere: job state first, markers best-effort.
 
+### Stalled-Job Watchdog
+
+A job goes terminal only when `Workers_Finished__c + Failed_Workers__c` reaches `Total_Workers__c`, and every worker reports through the completion event its own finalizer publishes. If a report never arrives, nothing else in the framework can notice: the job sits in `Processing`, `finish()` never fires, and because `isJobAlreadyRunning` treats `Processing` as running, **every later submission of that job name silently returns `null`**.
+
+This happened in production on 2026-10-14. One of 93 Lump Payment Automation workers completed its work, but Salesforce never ran its transaction finalizer, so its completion event was never published. The job sat at 92 of 93 for 13 hours, and the batch chained from its `finish()` ran 13 hours late. No Apex exception was raised anywhere; Event Monitoring showed the queueable completing and no finalizer execution after it.
+
+`CursorBatchStalledJobWatchdog` is the backstop. It treats a job as stalled only when **all** of these hold:
+
+| Condition | Why it is safe |
+|-----------|----------------|
+| `Status__c = 'Processing'` and workers are still unaccounted for | A job with every worker counted has nothing left to report |
+| `LastModifiedDate` is older than the job's threshold (default 60 minutes, minimum 15) | Every completion batch writes the job record, so `LastModifiedDate` is when the job last heard from any worker |
+| No `AsyncApexJob` for the job's worker class is `Queued`, `Holding`, `Preparing`, or `Processing` | A worker enqueues its next page or its retry before the current queueable ends, so a worker that is still going always shows up here |
+
+For each unaccounted worker it publishes the same failure report a worker that exhausted its retries would, marked `Reported_By__c = 'Watchdog'`. It never writes the job itself, so the terminal transition, parent mirror, logging, and `finish()` routing stay in `CursorBatchCompletionHandler`. The job ends `Completed with Errors` (or `Failed` if no worker finished), the reason lands on `Error_Message__c`, and **`finish()` runs**, so anything chained to the job is released.
+
+A watchdog report is a presumption rather than a record of what happened, so the completion handler counts watchdog reports **only into the gap that remains** after every first-hand report in the same batch, and ignores them for a job that is already terminal. That makes the watchdog harmless when:
+
+- the silent worker's real report turns up late — it is counted, and the job is not completed a second time;
+- two watchdog runs overlap — the worker is counted once, and `finish()` fires once;
+- the completion subscriber is backed up — the watchdog's reports queue behind the real ones on the same ordered channel and turn into no-ops.
+
+The watchdog cannot tell whether the silent worker processed its records. On 2026-10-14 it had; a worker that never ran has not. Treat a watchdog-closed job like any other `Completed with Errors` job and check whether its records need a re-run.
+
+#### Configuration
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CursorBatch_Config__mdt.Stalled_Job_Minutes__c` | org setting | Per-job threshold. Values below 15 are raised to 15. Set to `-1` to exclude the job from the watchdog |
+| `CursorBatch_Settings__c.Stalled_Job_Minutes__c` | 60 | Org-wide threshold. Values from 1 to 14 are raised to 15; blank, zero, or negative uses 60. There is no org-wide off switch |
+| `CursorBatch_Settings__c.Watchdog_Interval_Minutes__c` | 15 | Minimum gap between runs. Values below 5 are raised to 5 |
+| `CursorBatch_Settings__c.Last_Watchdog_Run__c` | — | When the watchdog last ran. Clear it to force a run on the next job submission |
+
+With the defaults, a stalled job is closed roughly 60 to 75 minutes after its last report.
+
+**Nothing needs scheduling.** Like the ledger sweep, the watchdog is armed from job submission — including a submission that is blocked because a job of that name is still running, which is exactly when it is needed — and throttles itself through `CursorBatch_Settings__c`. Arming costs a free `getOrgDefaults()` read, plus one DML statement once per interval, and it only enqueues when the caller has a queueable slot to spare. To run it on a fixed cadence instead, schedule the wrapper; it stamps the same timestamp, so the self-throttled path stands down. Cron expressions run at most hourly, so every 15 minutes takes four entries:
+
+```apex
+for (Integer minute : new List<Integer>{ 0, 15, 30, 45 }) {
+    System.schedule(
+        'CursorBatch Stalled Job Watchdog :' + String.valueOf(minute).leftPad(2, '0'),
+        '0 ' + minute + ' * * * ?',
+        new CursorBatchStalledJobWatchdogSchedule()
+    );
+}
+```
+
+#### Observability
+
+Each job the watchdog closes produces an ERROR entry tagged `CursorBatch Job Stalled` with the `[JOB STALLED]` scope, under the job's `Logger_Tag__c`, followed by the usual terminal `[JOB COMPLETED WITH ERRORS]` or `[JOB FAILED]` entry. The job's `Error_Message__c` starts with `Stalled-job watchdog:`.
+
+A stalled job whose worker class cannot be resolved — a custom coordinator without a public no-arg constructor and no `Worker_Class__c` on its config — is left alone, because there is no way to prove its workers have stopped. The watchdog logs a `[JOB STALLED]` entry for it on every run until someone closes it.
+
+#### Who reported a worker
+
+Every completion event carries `Worker_Number__c` and `Reported_By__c`, and the worker number is copied onto the event's `CursorBatch_Event_Ledger__c` row, so a worker that never reported can be identified from data (see [Job stuck at "Processing"](#job-stuck-at-processing)):
+
+| `Reported_By__c` | Published by | Counted |
+|------------------|--------------|---------|
+| `Worker` | The worker's own finalizer | Always |
+| `Replay Guard` | The worker trigger, for a shard rejected as stale | Always |
+| `Dispatch` | The worker trigger, for a shard it admitted but could not enqueue — the cursor could not be rebuilt, or the worker class is missing | Always |
+| `Watchdog` | `CursorBatchStalledJobWatchdog`, for a worker that never reported | Only into the remaining gap, and never on a terminal job |
+| *(blank)* | A publisher older than v0.37 | Like `Worker` |
+
 ## Configuration Reference
 
 ### CursorBatch_Config__mdt Fields
@@ -913,6 +981,14 @@ If the ledger write fails for a reason other than a duplicate key, the guard **a
 | `Max_Event_Age_Minutes__c` | Number | 60 | Reject Platform Events older than this. Blank uses 60. Set to `-1` to disable the age check for a job whose events can legitimately sit undelivered for hours. This is the guard's only opt-out, and it narrows only the staleness layer — see [There is no off switch](#there-is-no-off-switch-and-thats-deliberate) |
 
 The guard itself is always on and needs no configuration. See [Replay Guard](#replay-guard).
+
+#### Stalled-Job Watchdog Settings
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Stalled_Job_Minutes__c` | Number | org setting (60) | How long this job may sit in `Processing` with no worker reporting and no worker queueable queued or running before the watchdog reports its silent workers as failed. Values below 15 are raised to 15. `-1` excludes the job. See [Stalled-Job Watchdog](#stalled-job-watchdog) |
+
+The org-wide threshold and run interval live on `CursorBatch_Settings__c`; see [Stalled-Job Watchdog](#stalled-job-watchdog).
 
 #### CursorJob Settings (Metadata-Driven Jobs)
 
@@ -964,8 +1040,8 @@ The guard itself is always on and needs no configuration. See [Replay Guard](#re
 | `Extracting File` | CSV middleware is indexing the uploaded file (CSV jobs only) |
 | `Processing` | Cursor query succeeded, workers are processing records |
 | `Completed` | All workers completed successfully |
-| `Completed with Errors` | Some workers succeeded and some failed, **or** all workers succeeded but the `finish()` callback threw |
-| `Failed` | All workers failed, or max retries exhausted |
+| `Completed with Errors` | Some workers succeeded and some failed, **or** all workers succeeded but the `finish()` callback threw. A worker that never reported counts as failed once the [Stalled-Job Watchdog](#stalled-job-watchdog) closes the job |
+| `Failed` | All workers failed (including workers the stalled-job watchdog presumed failed), or max retries exhausted |
 | `Cancelled` | Job was manually stopped via kill switch (`killJob()`) |
 
 ## Important: Cursor Snapshot Behavior
@@ -1065,7 +1141,7 @@ List<CursorBatch_Job__c> jobs = [
 
 | Field | Healthy Value | Investigate If |
 |-------|---------------|----------------|
-| `Percent_Complete__c` | 100% | Stuck below 100% for extended periods |
+| `Percent_Complete__c` | 100% | Stuck below 100% for extended periods — see [Job stuck at "Processing"](#job-stuck-at-processing) |
 | `Total_Worker_Retries__c` | 0 | > 0 indicates transient failures (timeouts, rate limits) |
 | `Worker_Processing_Time_Min__c` | Varies | Significantly higher than expected |
 | `Status__c` | `Completed` | `Completed with Errors` or `Failed` |
@@ -2145,6 +2221,7 @@ prefix in the message and, when your adapter implements `Callable`, as a tag nex
 | `[JOB FINISH FAILED]` | `CursorBatch Job Finish Failure` | The job-level `finish()` callback threw | Once per job |
 | `[JOB CHAIN FAILED]` | `CursorBatch Job Chain Failure` | `Chain_To_Job__c` / `Chain_To_Class__c` failed | Once per job |
 | `[WORKER FAILED]` | `CursorBatch Worker Failure` | An individual worker page failed | Per worker, plus one batch summary |
+| `[JOB STALLED]` | `CursorBatch Job Stalled` | The [Stalled-Job Watchdog](#stalled-job-watchdog) reported a job's silent workers as failed, or found a stalled job it could not safely close | Once per stalled job per watchdog run |
 | `[JOB COMPLETED]` / `[JOB CANCELLED]` | *(untagged)* | Clean completion or kill switch | Once per job |
 
 `[JOB FINISH FAILED]` is worth calling out. For metadata-driven jobs the framework reflects the
@@ -2213,6 +2290,18 @@ failure is still reported separately by `CursorBatchWorkerFinalizer`, which runs
 transaction per worker.
 
 ## Migration Guide
+
+### Upgrading to v0.37 (stalled-job watchdog)
+
+**No action is required.** The watchdog arms itself on job submission; see [Stalled-Job Watchdog](#stalled-job-watchdog).
+
+Three things change behavior:
+
+1. **A job that stops hearing from its workers now finishes on its own.** After its threshold (default 60 minutes) with no worker report and no worker queueable queued or running, its silent workers are reported as failed, the job ends `Completed with Errors` or `Failed`, and `finish()` runs. A job whose worker dispatch can legitimately lag by more than an hour — the same situation in which you would raise its `Max_Event_Age_Minutes__c` — should get a larger `Stalled_Job_Minutes__c` too, or `-1` to exclude it.
+2. **A shard the worker trigger cannot enqueue is reported as a failed worker** (`Reported_By__c = 'Dispatch'`) instead of only being logged. A missing worker class or an unreadable cursor now fails the job promptly rather than leaving it in `Processing`.
+3. **Completion events carry `Worker_Number__c` and `Reported_By__c`**, and completion ledger rows carry the worker number, so a worker that never reported can be identified from data.
+
+The new classes are saved at API 67.0, where Apex database operations default to the running user's permissions. Every database operation in them sets system mode explicitly, so they behave like the rest of the framework whichever user's submission arms the watchdog.
 
 ### Upgrading to v0.36 (high-volume event metadata)
 
@@ -2499,6 +2588,24 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 - Verify the Named Credential URL and External Credential are configured correctly
 - The middleware publishes `CSV_Ready` or `CSV_Error` via Platform Event when indexing completes
 
+### Job stuck at "Processing"
+
+`Workers_Finished__c + Failed_Workers__c` is below `Total_Workers__c` and the job has not changed for a while: a worker's report never arrived. Until the job is terminal, every new submission of that job name silently returns `null`.
+
+- **Wait for the watchdog.** With the defaults it closes the job within about 75 minutes of the last report, reporting the silent workers as failed so the job finishes `Completed with Errors` and `finish()` runs. See [Stalled-Job Watchdog](#stalled-job-watchdog). If that hasn't happened, check that `CursorBatch_Settings__c.Last_Watchdog_Run__c` is advancing and look for `[JOB STALLED]` entries under the job's tag
+- **Find the silent worker.** Compare the workers dispatched with the workers that reported:
+
+  ```sql
+  SELECT Channel__c, Worker_Number__c, Event_Published_At__c
+  FROM CursorBatch_Event_Ledger__c
+  WHERE Job_Record_Id__c = '<job Id>' AND Channel__c IN ('Worker', 'WorkerComplete')
+  ORDER BY Worker_Number__c
+  ```
+
+  A worker number with a `Worker` row and no `WorkerComplete` row never reported. Before v0.37 completion rows carry no worker number; match the worker class's `AsyncApexJob` completion times against the completion rows' `Event_Published_At__c` instead
+- **Check whether its records were processed.** If the worker's `AsyncApexJob` is `Completed`, its work committed and only the report was lost — on 2026-10-14, Event Monitoring's `ApexExecution` log showed no `CursorBatchWorkerFinalizer` execution after it. If it never ran, its records still need processing
+- **Close it yourself if you can't wait.** Use `CursorBatchCoordinator.killJob(jobId)` rather than editing `Status__c`: it stamps `Completed_At__c`, mirrors the parent, and logs the terminal status. It does **not** run `finish()`, so run anything chained to the job by hand
+
 ### Job shows "Completed with Errors"
 
 - Check `Failed_Workers__c` for count of failed workers
@@ -2545,6 +2652,8 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 | `CursorBatchReplayGuard` | Decides which Platform Events a subscriber may act on. Three independent layers — staleness, job state, and an exactly-once ledger key. See [Replay Guard](#replay-guard) |
 | `CursorBatchLedgerCleanup` | Queueable that deletes aged `CursorBatch_Event_Ledger__c` rows using `Database.Cursor`-based pagination. Self-throttled to once per 24 hours off the job submission path, so nothing needs scheduling |
 | `CursorBatchLedgerCleanupSchedule` | Optional `Schedulable` wrapper around `CursorBatchLedgerCleanup`, for orgs that prefer a predictable sweep window |
+| `CursorBatchStalledJobWatchdog` | Queueable that closes jobs stuck in `Processing` because a worker never reported, by publishing failure reports for the silent workers. Armed from job submission and throttled through `CursorBatch_Settings__c`, so nothing needs scheduling. See [Stalled-Job Watchdog](#stalled-job-watchdog) |
+| `CursorBatchStalledJobWatchdogSchedule` | Optional `Schedulable` wrapper around `CursorBatchStalledJobWatchdog`, for orgs that prefer a fixed cadence |
 | `CursorBatchProcessedEventCleanup` | **Deprecated** — deleted `CursorBatch_Processed_Event__c` records for completed stateful jobs. Nothing calls it; use it to drain leftover rows, then stop |
 | `CursorBatchCsvWorker` | Abstract base for CSV file workers. Receives `List<Map<String, Object>>` rows instead of `List<SObject>` — all other features (reducers, retry, chaining) work identically |
 | `CursorBatchCsvCallbackCoordinator` | Handles CSV middleware callback — receives row count via Platform Event and triggers worker fan-out |
@@ -2558,11 +2667,11 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 | `CursorBatch_Job__c` | Custom Object | Job tracking (status, worker counts, progress, timing). Includes optional `Job_Parent__c` lookup to the per-config parent record |
 | `CursorBatch_Job_Parent__c` | Custom Object | Per-config parent record aggregating all runs of a metadata-defined job. One per `CursorBatch_Config__mdt` (keyed by `Config_Developer_Name__c` external ID). Tracks `Last_Job_Status__c` and `Last_Job_Started_At__c`, exposes a Jobs related list, and supports a customer-managed `Description__c` |
 | `CursorBatch_Event_Ledger__c` | Custom Object | Append-only idempotency ledger for [Replay Guard](#replay-guard) — one row per admitted event, keyed on a unique `Event_Key__c`. Deliberately has **no** relationship to `CursorBatch_Job__c` so markers outlive both job completion and job deletion. Retained by age via `CursorBatchLedgerCleanup` |
-| `CursorBatch_Settings__c` | Hierarchy Custom Setting | Org-level runtime state: `Ledger_Retention_Days__c` and `Last_Ledger_Sweep__c`. A custom setting rather than custom metadata because the framework writes to it, and `getOrgDefaults()` is a free cached read |
+| `CursorBatch_Settings__c` | Hierarchy Custom Setting | Org-level runtime state: `Ledger_Retention_Days__c` and `Last_Ledger_Sweep__c` for the ledger sweep, and `Stalled_Job_Minutes__c`, `Watchdog_Interval_Minutes__c`, and `Last_Watchdog_Run__c` for the stalled-job watchdog. A custom setting rather than custom metadata because the framework writes to it, and `getOrgDefaults()` is a free cached read |
 | `CursorBatch_Processed_Event__c` | Custom Object | **Deprecated** — superseded by `CursorBatch_Event_Ledger__c`. Covered stateful jobs only, and its rows were deleted on job completion, so a replay arriving after completion found no marker. No longer written to; existing rows are inert |
 | `CursorBatch_Coordinator__e` | Platform Event | Routes coordinator execution through trigger for cursor user affinity |
 | `CursorBatch_Worker__e` | Platform Event | Orchestration events from coordinator to trigger worker enqueueing (includes retry count, metadata JSON) |
-| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state) |
+| `CursorBatch_WorkerComplete__e` | Platform Event | Worker completion signals for callbacks (includes retry count, Is_Final flag, State_Delta for reducer-managed state, and the `Worker_Number__c` and `Reported_By__c` of the report) |
 
 ### Metadata Fields Added Since v0.10
 
@@ -2579,6 +2688,7 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 | `Processing_Type__c` | v0.21 | Text(10) | Data source type: `SOQL` or `CSV` |
 | `Enable_State_Reducer__c` | v0.21 | Checkbox | Enables built-in `CursorBatchCounterReducer` without a custom reducer class |
 | `Max_Event_Age_Minutes__c` | v0.34 | Number | Staleness threshold for [Replay Guard](#replay-guard); `-1` disables the age check for that job |
+| `Stalled_Job_Minutes__c` | v0.37 | Number | Idle threshold for the [Stalled-Job Watchdog](#stalled-job-watchdog); `-1` excludes the job |
 
 ### Triggers
 

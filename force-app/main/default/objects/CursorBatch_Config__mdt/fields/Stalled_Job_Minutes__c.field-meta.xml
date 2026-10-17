@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Stalled_Job_Minutes__c</fullName>
+    <description>Per-job override for CursorBatch_Settings__c.Stalled_Job_Minutes__c: how long this job may sit in Processing without any worker reporting, and with none of its worker queueables queued or running, before CursorBatchStalledJobWatchdog reports its unaccounted workers as failed and the job finishes as Completed with Errors. Blank uses the org setting (default 60 minutes). Values from 0 to 14 are raised to 15. Set to -1 to exclude this job from the watchdog entirely.</description>
+    <externalId>false</externalId>
+    <fieldManageability>SubscriberControlled</fieldManageability>
+    <inlineHelpText>Minutes this job may go without any worker reporting before the watchdog closes it. Leave blank for the org setting (default 60). Set to -1 to opt this job out.</inlineHelpText>
+    <label>Stalled Job (min)</label>
+    <precision>9</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

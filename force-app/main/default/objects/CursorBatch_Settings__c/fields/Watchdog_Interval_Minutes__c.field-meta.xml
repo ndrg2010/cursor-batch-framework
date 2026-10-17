@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Watchdog_Interval_Minutes__c</fullName>
+    <description>Minimum gap between stalled-job watchdog runs started from job submission. Blank, zero, or negative uses the framework default of 15 minutes; values from 1 to 4 are raised to 5. The worst-case delay before a stalled job is closed is roughly Stalled_Job_Minutes__c plus this interval.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Minutes between stalled-job watchdog runs. Blank uses 15; the minimum is 5.</inlineHelpText>
+    <label>Watchdog Interval (min)</label>
+    <precision>4</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

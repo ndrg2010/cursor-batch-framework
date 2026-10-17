@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.36",
-      "versionNumber": "0.36.0.NEXT",
+      "versionName": "ver 0.37",
+      "versionNumber": "0.37.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Platform event metadata now declares HighVolume. CursorBatch_Coordinator__e, CursorBatch_Worker__e and CursorBatch_WorkerComplete__e were declared StandardVolume, but Salesforce has deprecated standard-volume events and already creates these definitions as high-volume, both on new installs and in existing orgs, so the source now matches what is deployed. No behavior changes and no migration is needed. No Apex, fields, or other metadata changed.",
+      "versionDescription": "Stalled-job watchdog: a job left in Processing because a worker never reported, for example because Salesforce skipped the worker's finalizer, is closed as Completed with Errors once it has been idle past its threshold (default 60 minutes) with no worker queueable queued or running, and its finish() runs. Shards the worker trigger cannot enqueue are reported as failed workers instead of only logged. Completion events and their ledger rows now carry the worker number. No configuration required.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -20,7 +20,7 @@
   "name": "cursor-batch-framework",
   "namespace": "",
   "sfdcLoginUrl": "https://login.salesforce.com",
-  "sourceApiVersion": "65.0",
+  "sourceApiVersion": "67.0",
   "packageAliases": {
     "CursorBatchFramework": "0Hofj0000000o85CAA",
     "CursorBatchFramework@0.1.0-1": "04tfj000000AC4jAAG",
@@ -59,7 +59,8 @@
     "CursorBatchFramework@0.34.0-2": "04tfj000000TKL7AAO",
     "CursorBatchFramework@0.35.0-1": "04tfj000000Xe57AAC",
     "CursorBatchFramework@0.36.0-1": "04tfj000000b0x7AAA",
-    "CursorBatchFramework@0.36.0-2": "04tfj000000b1OXAAY"
+    "CursorBatchFramework@0.36.0-2": "04tfj000000b1OXAAY",
+    "CursorBatchFramework@0.37.0-1": "04tfj000000cx0fAAA"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

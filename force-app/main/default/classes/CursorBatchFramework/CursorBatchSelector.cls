@@ -122,7 +122,7 @@ public without sharing class CursorBatchSelector {
                    Chain_To_Job__c, Chain_To_Class__c, Chain_To_Method__c,
                    Query_Builder_Class__c, Query_Builder_Method__c, Worker_Class__c, Logger_Tag__c,
                    State_Reducer_Class__c, Enable_State_Reducer__c, Processing_Type__c,
-                   Max_Event_Age_Minutes__c
+                   Max_Event_Age_Minutes__c, Stalled_Job_Minutes__c
             FROM CursorBatch_Config__mdt
             WHERE MasterLabel = :jobName
             AND Active__c = true
@@ -189,6 +189,75 @@ public without sharing class CursorBatchSelector {
         return Database.queryWithBinds(query, bindVars, AccessLevel.SYSTEM_MODE);
     }
 
+    /**
+     * @description Stand-in for the AsyncApexJob table in tests, which cannot insert into it. When
+     *              set, getActiveAsyncClassNames answers from this set instead of querying.
+     */
+    @TestVisible
+    private static Set<String> activeAsyncClassNamesOverride;
+    
+    /**
+     * @description Returns which of the given Apex classes still have an async job queued or
+     *              running. Aggregated per class rather than returning rows, so one class with
+     *              thousands of live jobs cannot crowd the others out of a row limit and make them
+     *              look idle.
+     *
+     *              AsyncApexJob.ApexClass is the top-level class, so an inner worker class such as
+     *              Outer.Worker appears as Outer. Callers pass every name segment they want
+     *              checked.
+     * @param classNames Class names to check
+     * @return The subset of classNames with at least one Queued, Holding, Preparing, or Processing job
+     */
+    public static Set<String> getActiveAsyncClassNames(Set<String> classNames) {
+        Set<String> active = new Set<String>();
+        if (classNames == null || classNames.isEmpty()) {
+            return active;
+        }
+        
+        if (Test.isRunningTest() && activeAsyncClassNamesOverride != null) {
+            for (String className : classNames) {
+                if (activeAsyncClassNamesOverride.contains(className)) {
+                    active.add(className);
+                }
+            }
+            return active;
+        }
+        
+        List<AggregateResult> rows = Database.queryWithBinds(
+            'SELECT ApexClass.Name className, COUNT(Id) cnt FROM AsyncApexJob ' +
+            'WHERE ApexClass.Name IN :classNames ' +
+            'AND Status IN (\'Queued\', \'Holding\', \'Preparing\', \'Processing\') ' +
+            'GROUP BY ApexClass.Name',
+            new Map<String, Object>{ 'classNames' => classNames },
+            AccessLevel.SYSTEM_MODE
+        );
+        for (AggregateResult row : rows) {
+            active.add((String) row.get('className'));
+        }
+        return active;
+    }
+    
+    /**
+     * @description Queries Processing jobs that have not changed since the given time, oldest
+     *              first. Every completion batch writes the job record, so LastModifiedDate is the
+     *              time the job last heard from any worker. Used by CursorBatchStalledJobWatchdog.
+     * @param idleSince Only jobs whose LastModifiedDate is earlier than this are returned
+     * @param maxRows Maximum number of jobs to return
+     * @return Idle Processing jobs, oldest first
+     */
+    public static List<CursorBatch_Job__c> getIdleProcessingJobs(Datetime idleSince, Integer maxRows) {
+        return Database.queryWithBinds(
+            'SELECT Id, Job_Name__c, Coordinator_Class__c, Status__c, Total_Workers__c, ' +
+            'Workers_Finished__c, Failed_Workers__c, LastModifiedDate ' +
+            'FROM CursorBatch_Job__c ' +
+            'WHERE Status__c = \'Processing\' AND LastModifiedDate < :idleSince ' +
+            'ORDER BY LastModifiedDate ASC ' +
+            'LIMIT :maxRows',
+            new Map<String, Object>{ 'idleSince' => idleSince, 'maxRows' => maxRows },
+            AccessLevel.SYSTEM_MODE
+        );
+    }
+    
     /**
      * @description Reads AsyncApexJob.ExtendedStatus for a finished async job. Platform aborts
      *              such as a query timeout surface in Apex only as

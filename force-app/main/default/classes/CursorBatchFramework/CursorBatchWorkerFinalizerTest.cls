@@ -254,6 +254,49 @@ private without sharing class CursorBatchWorkerFinalizerTest {
     }
     
     @IsTest
+    static void testCompletionEventCarriesTheWorkerNumberAndSource() {
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 1, 'TestCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0);
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(
+            ctx, new CursorBatchTestUtils.MockCursorBatchLogger()
+        );
+        
+        CursorBatch_WorkerComplete__e evt = finalizer.buildCompletionEvent(true, null, true);
+        
+        Assert.areEqual(ctx.workerNum, evt.Worker_Number__c,
+            'The completion event must say which worker it reports for.');
+        Assert.areEqual(CursorBatchCompletionHandler.REPORTED_BY_WORKER, evt.Reported_By__c,
+            'A finalizer report is first-hand and must be marked as coming from the worker.');
+    }
+    
+    @IsTest
+    static void testPublishedCompletionIsLedgeredWithTheWorkerNumber() {
+        // End to end: finalizer publish, completion trigger, ledger row.
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(
+            'TestJob', 2, 'TestCoordinator'
+        );
+        CursorBatchContext ctx = CursorBatchTestUtils.createTestContext(jobRecord.Id, 0);
+        ctx.isFinal = true;
+        CursorBatchWorkerFinalizer finalizer = new CursorBatchWorkerFinalizer(
+            ctx, new CursorBatchTestUtils.MockCursorBatchLogger()
+        );
+        
+        Test.startTest();
+        finalizer.executeInternal(true, null);
+        Test.stopTest();
+        
+        List<CursorBatch_Event_Ledger__c> rows = [
+            SELECT Worker_Number__c FROM CursorBatch_Event_Ledger__c
+            WHERE Channel__c = :CursorBatchReplayGuard.CHANNEL_WORKER_COMPLETE AND Job_Record_Id__c = :jobRecord.Id
+        ];
+        Assert.areEqual(1, rows.size(), 'The delivered completion must be ledgered.');
+        Assert.areEqual(ctx.workerNum, rows[0].Worker_Number__c,
+            'The ledger row must carry the worker number, so a worker that never reports can be found.');
+    }
+    
+    @IsTest
     static void testRetryWithInvalidWorkerClass() {
         // Arrange - Test retry with a non-existent worker class
         CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createTestJobRecord(

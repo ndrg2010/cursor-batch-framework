@@ -149,16 +149,22 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              for it: far rarer than event delivery, already performing DML, and the
      *              once-a-day check is a free cached custom-setting read. See
      *              CursorBatchLedgerCleanup for why it is not done on job completion.
+     *
+     *              And where the stalled-job watchdog is armed, on blocked submissions as well:
+     *              a job stuck in Processing is exactly what blocks one. See
+     *              CursorBatchStalledJobWatchdog.
      * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
     public Id submit() {
+        Id submittedJobId = null;
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(null);
             CursorBatchLedgerCleanup.maybeSweep(logger);
-            return this.jobRecordId;
+            submittedJobId = this.jobRecordId;
         }
-        return null;
+        CursorBatchStalledJobWatchdog.maybeRun(logger);
+        return submittedJobId;
     }
     
     /**
@@ -168,13 +174,15 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
     public Id submitWithDelay(Integer delayMinutes) {
+        Id submittedJobId = null;
         if (!isJobAlreadyRunning(jobName)) {
             createJobRecord();
             publishCoordinatorEvent(delayMinutes);
             CursorBatchLedgerCleanup.maybeSweep(logger);
-            return this.jobRecordId;
+            submittedJobId = this.jobRecordId;
         }
-        return null;
+        CursorBatchStalledJobWatchdog.maybeRun(logger);
+        return submittedJobId;
     }
     
     /**

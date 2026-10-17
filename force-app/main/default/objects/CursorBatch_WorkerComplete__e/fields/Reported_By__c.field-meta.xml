@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Reported_By__c</fullName>
+    <description>Which component published this report: Worker (the worker's own finalizer), Replay Guard (the dispatch was rejected as stale), Dispatch (the worker trigger could not enqueue the shard), or Watchdog (CursorBatchStalledJobWatchdog presuming that a silent worker failed). CursorBatchCompletionHandler counts Watchdog reports only while the job still has workers unaccounted for, because they are a presumption rather than a record of what happened. Blank on events published before v0.37, which are treated as Worker.</description>
+    <externalId>false</externalId>
+    <isFilteringDisabled>false</isFilteringDisabled>
+    <isNameField>false</isNameField>
+    <isSortingDisabled>false</isSortingDisabled>
+    <label>Reported By</label>
+    <length>40</length>
+    <required>false</required>
+    <type>Text</type>
+    <unique>false</unique>
+</CustomField>

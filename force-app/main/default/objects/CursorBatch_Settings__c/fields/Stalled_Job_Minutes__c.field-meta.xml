@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomField xmlns="http://soap.sforce.com/2006/04/metadata">
+    <fullName>Stalled_Job_Minutes__c</fullName>
+    <description>How long a Processing job may go unchanged, with none of its worker queueables queued or running, before CursorBatchStalledJobWatchdog reports its unaccounted workers as failed so the job can finish. Blank, zero, or negative uses the framework default of 60 minutes; values from 1 to 14 are raised to 15. A job's own CursorBatch_Config__mdt.Stalled_Job_Minutes__c overrides this. There is no org-wide off switch: opt a single job out with -1 on its config.</description>
+    <externalId>false</externalId>
+    <inlineHelpText>Minutes a Processing job may go without any worker reporting before the watchdog closes it. Blank uses 60; the minimum is 15.</inlineHelpText>
+    <label>Stalled Job (min)</label>
+    <precision>6</precision>
+    <required>false</required>
+    <scale>0</scale>
+    <type>Number</type>
+</CustomField>

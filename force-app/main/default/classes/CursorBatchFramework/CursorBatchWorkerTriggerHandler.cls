@@ -36,6 +36,9 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
     private Map<String, Database.Cursor> cursorsByQueryId;
     private ICursorBatchLogger logger;
     
+    /** Shards reported as failed on their own behalf, published together at the end of handle(). */
+    private List<CursorBatch_WorkerComplete__e> failureReports;
+    
     /**
      * @description Default constructor. Routes log output through Nebula Logger (via the
      *              framework's resolveLogger convention) instead of the System.debug default,
@@ -45,6 +48,7 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
     public CursorBatchWorkerTriggerHandler() {
         this.cursorsByQueryId = new Map<String, Database.Cursor>();
         this.logger = CursorBatchLogger.resolveLogger(LOG_TAG);
+        this.failureReports = new List<CursorBatch_WorkerComplete__e>();
     }
     
     /**
@@ -103,11 +107,12 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
             }
         }
         reportStaleShardsAsFailed(staleShards);
+        publishFailureReports();
     }
     
     /**
      * @description Reports each shard the guard rejected as stale as a failed worker, by
-     *              publishing the same completion event a worker would publish after exhausting
+     *              queueing the same completion event a worker would publish after exhausting
      *              its retries.
      *
      *              Without this, blocking is a worse outcome than the replay. Total_Workers__c
@@ -127,37 +132,63 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
      * @param staleShards Candidates rejected with REASON_STALE
      */
     private void reportStaleShardsAsFailed(List<CursorBatchReplayGuard.Candidate> staleShards) {
-        if (staleShards.isEmpty()) {
-            return;
-        }
-        
-        List<CursorBatch_WorkerComplete__e> failures = new List<CursorBatch_WorkerComplete__e>();
         for (CursorBatchReplayGuard.Candidate candidate : staleShards) {
             if (candidate.jobRecordId == null) {
                 continue;
             }
-            failures.add(new CursorBatch_WorkerComplete__e(
-                Job_Id__c = candidate.jobRecordId,
-                Success__c = false,
-                Is_Final__c = true,
-                Retry_Count__c = 0,
-                Error_Message__c = 'Replay guard rejected worker #' + candidate.workerNumber +
+            failureReports.add(CursorBatchCompletionHandler.buildFailureReport(
+                candidate.jobRecordId,
+                candidate.workerNumber,
+                CursorBatchCompletionHandler.REPORTED_BY_REPLAY_GUARD,
+                'Replay guard rejected worker #' + candidate.workerNumber +
                     ' as stale: the event was published ' + candidate.publishedAt +
                     ' and exceeded Max_Event_Age_Minutes__c. The shard did not run.'
             ));
         }
-        
-        if (failures.isEmpty()) {
+    }
+    
+    /**
+     * @description Reports a shard that was admitted but never enqueued as a failed worker. Like a
+     *              stale shard, a shard whose dispatch failed would otherwise leave
+     *              Workers_Finished__c + Failed_Workers__c permanently short of Total_Workers__c.
+     *
+     *              Skipped when the event's job record Id is not a valid Id. The completion
+     *              handler converts Job_Id__c to an Id, so a malformed value would throw there and
+     *              roll back the whole subscriber batch, taking other jobs' completions with it.
+     *              The failure has already been logged by the caller.
+     * @param evt The worker event that could not be dispatched
+     * @param reason Why the shard could not be enqueued
+     */
+    private void reportDispatchFailure(CursorBatch_Worker__e evt, String reason) {
+        Id jobId = toIdOrNull(evt.Job_Record_Id__c);
+        if (jobId == null) {
             return;
         }
-        
-        for (Database.SaveResult result : EventBus.publish(failures)) {
-            if (!result.isSuccess()) {
-                for (Database.Error err : result.getErrors()) {
-                    logger.logError('CursorBatchWorkerTriggerHandler: Failed to report a stale shard as failed, ' +
-                        'so its job may never reach a terminal status: ' + err.getMessage());
-                }
-            }
+        Integer workerNumber = evt.Worker_Number__c != null ? evt.Worker_Number__c.intValue() : null;
+        failureReports.add(CursorBatchCompletionHandler.buildFailureReport(
+            jobId,
+            workerNumber,
+            CursorBatchCompletionHandler.REPORTED_BY_DISPATCH,
+            'Worker #' + workerNumber + ' was never enqueued, so the shard did not run: ' + reason
+        ));
+    }
+    
+    /**
+     * @description Publishes every failure report queued in this transaction.
+     */
+    private void publishFailureReports() {
+        CursorBatchCompletionHandler.publishFailureReports(failureReports, logger);
+        failureReports.clear();
+    }
+    
+    private static Id toIdOrNull(String value) {
+        if (String.isBlank(value)) {
+            return null;
+        }
+        try {
+            return Id.valueOf(value);
+        } catch (Exception e) {
+            return null;
         }
     }
     
@@ -189,10 +220,16 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
     
     /**
      * @description Processes a single event by reconstructing the cursor (for SOQL) or
-     *              skipping reconstruction (for CSV) and enqueueing a worker.
+     *              skipping reconstruction (for CSV) and enqueueing a worker. A shard that cannot
+     *              be enqueued is reported as a failed worker rather than only logged, so its job
+     *              can still reach a terminal status.
      * @param evt CursorBatch_Worker__e event containing worker parameters
      */
     private void processEvent(CursorBatch_Worker__e evt) {
+        // Set as soon as the enqueue returns, so a failure while logging afterwards can never
+        // report a shard that is in fact queued -- that would count it twice and could complete
+        // the job while the worker is still running.
+        Boolean enqueued = false;
         try {
             Database.Cursor cursor = null;
             
@@ -204,6 +241,7 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
                     cursor = CursorBatchContext.reconstructCursor(queryId);
                     if (cursor == null) {
                         logger.logError('CursorBatchWorkerTriggerHandler: Failed to reconstruct cursor for queryId "' + queryId + '"');
+                        reportDispatchFailure(evt, 'the cursor could not be reconstructed from queryId "' + queryId + '"');
                         return;
                     }
                     logger.logInfo('CursorBatchWorkerTriggerHandler: Reconstructed cursor for queryId "' + queryId + '"');
@@ -213,9 +251,15 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
             
             CursorBatchContext ctx = CursorBatchContext.fromEvent(evt, cursor);
             enqueueWorker(ctx);
+            enqueued = true;
+            logger.logInfo('CursorBatchWorkerTriggerHandler: Enqueued ' + ctx.workerClassName + ' #' + ctx.workerNum +
+                ' (positions ' + ctx.startPosition + '-' + ctx.endPosition + ')');
             
         } catch (Exception e) {
             logger.logException('CursorBatchWorkerTriggerHandler: Error processing event for job "' + evt.Job_Name__c + '"', e);
+            if (!enqueued) {
+                reportDispatchFailure(evt, e.getTypeName() + ': ' + e.getMessage());
+            }
         }
     }
     
@@ -235,8 +279,6 @@ public virtual without sharing class CursorBatchWorkerTriggerHandler {
         
         if (!Test.isRunningTest()) {
             System.enqueueJob(worker);
-            logger.logInfo('CursorBatchWorkerTriggerHandler: Enqueued ' + workerClassName + ' #' + ctx.workerNum + 
-                ' (positions ' + ctx.startPosition + '-' + ctx.endPosition + ')');
         }
     }
     
