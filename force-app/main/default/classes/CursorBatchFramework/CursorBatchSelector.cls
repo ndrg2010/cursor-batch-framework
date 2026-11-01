@@ -106,6 +106,29 @@ public without sharing class CursorBatchSelector {
     }
 
     /**
+     * @description Returns the most recent other run under the same job parent. Filters on the
+     *              indexed Job_Parent__c lookup because Job_Name__c is not indexed and
+     *              CursorBatch_Job__c grows by thousands of rows a day in busy orgs.
+     * @param parentId CursorBatch_Job_Parent__c Id of the current run
+     * @param excludeJobId The current run's Id
+     * @return The previous run, or null when there is no parent or no earlier run
+     */
+    public static CursorBatch_Job__c getPreviousRunByParent(Id parentId, Id excludeJobId) {
+        if (parentId == null) {
+            return null;
+        }
+
+        List<CursorBatch_Job__c> jobs = [
+            SELECT Id, Query_Duration_Ms__c, Total_Cursor_Retries__c
+            FROM CursorBatch_Job__c
+            WHERE Job_Parent__c = :parentId AND Id != :excludeJobId
+            ORDER BY CreatedDate DESC
+            LIMIT 1
+        ];
+        return jobs.isEmpty() ? null : jobs[0];
+    }
+
+    /**
      * @description Queries CursorBatch_Config__mdt by MasterLabel (job name).
      *              Returns only active configurations.
      * @param jobName The job name (MasterLabel) to search for

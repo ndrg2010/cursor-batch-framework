@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.37",
-      "versionNumber": "0.37.0.NEXT",
+      "versionName": "ver 0.38",
+      "versionNumber": "0.38.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Stalled-job watchdog: a job left in Processing because a worker never reported, for example because Salesforce skipped the worker's finalizer, is closed as Completed with Errors once it has been idle past its threshold (default 60 minutes) with no worker queueable queued or running, and its finish() runs. Shards the worker trigger cannot enqueue are reported as failed workers instead of only logged. Completion events and their ledger rows now carry the worker number. No configuration required.",
+      "versionDescription": "Empty runs no longer spend an Apex cursor: before Database.getCursor() the coordinator runs the job's own query with ORDER BY removed and LIMIT 1, in the same access mode as the cursor, and when it matches nothing the job completes on the zero-record path (finish() and chaining still run) without using one of the org's 10,000 daily cursors. The probe is skipped on coordinator retries and when the job's previous run had a query over 10 seconds or a query timeout, so slow jobs keep their single-query behavior. No configuration required.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -60,7 +60,9 @@
     "CursorBatchFramework@0.35.0-1": "04tfj000000Xe57AAC",
     "CursorBatchFramework@0.36.0-1": "04tfj000000b0x7AAA",
     "CursorBatchFramework@0.36.0-2": "04tfj000000b1OXAAY",
-    "CursorBatchFramework@0.37.0-1": "04tfj000000cx0fAAA"
+    "CursorBatchFramework@0.37.0-1": "04tfj000000cx0fAAA",
+    "CursorBatchFramework@0.38.0-1": "04tfj000000gaWvAAI",
+    "CursorBatchFramework@0.38.0-2": "04tfj000000gajpAAA"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

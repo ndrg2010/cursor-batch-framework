@@ -35,6 +35,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     @TestVisible
     public static Id currentAsyncJobId;
     
+    @TestVisible
+    private static Integer cursorsCreated = 0;
+    
+    @TestVisible
+    private static final Integer PROBE_MAX_PREVIOUS_QUERY_MS = 10000;
+    
     protected String jobName;
     protected String metadataJson;
     protected String processingType;
@@ -211,8 +217,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Executes the coordinator: runs query, creates cursor, extracts queryId, and
-     *              fans out workers via Platform Events.
+     * @description Executes the coordinator: probes the query for at least one row, creates the
+     *              cursor, extracts its queryId, and fans out workers via Platform Events. When the
+     *              probe finds nothing the job completes on the zero-record path without spending
+     *              one of the org's daily Apex cursors.
      * @param ctx Queueable context (unused; required by Queueable interface)
      * @throws CursorBatchException When no active config is found or job record is missing
      */
@@ -252,8 +260,19 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             // Pass query so it's available in failure logs (DML would rollback on uncatchable exception)
             attachFinalizer(jobRecord.Id, query);
             
+            if (shouldProbeBeforeCursor(jobRecord)) {
+                Long probeStartTime = System.currentTimeMillis();
+                if (!probeFindsRecords(query, logger)) {
+                    Long probeDurationMs = System.currentTimeMillis() - probeStartTime;
+                    logger.logInfo('CursorBatchCoordinator probe found no records in ' + probeDurationMs + 'ms, skipping cursor creation');
+                    fanOutJob(jobRecord, null, 0, probeDurationMs, config);
+                    return;
+                }
+            }
+            
             Long queryStartTime = System.currentTimeMillis();
             Database.Cursor dbCursor = Database.getCursor(query);
+            cursorsCreated++;
             Integer totalRecords = dbCursor.getNumRecords();
             Long queryDurationMs = System.currentTimeMillis() - queryStartTime;
             logger.logInfo('CursorBatchCoordinator cursor query took ' + queryDurationMs + 'ms, totalRecords: ' + totalRecords);
@@ -269,6 +288,62 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             // Always clear the current job ID to prevent stale references
             currentAsyncJobId = null;
         }
+    }
+    
+    /**
+     * @description Runs the CursorBatchQueryProbe version of the cursor query and reports whether
+     *              it returned a row. Executed here, not in CursorBatchQueryProbe, so the probe gets
+     *              exactly the API version and access-mode defaults Database.getCursor() gets in
+     *              execute(); no AccessLevel is passed because job queries may carry their own
+     *              WITH SYSTEM_MODE or WITH USER_MODE clause.
+     * @param query The cursor query
+     * @param logger Logger for fallback diagnostics
+     * @return false only when the probe ran and found no rows; true when it found one, could not
+     *         be built, or threw, so the caller creates the cursor as before
+     */
+    @TestVisible
+    private static Boolean probeFindsRecords(String query, ICursorBatchLogger logger) {
+        String probe = CursorBatchQueryProbe.buildProbeQuery(query);
+        if (probe == null) {
+            logger.logInfo('CursorBatchCoordinator: Could not derive a probe from the query, creating the cursor without a pre-check');
+            return true;
+        }
+        try {
+            return !Database.query(probe).isEmpty();
+        } catch (Exception e) {
+            logger.logInfo('CursorBatchCoordinator: Probe query failed, creating the cursor without a pre-check. ' +
+                'Probe: ' + probe + ' Error: ' + e.getMessage());
+            return true;
+        }
+    }
+    
+    /**
+     * @description Decides whether to run CursorBatchQueryProbe before creating the cursor. The
+     *              probe saves a cursor only when the result is empty, and when it is not it can add
+     *              a second long scan in front of the cursor. So it is skipped when this job's
+     *              previous run had a query slower than PROBE_MAX_PREVIOUS_QUERY_MS or a query
+     *              timeout, and on coordinator retries, where the attempt that timed out may have
+     *              been the probe itself.
+     * @param jobRecord The current run
+     * @return true when the probe should run
+     */
+    private Boolean shouldProbeBeforeCursor(CursorBatch_Job__c jobRecord) {
+        if (jobRecord.Total_Cursor_Retries__c != null && jobRecord.Total_Cursor_Retries__c > 0) {
+            logger.logInfo('CursorBatchCoordinator skipping empty-result probe on coordinator retry ' + jobRecord.Total_Cursor_Retries__c);
+            return false;
+        }
+        CursorBatch_Job__c previousRun = CursorBatchSelector.getPreviousRunByParent(jobRecord.Job_Parent__c, jobRecord.Id);
+        if (previousRun == null) {
+            return true;
+        }
+        Boolean previousTimedOut = previousRun.Total_Cursor_Retries__c != null && previousRun.Total_Cursor_Retries__c > 0;
+        Boolean previousWasSlow = previousRun.Query_Duration_Ms__c != null && previousRun.Query_Duration_Ms__c > PROBE_MAX_PREVIOUS_QUERY_MS;
+        if (previousTimedOut || previousWasSlow) {
+            logger.logInfo('CursorBatchCoordinator skipping empty-result probe: previous run ' + previousRun.Id +
+                ' query took ' + previousRun.Query_Duration_Ms__c + 'ms with ' + previousRun.Total_Cursor_Retries__c + ' timeout retries');
+            return false;
+        }
+        return true;
     }
     
     /**

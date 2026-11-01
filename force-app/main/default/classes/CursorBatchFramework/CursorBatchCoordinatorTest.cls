@@ -95,6 +95,7 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         Assert.areEqual('Processing', updatedJob.Status__c, 'Job should be in Processing status');
         Assert.isTrue(updatedJob.Total_Workers__c > 0, 'Should have workers assigned');
+        Assert.areEqual(1, CursorBatchCoordinator.cursorsCreated, 'A query with records should create a cursor');
     }
     
     @IsTest
@@ -116,6 +117,153 @@ private without sharing class CursorBatchCoordinatorTest {
         CursorBatch_Job__c updatedJob = CursorBatchSelector.getJobById(jobRecord.Id);
         Assert.areEqual('Completed', updatedJob.Status__c, 'Job should complete when query returns zero records');
         Assert.areEqual(0, updatedJob.Total_Records__c, 'Total_Records__c should be 0');
+        Assert.isNotNull(updatedJob.Completed_At__c, 'Completed_At__c should be set');
+        Assert.isTrue(coordinator.onCompleteCalled, 'onComplete should still run when the probe skips the cursor');
+        Assert.areEqual(0, CursorBatchCoordinator.cursorsCreated, 'An empty query should not spend an Apex cursor');
+    }
+    
+    @IsTest
+    static void testExecuteWithZeroRecordsRoutesFinishCallback() {
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.setupTestJob('TestJob', 5, 20);
+        jobRecord.Coordinator_Class__c = 'CursorBatchTestUtils.RetryableTestCoordinator';
+        update jobRecord;
+        
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob',
+                'SELECT Id, Name FROM Account WHERE Name = \'NonExistentAccount12345\' ORDER BY Name LIMIT 500');
+        coordinator.setJobRecordId(jobRecord.Id);
+        
+        Test.startTest();
+        coordinator.execute(null);
+        Test.stopTest();
+        
+        Assert.areEqual(1, CursorBatchTestUtils.retryableCoordinatorFinishCount,
+            'finish() should be invoked for a job completed by the probe so self-requeuing jobs keep polling');
+        Assert.areEqual(0, CursorBatchCoordinator.cursorsCreated, 'An empty query should not spend an Apex cursor');
+    }
+    
+    private static final String EMPTY_QUERY = 'SELECT Id FROM Account WHERE Name = \'NonExistentAccount12345\'';
+    
+    @IsTest
+    static void testProbeFindsRecordsWhenRowsMatch() {
+        Assert.isTrue(
+            CursorBatchCoordinator.probeFindsRecords(CursorBatchTestUtils.DEFAULT_TEST_QUERY, new CursorBatchTestUtils.MockCursorBatchLogger()),
+            'Probe should report records when the query matches'
+        );
+    }
+    
+    @IsTest
+    static void testProbeFindsNothingWhenNoRowsMatch() {
+        Assert.isFalse(
+            CursorBatchCoordinator.probeFindsRecords(EMPTY_QUERY + ' ORDER BY Name', new CursorBatchTestUtils.MockCursorBatchLogger()),
+            'Probe should report no records when the query matches nothing'
+        );
+    }
+    
+    @IsTest
+    static void testProbeRunsQueriesThatDeclareTheirOwnAccessMode() {
+        CursorBatchTestUtils.MockCursorBatchLogger logger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        Assert.isTrue(
+            CursorBatchCoordinator.probeFindsRecords('SELECT Id, Name FROM Account WHERE Name != null WITH SYSTEM_MODE ORDER BY Name', logger),
+            'A WITH SYSTEM_MODE query with rows should report records'
+        );
+        Assert.isFalse(
+            CursorBatchCoordinator.probeFindsRecords(EMPTY_QUERY + ' WITH SYSTEM_MODE ORDER BY Name', logger),
+            'A WITH SYSTEM_MODE query without rows should report none rather than fail'
+        );
+        Assert.isFalse(logger.hasInfoContaining('Probe query failed'), 'The probe must not collide with the query\'s own WITH clause');
+    }
+    
+    @IsTest
+    static void testProbeFallsBackWhenProbeQueryFails() {
+        CursorBatchTestUtils.MockCursorBatchLogger logger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        Assert.isTrue(
+            CursorBatchCoordinator.probeFindsRecords('SELECT Id FROM Account WHERE NotAField__c = 1', logger),
+            'A failing probe should fall back to creating the cursor'
+        );
+        Assert.isTrue(logger.hasInfoContaining('Probe query failed'), 'Fallback should be logged');
+    }
+    
+    @IsTest
+    static void testProbeFallsBackWhenNoProbeCanBeBuilt() {
+        CursorBatchTestUtils.MockCursorBatchLogger logger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        Assert.isTrue(CursorBatchCoordinator.probeFindsRecords('SELECT Id', logger), 'An unparseable query should fall back to creating the cursor');
+        Assert.isTrue(logger.hasInfoContaining('Could not derive a probe'), 'Fallback should be logged');
+    }
+    
+    private static CursorBatch_Job__c setupJobAfterPreviousRun(Decimal previousQueryMs, Decimal previousRetries) {
+        CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+            Config_Developer_Name__c = 'TestJob',
+            Config_Label__c = 'TestJob'
+        );
+        insert parent;
+        
+        CursorBatch_Job__c previousRun = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 0);
+        previousRun.Status__c = 'Completed';
+        previousRun.Query_Duration_Ms__c = previousQueryMs;
+        previousRun.Total_Cursor_Retries__c = previousRetries;
+        previousRun.Job_Parent__c = parent.Id;
+        update previousRun;
+        
+        CursorBatch_Job__c currentRun = CursorBatchTestUtils.setupTestJob('TestJob', 5, 20);
+        currentRun.Job_Parent__c = parent.Id;
+        update currentRun;
+        return currentRun;
+    }
+    
+    private static void executeEmptyQuery(CursorBatch_Job__c jobRecord) {
+        CursorBatchTestUtils.TestCursorBatchCoordinator coordinator =
+            new CursorBatchTestUtils.TestCursorBatchCoordinator('TestJob', EMPTY_QUERY);
+        coordinator.setJobRecordId(jobRecord.Id);
+        
+        Test.startTest();
+        coordinator.execute(null);
+        Test.stopTest();
+        
+        Assert.areEqual('Completed', CursorBatchSelector.getJobById(jobRecord.Id).Status__c,
+            'An empty query should complete the job whether or not the probe ran');
+    }
+    
+    @IsTest
+    static void testProbeRunsWhenPreviousQueryWasFast() {
+        CursorBatch_Job__c jobRecord = setupJobAfterPreviousRun(500, 0);
+        
+        executeEmptyQuery(jobRecord);
+        
+        Assert.areEqual(0, CursorBatchCoordinator.cursorsCreated, 'A fast previous query should leave the probe on');
+    }
+    
+    @IsTest
+    static void testProbeSkippedWhenPreviousQueryWasSlow() {
+        CursorBatch_Job__c jobRecord = setupJobAfterPreviousRun(CursorBatchCoordinator.PROBE_MAX_PREVIOUS_QUERY_MS + 1, 0);
+        
+        executeEmptyQuery(jobRecord);
+        
+        Assert.areEqual(1, CursorBatchCoordinator.cursorsCreated, 'A slow previous query should skip the probe and create the cursor');
+    }
+    
+    @IsTest
+    static void testProbeSkippedWhenPreviousRunTimedOut() {
+        CursorBatch_Job__c jobRecord = setupJobAfterPreviousRun(500, 2);
+        
+        executeEmptyQuery(jobRecord);
+        
+        Assert.areEqual(1, CursorBatchCoordinator.cursorsCreated, 'A previous query timeout should skip the probe and create the cursor');
+    }
+    
+    @IsTest
+    static void testProbeSkippedOnCoordinatorRetry() {
+        CursorBatchCoordinator.testConfig = CursorBatchTestUtils.createTestConfig('TestJob', 5, 20);
+        CursorBatch_Job__c jobRecord = CursorBatchTestUtils.createPreparingJobRecord(
+            'TestJob', 'CursorBatchTestUtils.TestCursorBatchCoordinator', 1);
+        
+        executeEmptyQuery(jobRecord);
+        
+        Assert.areEqual(1, CursorBatchCoordinator.cursorsCreated, 'A retry should skip the probe in case the probe was what timed out');
     }
     
     @IsTest

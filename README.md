@@ -74,13 +74,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000cx0fAAA) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000cx0fAAA) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000gajpAAA) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000gajpAAA) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000cx0fAAA --target-org your-org --wait 10
+sf package install --package 04tfj000000gajpAAA --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -449,7 +449,7 @@ CursorJob.run() → createJobRecord (Preparing) → CursorBatch_Coordinator__e
 
 Both the **Coordinator** and **Workers** are implemented as `Queueable` classes:
 
-- **`CursorBatchCoordinator`** (Queueable): Executes the SOQL query, creates a `Database.Cursor`, extracts its queryId for cross-transaction access, and publishes Platform Events to fan out workers. Uses a Queueable Finalizer to handle cursor query timeouts with automatic retries. **Routed through a Platform Event** to ensure it runs as the dedicated trigger user.
+- **`CursorBatchCoordinator`** (Queueable): Checks that the SOQL query matches at least one record (see [Empty Results Skip the Cursor](#empty-results-skip-the-cursor)), creates a `Database.Cursor`, extracts its queryId for cross-transaction access, and publishes Platform Events to fan out workers. Uses a Queueable Finalizer to handle cursor query timeouts with automatic retries. **Routed through a Platform Event** to ensure it runs as the dedicated trigger user.
 - **`CursorBatchWorker`** (Queueable): Processes batches of records from assigned cursor positions. Workers can re-enqueue themselves to process subsequent pages within their assigned range.
 
 ### Cursor User Affinity
@@ -462,6 +462,32 @@ Both the **Coordinator** and **Workers** are implemented as `Queueable` classes:
 4. **Workers** also run as the trigger user (via `CursorBatch_Worker__e` trigger) and can access the cursor
 
 This is why all three Platform Event Subscriber Configs must specify the **same user**.
+
+### Empty Results Skip the Cursor
+
+Salesforce allows **10,000 Apex cursors per rolling 24 hours** per org (`DailyApexCursorLimit` in `sf org list limits`), and every `Database.getCursor()` call spends one, even when it matches nothing. A job that requeues itself every minute uses about 1,440 a day on its own, mostly on empty runs.
+
+Before creating the cursor, the coordinator runs a one-row probe built by `CursorBatchQueryProbe`. The probe is the cursor query itself with two changes: the top-level `ORDER BY` is removed, and the top-level `LIMIT` is set to 1 (or added before any `OFFSET`, `FOR` or `ALL ROWS`). Everything else is kept verbatim, including the select list and any `WITH SYSTEM_MODE` or `WITH USER_MODE` clause:
+
+```sql
+-- Cursor query
+SELECT Id, Name FROM Account WHERE Status__c = 'Pending' WITH SYSTEM_MODE ORDER BY Name LIMIT 500
+-- Probe
+SELECT Id, Name FROM Account WHERE Status__c = 'Pending' WITH SYSTEM_MODE LIMIT 1
+```
+
+The probe runs inside `CursorBatchCoordinator`, right before `Database.getCursor()`, with no access level of its own. It therefore gets exactly the cursor's access-mode and sharing behavior, and it returns a row exactly when the cursor would. Dropping `ORDER BY` can't change whether a row exists, and it means a matching probe returns at the first hit instead of sorting every match.
+
+When the probe returns no rows, the job takes the normal zero-record path: `Completed` with `Total_Records__c = 0`, then `onComplete()` and `finish()`/chaining run as before, so self-requeuing jobs keep polling. `Query_Duration_Ms__c` records the probe time on these runs, and `Cursor_Query_Id__c` stays blank.
+
+The probe only saves a cursor when the result is empty. When it isn't, the probe can add a second long scan in front of the cursor. So the coordinator skips the probe when:
+
+- the job's previous run (found through `Job_Parent__c`) recorded a `Query_Duration_Ms__c` over 10 seconds, or needed any `Total_Cursor_Retries__c`
+- the current run is a coordinator retry, because the attempt that timed out may have been the probe
+
+Query duration here is the cursor (or probe) query alone, not the whole job. In production, the jobs whose runs are mostly empty are the minute-by-minute pollers, whose queries take under a second, so this rule keeps about 98% of the savings. Slow nightly jobs keep their old single-query behavior. Coordinators without a `CursorBatch_Config__mdt` record have no parent, so they always probe except on retries.
+
+If the probe cannot be built (no top-level `FROM`, or a `LIMIT` that is not a number) or the probe query throws, the coordinator logs the reason at INFO and creates the cursor as before. A record inserted between the probe and the would-be cursor is picked up by the next run.
 
 ### Retry Handling for Cursor Timeouts
 
@@ -2184,6 +2210,8 @@ The framework logs key events at each stage:
 | Event | Level | Example Message |
 |-------|-------|-----------------|
 | Query execution | INFO | `CursorBatchCoordinator query for MyJob: SELECT Id FROM Account...` |
+| Empty result | INFO | `CursorBatchCoordinator probe found no records in 12ms, skipping cursor creation` |
+| Probe skipped | INFO | `CursorBatchCoordinator skipping empty-result probe: previous run a0B... query took 61347ms with 0 timeout retries` |
 | Query timing | INFO | `CursorBatchCoordinator cursor query took 150ms, totalRecords: 50000` |
 | Worker distribution | INFO | `Distributing 50000 records across 50 workers (200 batches) via Platform Events` |
 | Cursor queryId | INFO | `CursorBatchCoordinator extracted cursor queryId: 0r8xx50caotWO4i` |
@@ -2634,6 +2662,7 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 | `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code. `run()` / `runWithDelay()` return the job record `Id` for tracking |
 | `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers. `submit()` / `submitWithDelay()` return the job record `Id` |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
+| `CursorBatchQueryProbe` | Builds the one-row existence check (the cursor query without `ORDER BY`, at `LIMIT 1`) that the coordinator runs before `Database.getCursor()` so empty runs don't spend a daily Apex cursor. See [Empty Results Skip the Cursor](#empty-results-skip-the-cursor) |
 | `CursorBatchCoordinatorTriggerHandler` | Platform Event trigger handler that enqueues coordinator Queueable from submit() |
 | `CursorBatchWorker` | Abstract base for workers (Queueable, AllowsCallouts). Processes record batches from cursor positions, supports retry for failed pages. Includes `finish()` virtual method for completion logic |
 | `CursorBatchWorkerFinalizer` | Queueable finalizer that handles worker retry and publishes completion events |
