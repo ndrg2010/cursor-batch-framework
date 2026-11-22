@@ -1,12 +1,12 @@
 {
   "packageDirectories": [
     {
-      "versionName": "ver 0.38",
-      "versionNumber": "0.38.0.NEXT",
+      "versionName": "ver 0.39",
+      "versionNumber": "0.39.0.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Empty runs no longer spend an Apex cursor: before Database.getCursor() the coordinator runs the job's own query with ORDER BY removed and LIMIT 1, in the same access mode as the cursor, and when it matches nothing the job completes on the zero-record path (finish() and chaining still run) without using one of the org's 10,000 daily cursors. The probe is skipped on coordinator retries and when the job's previous run had a query over 10 seconds or a query timeout, so slow jobs keep their single-query behavior. No configuration required.",
+      "versionDescription": "Submit many jobs in one call: CursorJob.run(List<String> jobNames) returns a job record Id per name, and CursorJob.run(jobName, List<Map<String, Object>> metadataList) submits one run per metadata map and returns Ids in input order. Both use the same queries and DML as a single run, whatever the count: one duplicate check per distinct name, one parent upsert, one job insert and one coordinator event publish. Runs in one call never block each other; a job that is already running is skipped (null) unless Skip_Duplicate_Check__c is set. If any query fails to build, nothing is submitted. submit() and submitWithDelay() now share this path, and custom coordinators can call CursorBatchCoordinator.submitAll().",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -62,7 +62,8 @@
     "CursorBatchFramework@0.36.0-2": "04tfj000000b1OXAAY",
     "CursorBatchFramework@0.37.0-1": "04tfj000000cx0fAAA",
     "CursorBatchFramework@0.38.0-1": "04tfj000000gaWvAAI",
-    "CursorBatchFramework@0.38.0-2": "04tfj000000gajpAAA"
+    "CursorBatchFramework@0.38.0-2": "04tfj000000gajpAAA",
+    "CursorBatchFramework@0.39.0-1": "04tfj000000mtDVAAY"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

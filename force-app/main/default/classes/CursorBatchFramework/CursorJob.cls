@@ -9,6 +9,15 @@
  *      
  *      // Run with delay
  *      CursorJob.runWithDelay('Lead Routing Batch', 1);
+ *      
+ *      // Run several jobs in one call
+ *      Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'Five9 Delete Batch', 'Lead Routing Batch' });
+ *      
+ *      // Run one job once per metadata map
+ *      List<Id> jobIds = CursorJob.run('Process Account Children', new List<Map<String, Object>>{
+ *          new Map<String, Object>{ 'accountId' => accountIdA },
+ *          new Map<String, Object>{ 'accountId' => accountIdB }
+ *      });
  * 
  * Configuration (CursorBatch_Config__mdt):
  *      MasterLabel: Five9 Delete Batch
@@ -76,6 +85,50 @@ public without sharing class CursorJob extends CursorBatchCoordinator {
      */
     public static Id run(String jobName, Map<String, Object> metadata) {
         return new CursorJob(jobName, metadata).submit();
+    }
+    
+    /**
+     * @description Runs several different jobs immediately in one call, with a fixed number of
+     *              queries and DML statements. Repeated names are submitted once. If any job's
+     *              query fails to build, nothing is submitted.
+     * @param jobNames Job identifiers matching CursorBatch_Config__mdt.MasterLabel
+     * @return Job record Id by job name; null for a job that was already running
+     */
+    public static Map<String, Id> run(List<String> jobNames) {
+        Map<String, Id> jobIdsByName = new Map<String, Id>();
+        if (jobNames == null || jobNames.isEmpty()) {
+            return jobIdsByName;
+        }
+        List<String> uniqueNames = new List<String>(new Set<String>(jobNames));
+        List<CursorBatchCoordinator> jobs = new List<CursorBatchCoordinator>();
+        for (String jobName : uniqueNames) {
+            jobs.add(new CursorJob(jobName));
+        }
+        List<Id> jobIds = submitAll(jobs, null);
+        for (Integer i = 0; i < uniqueNames.size(); i++) {
+            jobIdsByName.put(uniqueNames[i], jobIds[i]);
+        }
+        return jobIdsByName;
+    }
+    
+    /**
+     * @description Runs the same job once per metadata map, immediately and in one call. Runs in
+     *              the call do not block each other, but if the job is already running every
+     *              entry is skipped unless Skip_Duplicate_Check__c is set. If any run's query
+     *              fails to build, nothing is submitted.
+     * @param jobName Job identifier matching CursorBatch_Config__mdt.MasterLabel
+     * @param metadataList One map of runtime parameters per run, serialized to JSON internally
+     * @return Job record Ids in the same order as metadataList; null entries when the job was already running
+     */
+    public static List<Id> run(String jobName, List<Map<String, Object>> metadataList) {
+        if (metadataList == null || metadataList.isEmpty()) {
+            return new List<Id>();
+        }
+        List<CursorBatchCoordinator> jobs = new List<CursorBatchCoordinator>();
+        for (Map<String, Object> metadata : metadataList) {
+            jobs.add(new CursorJob(jobName, metadata));
+        }
+        return submitAll(jobs, null);
     }
     
     /**

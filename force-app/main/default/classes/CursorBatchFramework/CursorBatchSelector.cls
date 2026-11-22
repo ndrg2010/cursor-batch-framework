@@ -106,6 +106,24 @@ public without sharing class CursorBatchSelector {
     }
 
     /**
+     * @description Bulk form of getRunningJobsByName for submitting several jobs in one transaction.
+     *              Same statuses, one query for all names.
+     * @param jobNames The job names to search for
+     * @return List of running CursorBatch_Job__c records for any of the names
+     */
+    public static List<CursorBatch_Job__c> getRunningJobsByNames(Set<String> jobNames) {
+        if (jobNames == null || jobNames.isEmpty()) {
+            return new List<CursorBatch_Job__c>();
+        }
+
+        return getJobsWithAllFields(
+            'Job_Name__c IN :jobNames AND Status__c IN :statuses',
+            new Map<String, Object>{ 'jobNames' => jobNames, 'statuses' => new List<String>{ 'Preparing', 'Extracting File', 'Processing' } },
+            null
+        );
+    }
+
+    /**
      * @description Returns the most recent other run under the same job parent. Filters on the
      *              indexed Job_Parent__c lookup because Job_Name__c is not indexed and
      *              CursorBatch_Job__c grows by thousands of rows a day in busy orgs.

@@ -121,6 +121,9 @@ private without sharing class CursorJobTest {
                     return 'SELECT Id, Name FROM Account WHERE Id = \'' +
                            String.escapeSingleQuotes(accountId) + '\'';
                 }
+                when 'getAccountsOrNullWhenFailQuery' {
+                    return metadata.get('fail') == true ? null : CursorBatchTestUtils.DEFAULT_TEST_QUERY;
+                }
                 when else {
                     return null;
                 }
@@ -1129,5 +1132,240 @@ private without sharing class CursorJobTest {
         // Assert
         Assert.areEqual(metadataJson, coordinatorFinishMetadata,
             'Coordinator finish() should have access to metadata via this.metadataJson');
+    }
+    
+    // ============================================
+    // Bulk Run Tests
+    // ============================================
+    
+    @IsTest
+    static void testRunListCreatesOneJobPerDistinctName() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkJobA',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        // Act
+        Test.startTest();
+        Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'BulkJobA', 'BulkJobB', 'BulkJobA' });
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(2, jobIdsByName.size(), 'Repeated names should collapse to one entry');
+        Assert.isNotNull(jobIdsByName.get('BulkJobA'), 'BulkJobA should be submitted');
+        Assert.isNotNull(jobIdsByName.get('BulkJobB'), 'BulkJobB should be submitted');
+        
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByNames(new Set<String>{ 'BulkJobA', 'BulkJobB' });
+        Assert.areEqual(2, jobs.size(), 'Should create one job record per distinct name');
+        for (CursorBatch_Job__c job : jobs) {
+            Assert.areEqual('Preparing', job.Status__c, 'Bulk-submitted jobs should start in Preparing');
+            Assert.areEqual(jobIdsByName.get(job.Job_Name__c), job.Id, 'Returned Id should match the job record for its name');
+            Assert.isNotNull(job.Job_Parent__c, 'Bulk-submitted jobs should be linked to their parent');
+        }
+    }
+    
+    @IsTest
+    static void testRunListSkipsAlreadyRunningName() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkRunning',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        CursorBatch_Job__c runningJob = CursorBatchTestUtils.createTestJobRecord('BulkRunning', 1, 'CursorJob');
+        
+        // Act
+        Test.startTest();
+        Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'BulkRunning', 'BulkIdle' });
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(jobIdsByName.containsKey('BulkRunning'), 'Skipped name should still appear in the result');
+        Assert.isNull(jobIdsByName.get('BulkRunning'), 'Already-running job should map to null');
+        Assert.isNotNull(jobIdsByName.get('BulkIdle'), 'Idle job should still be submitted');
+        
+        List<CursorBatch_Job__c> running = CursorBatchSelector.getRunningJobsByName('BulkRunning');
+        Assert.areEqual(1, running.size(), 'No second run should be created for the running job');
+        Assert.areEqual(runningJob.Id, running[0].Id, 'The original run should be the only one');
+    }
+    
+    @IsTest
+    static void testRunListEmptyOrNullDoesNothing() {
+        // Act
+        Test.startTest();
+        Map<String, Id> fromNull = CursorJob.run((List<String>) null);
+        Map<String, Id> fromEmpty = CursorJob.run(new List<String>());
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(fromNull.isEmpty(), 'Null input should return an empty map');
+        Assert.isTrue(fromEmpty.isEmpty(), 'Empty input should return an empty map');
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Job__c], 'No job records should be created');
+    }
+    
+    @IsTest
+    static void testRunListUsesSameQueriesAndDmlForAnyCount() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkLimits',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        Test.startTest();
+        // Warm-up so the once-per-interval ledger sweep and watchdog stamps don't skew the counts
+        CursorJob.run(new List<String>{ 'BulkLimitsWarmUp' });
+        
+        // Act
+        Integer queriesBefore = Limits.getQueries();
+        Integer dmlBefore = Limits.getDmlStatements();
+        CursorJob.run(new List<String>{ 'BulkLimitsOne' });
+        Integer singleQueries = Limits.getQueries() - queriesBefore;
+        Integer singleDml = Limits.getDmlStatements() - dmlBefore;
+        
+        queriesBefore = Limits.getQueries();
+        dmlBefore = Limits.getDmlStatements();
+        CursorJob.run(new List<String>{ 'BulkLimits1', 'BulkLimits2', 'BulkLimits3', 'BulkLimits4', 'BulkLimits5' });
+        Integer fiveQueries = Limits.getQueries() - queriesBefore;
+        Integer fiveDml = Limits.getDmlStatements() - dmlBefore;
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(singleQueries, fiveQueries, 'Five jobs should use the same number of queries as one');
+        Assert.areEqual(singleDml, fiveDml, 'Five jobs should use the same number of DML statements as one');
+    }
+    
+    @IsTest
+    static void testRunMetadataListCreatesOneJobPerMapInOrder() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkMetadata',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        List<Map<String, Object>> metadataList = new List<Map<String, Object>>{
+            new Map<String, Object>{ 'run' => 1 },
+            new Map<String, Object>{ 'run' => 2 },
+            new Map<String, Object>{ 'run' => 3 }
+        };
+        
+        // Act
+        Test.startTest();
+        List<Id> jobIds = CursorJob.run('BulkMetadata', metadataList);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(3, jobIds.size(), 'Should return one Id per metadata map');
+        Map<Id, CursorBatch_Job__c> jobsById = new Map<Id, CursorBatch_Job__c>(
+            CursorBatchSelector.getRunningJobsByName('BulkMetadata')
+        );
+        Assert.areEqual(3, jobsById.size(), 'Runs in one call should not block each other');
+        for (Integer i = 0; i < jobIds.size(); i++) {
+            Assert.isNotNull(jobIds[i], 'Every run should be submitted');
+            Assert.areEqual(JSON.serialize(metadataList[i]), jobsById.get(jobIds[i]).Metadata_JSON__c,
+                'Ids should come back in input order with their own metadata');
+        }
+    }
+    
+    @IsTest
+    static void testRunMetadataListSkipsAllWhenAlreadyRunning() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkMetadataRunning',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        CursorBatchTestUtils.createTestJobRecord('BulkMetadataRunning', 1, 'CursorJob');
+        
+        // Act
+        Test.startTest();
+        List<Id> jobIds = CursorJob.run('BulkMetadataRunning', new List<Map<String, Object>>{
+            new Map<String, Object>{ 'run' => 1 },
+            new Map<String, Object>{ 'run' => 2 }
+        });
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(new List<Id>{ null, null }, jobIds, 'Every entry should be skipped while the job is running');
+        Assert.areEqual(1, CursorBatchSelector.getRunningJobsByName('BulkMetadataRunning').size(),
+            'No new runs should be created');
+    }
+    
+    @IsTest
+    static void testRunMetadataListAllowsDuplicatesWhenSkipDuplicateCheck() {
+        // Arrange
+        CursorBatch_Config__mdt config = createCursorJobConfig(
+            'BulkMetadataSkip',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        config.Skip_Duplicate_Check__c = true;
+        CursorBatchCoordinator.testConfig = config;
+        CursorBatchTestUtils.createTestJobRecord('BulkMetadataSkip', 1, 'CursorJob');
+        
+        // Act
+        Test.startTest();
+        List<Id> jobIds = CursorJob.run('BulkMetadataSkip', new List<Map<String, Object>>{
+            new Map<String, Object>{ 'run' => 1 },
+            new Map<String, Object>{ 'run' => 2 }
+        });
+        Test.stopTest();
+        
+        // Assert
+        Assert.isNotNull(jobIds[0], 'First run should be submitted');
+        Assert.isNotNull(jobIds[1], 'Second run should be submitted');
+        Assert.areEqual(3, CursorBatchSelector.getRunningJobsByName('BulkMetadataSkip').size(),
+            'Both runs should be added alongside the running one');
+    }
+    
+    @IsTest
+    static void testRunMetadataListSubmitsNothingWhenOneQueryFails() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkMetadataFail',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsOrNullWhenFailQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        
+        // Act
+        Test.startTest();
+        CursorBatchCoordinator.CursorBatchException caught;
+        try {
+            CursorJob.run('BulkMetadataFail', new List<Map<String, Object>>{
+                new Map<String, Object>{ 'fail' => false },
+                new Map<String, Object>{ 'fail' => true }
+            });
+        } catch (CursorBatchCoordinator.CursorBatchException e) {
+            caught = e;
+        }
+        Test.stopTest();
+        
+        // Assert
+        Assert.isNotNull(caught, 'A query that fails to build should throw');
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Job__c WHERE Job_Name__c = 'BulkMetadataFail'],
+            'No run should be created when any run in the call fails to build');
+    }
+    
+    @IsTest
+    static void testRunMetadataListEmptyOrNullDoesNothing() {
+        // Act
+        Test.startTest();
+        List<Id> fromNull = CursorJob.run('BulkMetadataNone', (List<Map<String, Object>>) null);
+        List<Id> fromEmpty = CursorJob.run('BulkMetadataNone', new List<Map<String, Object>>());
+        Test.stopTest();
+        
+        // Assert
+        Assert.isTrue(fromNull.isEmpty(), 'Null input should return an empty list');
+        Assert.isTrue(fromEmpty.isEmpty(), 'Empty input should return an empty list');
+        Assert.areEqual(0, [SELECT COUNT() FROM CursorBatch_Job__c], 'No job records should be created');
     }
 }

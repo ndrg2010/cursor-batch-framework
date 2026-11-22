@@ -162,15 +162,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
     public Id submit() {
-        Id submittedJobId = null;
-        if (!isJobAlreadyRunning(jobName)) {
-            createJobRecord();
-            publishCoordinatorEvent(null);
-            CursorBatchLedgerCleanup.maybeSweep(logger);
-            submittedJobId = this.jobRecordId;
-        }
-        CursorBatchStalledJobWatchdog.maybeRun(logger);
-        return submittedJobId;
+        return submitAll(new List<CursorBatchCoordinator>{ this }, null)[0];
     }
     
     /**
@@ -180,39 +172,182 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @return The CursorBatch_Job__c record Id, or null if the job was already running
      */
     public Id submitWithDelay(Integer delayMinutes) {
-        Id submittedJobId = null;
-        if (!isJobAlreadyRunning(jobName)) {
-            createJobRecord();
-            publishCoordinatorEvent(delayMinutes);
-            CursorBatchLedgerCleanup.maybeSweep(logger);
-            submittedJobId = this.jobRecordId;
-        }
-        CursorBatchStalledJobWatchdog.maybeRun(logger);
-        return submittedJobId;
+        return submitAll(new List<CursorBatchCoordinator>{ this }, delayMinutes)[0];
     }
     
     /**
-     * @description Publishes a CursorBatch_Coordinator__e Platform Event to trigger coordinator
-     *              execution. The trigger runs as the dedicated user configured in the
+     * @description Submits several coordinators in one transaction with a fixed number of
+     *              queries and DML statements: one duplicate check per distinct job name, one
+     *              parent upsert, one job-record insert and one Platform Event publish.
+     *
+     *              Coordinators in the same call do not block each other; each job name is
+     *              checked only against runs that already exist, so every coordinator sharing
+     *              a name that is already running is skipped. Every job record is built before
+     *              any DML, so a buildQuery() that throws leaves nothing inserted or published.
+     *
+     *              There is no cap on the count. Heap (Query__c, State_JSON__c and
+     *              Metadata_JSON__c per record), DML rows, CPU and any SOQL run inside
+     *              buildQuery() are the ceiling here. After commit every job starts in its own
+     *              coordinator transaction, one at a time, and spends a cursor and up to
+     *              Parallel_Count__c worker queueables.
+     * @param coordinators Coordinators to submit, each constructed with its job name
+     * @param delayMinutes Delay before each coordinator executes (1-10); null for immediate
+     * @return Job record Ids aligned with coordinators; null where the job was already running
+     */
+    public static List<Id> submitAll(List<CursorBatchCoordinator> coordinators, Integer delayMinutes) {
+        List<Id> submittedIds = new List<Id>();
+        if (coordinators == null || coordinators.isEmpty()) {
+            return submittedIds;
+        }
+        
+        Set<String> runningJobNames = findRunningJobNames(coordinators);
+        
+        List<CursorBatchCoordinator> admitted = new List<CursorBatchCoordinator>();
+        List<CursorBatch_Job__c> jobs = new List<CursorBatch_Job__c>();
+        for (CursorBatchCoordinator coordinator : coordinators) {
+            if (!runningJobNames.contains(coordinator.jobName)) {
+                admitted.add(coordinator);
+                jobs.add(coordinator.buildJobRecord());
+            }
+        }
+        
+        if (!admitted.isEmpty()) {
+            linkJobParents(admitted, jobs);
+            insert jobs;
+            for (Integer i = 0; i < admitted.size(); i++) {
+                admitted[i].jobRecordId = jobs[i].Id;
+                admitted[i].logger.logInfo('CursorBatchCoordinator created job record in submit: ' + jobs[i].Id);
+            }
+            publishCoordinatorEvents(admitted, delayMinutes);
+            CursorBatchLedgerCleanup.maybeSweep(admitted[0].logger);
+        }
+        CursorBatchStalledJobWatchdog.maybeRun(coordinators[0].logger);
+        
+        for (CursorBatchCoordinator coordinator : coordinators) {
+            submittedIds.add(runningJobNames.contains(coordinator.jobName) ? null : coordinator.jobRecordId);
+        }
+        return submittedIds;
+    }
+    
+    /**
+     * @description Returns the job names among the coordinators that are already running, checking
+     *              each distinct name once. CursorJob instances get a bulk version of
+     *              isJobAlreadyRunning(): it cannot be overridden for them (CursorJob is not
+     *              virtual), so two set-based queries replace two queries per name. Any other
+     *              coordinator class keeps its own isJobAlreadyRunning(), overrides included.
+     * @param coordinators Coordinators about to be submitted
+     * @return Job names that must not be submitted
+     */
+    private static Set<String> findRunningJobNames(List<CursorBatchCoordinator> coordinators) {
+        Set<String> running = new Set<String>();
+        Set<String> checkedNames = new Set<String>();
+        Map<String, CursorBatchCoordinator> bulkCheckByName = new Map<String, CursorBatchCoordinator>();
+        
+        for (CursorBatchCoordinator coordinator : coordinators) {
+            String name = coordinator.jobName;
+            if (checkedNames.contains(name)) {
+                continue;
+            }
+            checkedNames.add(name);
+            
+            if (CursorBatchContext.getClassName(coordinator) != 'CursorJob') {
+                if (coordinator.isJobAlreadyRunning(name)) {
+                    running.add(name);
+                }
+                continue;
+            }
+            
+            CursorBatch_Config__mdt config = getConfig(name);
+            if (config != null && config.Skip_Duplicate_Check__c == true) {
+                coordinator.logger.logInfo('CursorBatchCoordinator: Skipping duplicate check for "' + name + '" (Skip_Duplicate_Check__c enabled)');
+                continue;
+            }
+            bulkCheckByName.put(name, coordinator);
+        }
+        
+        if (bulkCheckByName.isEmpty()) {
+            return running;
+        }
+        
+        // Check 1: CursorBatch_Job__c records. SOQL text comparison ignores case, so match the
+        // returned Job_Name__c back to the requested name the same way.
+        Map<String, String> requestedNameByLower = new Map<String, String>();
+        for (String name : bulkCheckByName.keySet()) {
+            if (String.isNotBlank(name)) {
+                requestedNameByLower.put(name.toLowerCase(), name);
+            }
+        }
+        for (CursorBatch_Job__c job : CursorBatchSelector.getRunningJobsByNames(new Set<String>(requestedNameByLower.values()))) {
+            String name = requestedNameByLower.get(job.Job_Name__c?.toLowerCase());
+            if (name != null && !running.contains(name)) {
+                running.add(name);
+                bulkCheckByName.get(name).logger.logInfo('CursorBatchCoordinator: Job "' + name + '" is already running (found CursorBatch_Job__c record)');
+            }
+        }
+        
+        // Check 3: AsyncApexJob for worker class. Check 2 (coordinator class) is skipped for
+        // CursorJob because every metadata-driven job shares it.
+        Map<String, List<String>> namesByWorkerClass = new Map<String, List<String>>();
+        for (String name : bulkCheckByName.keySet()) {
+            if (running.contains(name)) {
+                continue;
+            }
+            CursorBatchCoordinator coordinator = bulkCheckByName.get(name);
+            String workerClassName = coordinator.resolveWorkerClassName(getConfig(name));
+            if (String.isBlank(workerClassName)) {
+                continue;
+            }
+            String key = workerClassName.toLowerCase();
+            if (!namesByWorkerClass.containsKey(key)) {
+                namesByWorkerClass.put(key, new List<String>());
+            }
+            namesByWorkerClass.get(key).add(name);
+        }
+        if (namesByWorkerClass.isEmpty()) {
+            return running;
+        }
+        for (String activeClass : CursorBatchSelector.getActiveAsyncClassNames(namesByWorkerClass.keySet())) {
+            List<String> names = namesByWorkerClass.get(activeClass.toLowerCase());
+            if (names == null) {
+                continue;
+            }
+            for (String name : names) {
+                running.add(name);
+                bulkCheckByName.get(name).logger.logInfo('CursorBatchCoordinator: Job "' + name + '" is already running (found AsyncApexJob for worker ' + activeClass + ')');
+            }
+        }
+        return running;
+    }
+    
+    /**
+     * @description Publishes one CursorBatch_Coordinator__e per coordinator in a single call. The
+     *              trigger runs as the dedicated user configured in the
      *              PlatformEventSubscriberConfig, ensuring the cursor is created by that user.
+     * @param coordinators Coordinators whose job records were just inserted
      * @param delayMinutes Optional delay in minutes for deferred execution; null for immediate
      */
-    private void publishCoordinatorEvent(Integer delayMinutes) {
-        CursorBatch_Coordinator__e evt = new CursorBatch_Coordinator__e(
-            Job_Name__c = jobName,
-            Coordinator_Class__c = CursorBatchContext.getClassName(this),
-            Job_Record_Id__c = jobRecordId,
-            Delay_Minutes__c = delayMinutes
-        );
+    private static void publishCoordinatorEvents(List<CursorBatchCoordinator> coordinators, Integer delayMinutes) {
+        List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>();
+        for (CursorBatchCoordinator coordinator : coordinators) {
+            events.add(new CursorBatch_Coordinator__e(
+                Job_Name__c = coordinator.jobName,
+                Coordinator_Class__c = CursorBatchContext.getClassName(coordinator),
+                Job_Record_Id__c = coordinator.jobRecordId,
+                Delay_Minutes__c = delayMinutes
+            ));
+        }
         
-        Database.SaveResult result = EventBus.publish(evt);
-        if (!result.isSuccess()) {
-            for (Database.Error err : result.getErrors()) {
-                logger.logError('CursorBatchCoordinator: Failed to publish coordinator event: ' + err.getMessage());
+        List<Database.SaveResult> results = EventBus.publish(events);
+        String delayMsg = delayMinutes != null ? ' with ' + delayMinutes + ' min delay' : '';
+        for (Integer i = 0; i < results.size(); i++) {
+            CursorBatchCoordinator coordinator = coordinators[i];
+            if (!results[i].isSuccess()) {
+                for (Database.Error err : results[i].getErrors()) {
+                    coordinator.logger.logError('CursorBatchCoordinator: Failed to publish coordinator event: ' + err.getMessage());
+                }
+            } else {
+                coordinator.logger.logInfo('CursorBatchCoordinator: Published coordinator event for ' + coordinator.jobName + delayMsg);
             }
-        } else {
-            String delayMsg = delayMinutes != null ? ' with ' + delayMinutes + ' min delay' : '';
-            logger.logInfo('CursorBatchCoordinator: Published coordinator event for ' + jobName + delayMsg);
         }
     }
     
@@ -250,7 +385,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
                 ? config.Processing_Type__c : CursorBatchContext.PROCESSING_TYPE_SOQL;
             
             // On retry, use stored query from job record (buildQuery() may fail if coordinator
-            // state wasn't reconstructed). Fresh runs have Query__c set by createJobRecord().
+            // state wasn't reconstructed). Fresh runs have Query__c set by buildJobRecord().
             String query = String.isNotBlank(jobRecord.Query__c) 
                 ? jobRecord.Query__c 
                 : buildQuery();
@@ -347,16 +482,13 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
-     * @description Creates the job record with Preparing status. Called from submit() to ensure
-     *              the record is committed before the queueable executes, surviving any rollback.
-     *              Writes the query immediately so it's visible before the cursor returns.
-     *              When an active CursorBatch_Config__mdt record exists for this jobName, also
-     *              upserts the per-config CursorBatch_Job_Parent__c record (keyed by config
-     *              DeveloperName) and links Job_Parent__c. Custom coordinators with no metadata
-     *              record leave Job_Parent__c null and insert as before.
+     * @description Builds the unsaved job record with Preparing status. submitAll() inserts it
+     *              before the queueable executes so it survives any rollback, with the query
+     *              written immediately so it's visible before the cursor returns.
+     * @return The job record, not yet inserted and without Job_Parent__c
      */
-    private void createJobRecord() {
-        CursorBatch_Job__c job = new CursorBatch_Job__c(
+    private CursorBatch_Job__c buildJobRecord() {
+        return new CursorBatch_Job__c(
             Job_Name__c = jobName,
             Status__c = 'Preparing',
             Coordinator_Class__c = CursorBatchContext.getClassName(this),
@@ -372,42 +504,53 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Failed_Workers__c = 0,
             Total_Worker_Retries__c = 0
         );
-        Id parentId = upsertJobParent(getConfig(jobName));
-        if (parentId != null) {
-            job.Job_Parent__c = parentId;
-        }
-        insert job;
-        this.jobRecordId = job.Id;
-        logger.logInfo('CursorBatchCoordinator created job record in submit: ' + job.Id);
     }
     
     /**
-     * @description Upserts the per-config CursorBatch_Job_Parent__c record using the config's
-     *              DeveloperName as the external-ID key. This guarantees one parent per
-     *              CursorBatch_Config__mdt record (Salesforce does not allow Lookup fields
-     *              targeting custom metadata). Also resets Last_Job_Status__c to 'Preparing'
-     *              so the parent immediately reflects the new run rather than the previous
-     *              run's terminal status. Wrapped in try/catch so parent FLS, sharing, or
-     *              validation issues never block job creation.
-     * @param cfg The active config for this job, or null when no metadata record matches
-     * @return Parent record Id, or null when there is no config / DeveloperName or the upsert failed
+     * @description Upserts one CursorBatch_Job_Parent__c per distinct config among the jobs, using
+     *              the config's DeveloperName as the external-ID key, and links Job_Parent__c.
+     *              This guarantees one parent per CursorBatch_Config__mdt record (Salesforce
+     *              does not allow Lookup fields targeting custom metadata). Also resets
+     *              Last_Job_Status__c to 'Preparing' so the parent immediately reflects the new
+     *              run rather than the previous run's terminal status. Best-effort: a parent
+     *              that fails to upsert leaves its jobs unlinked, so parent FLS, sharing, or
+     *              validation issues never block job creation. Custom coordinators with no
+     *              metadata record leave Job_Parent__c null.
+     * @param coordinators Coordinators being submitted
+     * @param jobs Unsaved job records aligned with coordinators
      */
-    private Id upsertJobParent(CursorBatch_Config__mdt cfg) {
-        if (cfg == null || String.isBlank(cfg.DeveloperName)) {
-            return null;
-        }
-        try {
-            CursorBatch_Job_Parent__c parent = new CursorBatch_Job_Parent__c(
+    private static void linkJobParents(List<CursorBatchCoordinator> coordinators, List<CursorBatch_Job__c> jobs) {
+        Map<String, CursorBatch_Job_Parent__c> parentsByDeveloperName = new Map<String, CursorBatch_Job_Parent__c>();
+        for (CursorBatchCoordinator coordinator : coordinators) {
+            CursorBatch_Config__mdt cfg = getConfig(coordinator.jobName);
+            if (cfg == null || String.isBlank(cfg.DeveloperName) || parentsByDeveloperName.containsKey(cfg.DeveloperName)) {
+                continue;
+            }
+            parentsByDeveloperName.put(cfg.DeveloperName, new CursorBatch_Job_Parent__c(
                 Config_Developer_Name__c = cfg.DeveloperName,
                 Config_Label__c = cfg.MasterLabel,
                 Last_Job_Started_At__c = System.now(),
                 Last_Job_Status__c = 'Preparing'
-            );
-            Database.upsert(parent, CursorBatch_Job_Parent__c.Config_Developer_Name__c, false);
-            return parent.Id;
+            ));
+        }
+        if (parentsByDeveloperName.isEmpty()) {
+            return;
+        }
+        
+        try {
+            Database.upsert(parentsByDeveloperName.values(), CursorBatch_Job_Parent__c.Config_Developer_Name__c, false);
         } catch (Exception e) {
-            logger.logException('CursorBatchCoordinator: Failed to upsert CursorBatch_Job_Parent__c for ' + cfg.DeveloperName, e);
-            return null;
+            coordinators[0].logger.logException('CursorBatchCoordinator: Failed to upsert CursorBatch_Job_Parent__c for ' +
+                String.join(new List<String>(parentsByDeveloperName.keySet()), ', '), e);
+            return;
+        }
+        
+        for (Integer i = 0; i < coordinators.size(); i++) {
+            CursorBatch_Config__mdt cfg = getConfig(coordinators[i].jobName);
+            CursorBatch_Job_Parent__c parent = cfg != null ? parentsByDeveloperName.get(cfg.DeveloperName) : null;
+            if (parent != null && parent.Id != null) {
+                jobs[i].Job_Parent__c = parent.Id;
+            }
         }
     }
     

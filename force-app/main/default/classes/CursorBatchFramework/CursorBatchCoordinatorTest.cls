@@ -696,6 +696,36 @@ private without sharing class CursorBatchCoordinatorTest {
     }
     
     @IsTest
+    static void testGetRunningJobsByNamesReturnsOnlyRunningJobsForThoseNames() {
+        // Arrange
+        CursorBatchTestUtils.createTestJobRecord('RunningByNamesA', 1, 'CursorJob');
+        CursorBatchTestUtils.createTestJobRecord('RunningByNamesB', 1, 'CursorJob');
+        CursorBatchTestUtils.createTestJobRecord('RunningByNamesOther', 1, 'CursorJob');
+        CursorBatch_Job__c completed = CursorBatchTestUtils.createTestJobRecord('RunningByNamesC', 1, 'CursorJob');
+        completed.Status__c = 'Completed';
+        update completed;
+        
+        // Act
+        Test.startTest();
+        List<CursorBatch_Job__c> jobs = CursorBatchSelector.getRunningJobsByNames(
+            new Set<String>{ 'RunningByNamesA', 'RunningByNamesB', 'RunningByNamesC' }
+        );
+        List<CursorBatch_Job__c> fromNull = CursorBatchSelector.getRunningJobsByNames(null);
+        List<CursorBatch_Job__c> fromEmpty = CursorBatchSelector.getRunningJobsByNames(new Set<String>());
+        Test.stopTest();
+        
+        // Assert
+        Set<String> names = new Set<String>();
+        for (CursorBatch_Job__c job : jobs) {
+            names.add(job.Job_Name__c);
+        }
+        Assert.areEqual(new Set<String>{ 'RunningByNamesA', 'RunningByNamesB' }, names,
+            'Should return running jobs for the requested names only, excluding completed runs');
+        Assert.isTrue(fromNull.isEmpty(), 'Should return empty list for null names');
+        Assert.isTrue(fromEmpty.isEmpty(), 'Should return empty list for empty names');
+    }
+    
+    @IsTest
     static void testSkipDuplicateCheck_AllowsJobWhenRunningJobExists() {
         // Arrange - Create a running job record to simulate duplicate scenario
         CursorBatch_Job__c runningJob = CursorBatchTestUtils.createTestJobRecord(

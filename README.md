@@ -47,6 +47,7 @@ Traditional Salesforce batch processing has limitations:
   - [Worker finish() Method](#worker-finish-method)
   - [Reducer-Based Shared State](#reducer-based-shared-state)
   - [Job Invocation Metadata](#job-invocation-metadata)
+  - [Submitting Multiple Jobs](#submitting-multiple-jobs)
   - [Preventing Duplicate Jobs](#preventing-duplicate-jobs)
   - [Kill Switch (Cancelling Jobs)](#kill-switch-cancelling-jobs)
   - [Parent/Child Pattern for Avoiding Record Locks](#parentchild-pattern-for-avoiding-record-locks)
@@ -74,13 +75,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000gajpAAA) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000gajpAAA) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000mtDVAAY) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000mtDVAAY) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000gajpAAA --target-org your-org --wait 10
+sf package install --package 04tfj000000mtDVAAY --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -228,9 +229,18 @@ Id jobId = CursorJob.runWithDelay('MyDataProcessingJob', 5);
 Id jobId = CursorJob.run('MyDataProcessingJob', new Map<String, Object>{
     'accountId' => '001xx0000012345'
 });
+
+// Or several jobs in one call — job record Id by job name
+Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'MyDataProcessingJob', 'MyCleanupJob' });
+
+// Or the same job once per metadata map — job record Ids in input order
+List<Id> jobIds = CursorJob.run('MyDataProcessingJob', new List<Map<String, Object>>{
+    new Map<String, Object>{ 'accountId' => '001xx0000012345' },
+    new Map<String, Object>{ 'accountId' => '001xx0000067890' }
+});
 ```
 
-**That's it!** No coordinator class needed. All `run()` and `runWithDelay()` overloads return the `CursorBatch_Job__c` record `Id`, letting callers immediately track, query, or link to the job. Returns `null` when duplicate detection prevents submission.
+**That's it!** No coordinator class needed. Single-job `run()` and `runWithDelay()` overloads return the `CursorBatch_Job__c` record `Id`, letting callers immediately track, query, or link to the job. Returns `null` when duplicate detection prevents submission. See [Submitting Multiple Jobs](#submitting-multiple-jobs) for the bulk overloads.
 
 ---
 
@@ -1186,7 +1196,7 @@ Custom coordinators that are *not* backed by a metadata config leave `Job_Parent
 
 The framework manages the parent for you — there is nothing to wire up:
 
-1. On `submit()`, `CursorBatchCoordinator` looks up the active `CursorBatch_Config__mdt` for the job name. If found, it upserts a `CursorBatch_Job_Parent__c` record using the config's `DeveloperName` as the external-ID key (Salesforce does not allow Lookup fields to target custom metadata records, so the unique external-ID enforces 1:1 with the config).
+1. On `submit()` (or a bulk `CursorJob.run()`, which upserts one parent per distinct config), `CursorBatchCoordinator` looks up the active `CursorBatch_Config__mdt` for the job name. If found, it upserts a `CursorBatch_Job_Parent__c` record using the config's `DeveloperName` as the external-ID key (Salesforce does not allow Lookup fields to target custom metadata records, so the unique external-ID enforces 1:1 with the config).
 2. The new run record links to the parent via the `Job_Parent__c` lookup field.
 3. `Last_Job_Started_At__c` is refreshed on every run.
 4. `Last_Job_Status__c` mirrors the run lifecycle in real time: `Preparing` on submission, `Processing` once the cursor query succeeds, then `Completed` / `Completed with Errors` / `Failed` / `Cancelled` on termination. The parent always reflects the latest run's current state, never a previous run's stale terminal status.
@@ -1466,6 +1476,39 @@ public class MyWorker extends CursorBatchWorker {
 - Query builders implementing only `ICursorBatchQueryBuilder` are unaffected
 - Workers that don't reference `ctx.metadataJson` are unaffected
 - Custom coordinators that don't call `setMetadata()` behave exactly as before
+
+### Submitting Multiple Jobs
+
+`CursorJob.run()` has two bulk overloads. Both submit every job in one transaction with a fixed number of queries and DML statements — one duplicate check per distinct job name, one parent upsert, one job-record insert, and one Platform Event publish — so submitting 50 jobs costs the same governor limits as submitting one.
+
+```apex
+// Different jobs. Repeated names are submitted once.
+Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{
+    'Five9 Delete Batch',
+    'Lead Routing Batch'
+});
+Id five9JobId = jobIdsByName.get('Five9 Delete Batch'); // null if it was already running
+
+// The same job once per metadata map, e.g. one run per account
+List<Map<String, Object>> runs = new List<Map<String, Object>>();
+for (Id accountId : accountIds) {
+    runs.add(new Map<String, Object>{ 'accountId' => accountId });
+}
+List<Id> jobIds = CursorJob.run('Process Account Children', runs); // same order as runs
+```
+
+| Overload | Returns | Skipped job |
+|----------|---------|-------------|
+| `run(List<String> jobNames)` | `Map<String, Id>` keyed by job name | Name maps to `null` |
+| `run(String jobName, List<Map<String, Object>> metadataList)` | `List<Id>` in input order | Entry is `null` |
+
+**Duplicate detection.** Each job name is checked once, against runs that already exist. Runs in the same call never block each other, so the metadata overload creates one run per map. If that job is already running, every entry in the call is skipped unless `Skip_Duplicate_Check__c` is enabled — set it on configs meant to run many instances side by side.
+
+**All-or-nothing.** Every query is built before anything is written. If one job's query builder throws or returns nothing, the call throws and no job is submitted.
+
+**No size cap.** The ceiling is the submitting transaction's governor limits: heap (each job record carries its query, metadata, and initial state), DML rows, CPU, and any SOQL your query builder runs inside `buildQuery()`. Plan for the downstream cost too: every job starts in its own coordinator transaction, one at a time (the coordinator subscriber's batch size is 1), creates one Apex cursor when its query matches records, and fans out up to `Parallel_Count__c` worker queueables against the org's daily async Apex limit.
+
+Custom coordinators can use the same path with `CursorBatchCoordinator.submitAll(List<CursorBatchCoordinator> coordinators, Integer delayMinutes)`, which returns Ids aligned with its input. Coordinators that override `isJobAlreadyRunning()` keep their override.
 
 ### Preventing Duplicate Jobs
 
@@ -2659,7 +2702,7 @@ The sweep runs off the job submission path, so it needs at least one job submiss
 
 | Class | Description |
 |-------|-------------|
-| `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code. `run()` / `runWithDelay()` return the job record `Id` for tracking |
+| `CursorJob` | Metadata-driven coordinator that reads configuration from `CursorBatch_Config__mdt` and executes jobs without custom code. `run()` / `runWithDelay()` return the job record `Id` for tracking; bulk `run()` overloads submit many jobs in one call |
 | `CursorBatchCoordinator` | Abstract base for custom coordinators (Queueable, AllowsCallouts). Runs query, creates cursor, publishes Platform Events to fan out workers. `submit()` / `submitWithDelay()` return the job record `Id` |
 | `CursorBatchCoordinatorFinalizer` | Queueable finalizer that handles cursor query timeouts with automatic retry logic |
 | `CursorBatchQueryProbe` | Builds the one-row existence check (the cursor query without `ORDER BY`, at `LIMIT 1`) that the coordinator runs before `Database.getCursor()` so empty runs don't spend a daily Apex cursor. See [Empty Results Skip the Cursor](#empty-results-skip-the-cursor) |

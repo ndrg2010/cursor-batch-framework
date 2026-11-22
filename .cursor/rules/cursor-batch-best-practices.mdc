@@ -249,6 +249,29 @@ public class ContactsByAccountSelector implements ICursorBatchMetadataQueryBuild
 
 Existing query builders implementing `ICursorBatchQueryBuilder` continue to work unchanged — the framework checks for the metadata interface first and falls back automatically.
 
+### Submitting Multiple Jobs
+
+Use the bulk overloads instead of calling `CursorJob.run()` in a loop. One call uses the same queries and DML as a single run, no matter how many jobs it submits.
+
+```apex
+// ✅ Different jobs in one call — job record Id by name, null if already running
+Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'Job A', 'Job B' });
+
+// ✅ Same job once per metadata map — Ids in input order
+List<Map<String, Object>> runs = new List<Map<String, Object>>();
+for (Id accountId : accountIds) {
+    runs.add(new Map<String, Object>{ 'accountId' => accountId });
+}
+List<Id> jobIds = CursorJob.run('Process Account Children', runs);
+
+// ❌ AVOID: a loop costs a duplicate check, parent upsert, insert, and publish per job
+for (Id accountId : accountIds) {
+    CursorJob.run('Process Account Children', new Map<String, Object>{ 'accountId' => accountId });
+}
+```
+
+Runs in one call never block each other, but if the job is already running every entry is skipped. Set `Skip_Duplicate_Check__c` on configs meant to run many instances side by side. If any job's query fails to build, nothing is submitted. There is no size cap: each job costs a coordinator transaction, a cursor when its query matches records, and up to `Parallel_Count__c` worker queueables.
+
 ### Accessing Metadata in Workers
 
 Metadata scopes the query (query builder's job). Workers typically don't need it during `process()` — they just process whatever records the cursor returns. Use `getMetadata()` in `finish()` to post results back to the originating record:
