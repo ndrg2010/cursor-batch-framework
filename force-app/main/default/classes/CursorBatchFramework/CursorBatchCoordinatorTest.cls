@@ -696,6 +696,52 @@ private without sharing class CursorBatchCoordinatorTest {
     }
     
     @IsTest
+    static void testFanoutLogsOneShardingSummaryWhateverTheWorkerCount() {
+        // Arrange - 200 records so 200 workers each get one
+        List<Account> extraAccounts = new List<Account>();
+        for (Integer i = 0; i < 100; i++) {
+            extraAccounts.add(new Account(Name = 'Fanout Extra ' + i));
+        }
+        insert extraAccounts;
+        
+        CursorBatchTestUtils.MockCursorBatchLogger fewLogger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        CursorBatchTestUtils.MockCursorBatchLogger manyLogger = new CursorBatchTestUtils.MockCursorBatchLogger();
+        
+        // Act
+        Test.startTest();
+        CursorBatch_Job__c fewJob = CursorBatchTestUtils.setupTestJob('FanoutFew', 5, 20);
+        CursorBatchTestUtils.TestCursorBatchCoordinator few = new CursorBatchTestUtils.TestCursorBatchCoordinator('FanoutFew');
+        few.setLogger(fewLogger);
+        few.setJobRecordId(fewJob.Id);
+        few.execute(null);
+        
+        CursorBatch_Job__c manyJob = CursorBatchTestUtils.setupTestJob('FanoutMany', 200, 1);
+        CursorBatchTestUtils.TestCursorBatchCoordinator many = new CursorBatchTestUtils.TestCursorBatchCoordinator('FanoutMany');
+        many.setLogger(manyLogger);
+        many.setJobRecordId(manyJob.Id);
+        many.execute(null);
+        Test.stopTest();
+        
+        // Assert
+        Integer rangeEntries = 0;
+        String summary;
+        for (String message : manyLogger.infoMessages) {
+            if (message.contains('PE Worker')) {
+                rangeEntries++;
+                summary = message;
+            }
+        }
+        Assert.areEqual(1, rangeEntries, 'A 200-worker fanout should write one sharding entry, not one per worker');
+        Assert.isTrue(summary.contains('Sharding calc: totalRecords=200'), 'Summary should carry the sharding calc: ' + summary);
+        Assert.isTrue(summary.contains('#1 [0, 1)'), 'Summary should sample the first worker: ' + summary);
+        Assert.isTrue(summary.contains('...and ' + (200 - CursorBatchCoordinator.WORKER_RANGE_SAMPLE_SIZE - 1) + ' more'),
+            'Summary should count the unsampled workers: ' + summary);
+        Assert.isTrue(summary.contains('#200 [199, 200)'), 'Summary should end with the last worker: ' + summary);
+        Assert.areEqual(fewLogger.infoMessages.size(), manyLogger.infoMessages.size(),
+            'The number of fanout log entries should not depend on the worker count');
+    }
+    
+    @IsTest
     static void testGetRunningJobsByNamesReturnsOnlyRunningJobsForThoseNames() {
         // Arrange
         CursorBatchTestUtils.createTestJobRecord('RunningByNamesA', 1, 'CursorJob');

@@ -18,6 +18,14 @@
  *      setLogger() call inside finish() replaces an already-tagged logger with an
  *      untagged one.
  * 
+ *      Each entry saves immediately while the transaction has platform-event publish budget
+ *      left. Saving immediately is what keeps an entry when the transaction later dies from
+ *      an uncatchable limit or timeout, so do not switch to saving once at the end. But a
+ *      Nebula save publishes an immediate platform event, and those are capped at 150 per
+ *      transaction: an adapter that saves unconditionally makes any caller that logs in a
+ *      loop fail at the cap. hasPublishBudget() keeps INFO saves clear of it and lets errors
+ *      use what is left.
+ * 
  * @group CursorBatchFramework
  * @see ICursorBatchLogger
  * @see CursorJob
@@ -25,6 +33,9 @@
 public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
     
     private static final String LOG_PREFIX = '[CursorBatch] ';
+    
+    /** Publishes left untouched by INFO saves, so errors logged later can still be saved. */
+    private static final Integer INFO_PUBLISH_RESERVE = 10;
     
     private Set<String> tags;
     
@@ -67,7 +78,9 @@ public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchL
     }
     
     /**
-     * @description Logs an informational message and saves immediately.
+     * @description Logs an informational message. Saves immediately while at least
+     *              INFO_PUBLISH_RESERVE platform-event publishes remain in the transaction;
+     *              otherwise the entry stays buffered and goes out with the next save.
      *              Applies configured tags to the log entry.
      * @param message Message to log
      */
@@ -76,15 +89,17 @@ public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchL
         // Example for Nebula Logger:
         // ILogEntryBuilder entry = nebulaLogger.info(LOG_PREFIX + message);
         // applyTags(entry);
-        // nebulaLogger.save();
+        // if (hasPublishBudget(INFO_PUBLISH_RESERVE)) {
+        //     nebulaLogger.save();
+        // }
         
         // Fallback to System.debug
         System.debug(LoggingLevel.INFO, LOG_PREFIX + formatWithTags(message));
     }
     
     /**
-     * @description Logs an error message and saves immediately.
-     *              Applies configured tags to the log entry.
+     * @description Logs an error message and saves immediately while any platform-event
+     *              publish budget remains. Applies configured tags to the log entry.
      * @param message Error message to log
      */
     public void logError(String message) {
@@ -92,15 +107,18 @@ public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchL
         // Example for Nebula Logger:
         // ILogEntryBuilder entry = nebulaLogger.error(LOG_PREFIX + message);
         // applyTags(entry);
-        // nebulaLogger.save();
+        // if (hasPublishBudget(0)) {
+        //     nebulaLogger.save();
+        // }
         
         // Fallback to System.debug
         System.debug(LoggingLevel.ERROR, LOG_PREFIX + formatWithTags(message));
     }
     
     /**
-     * @description Logs an exception with context and saves immediately.
-     *              Applies configured tags to the log entry.
+     * @description Logs an exception with context and saves immediately while any
+     *              platform-event publish budget remains. Applies configured tags to the
+     *              log entry.
      * @param message Context describing where the exception occurred
      * @param e Exception to log
      */
@@ -109,11 +127,24 @@ public inherited sharing class CursorBatchLoggerAdapter implements ICursorBatchL
         // Example for Nebula Logger:
         // ILogEntryBuilder entry = nebulaLogger.exception(LOG_PREFIX + message, e);
         // applyTags(entry);
-        // nebulaLogger.save();
+        // if (hasPublishBudget(0)) {
+        //     nebulaLogger.save();
+        // }
         
         // Fallback to System.debug
         System.debug(LoggingLevel.ERROR, LOG_PREFIX + formatWithTags(message) + ': ' + e.getMessage());
         System.debug(LoggingLevel.ERROR, e.getStackTraceString());
+    }
+    
+    /**
+     * @description Reports whether one more immediate platform-event publish fits in this
+     *              transaction with the given number of publishes still left over.
+     * @param reserve Publishes that must remain after this save
+     * @return true when a save can publish without eating into the reserve
+     */
+    @TestVisible
+    private static Boolean hasPublishBudget(Integer reserve) {
+        return Limits.getPublishImmediateDML() + 1 + reserve <= Limits.getLimitPublishImmediateDML();
     }
     
     /**

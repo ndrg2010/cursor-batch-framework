@@ -2,11 +2,11 @@
   "packageDirectories": [
     {
       "versionName": "ver 0.39",
-      "versionNumber": "0.39.0.NEXT",
+      "versionNumber": "0.39.1.NEXT",
       "path": "force-app",
       "default": true,
       "package": "CursorBatchFramework",
-      "versionDescription": "Submit many jobs in one call: CursorJob.run(List<String> jobNames) returns a job record Id per name, and CursorJob.run(jobName, List<Map<String, Object>> metadataList) submits one run per metadata map and returns Ids in input order. Both use the same queries and DML as a single run, whatever the count: one duplicate check per distinct name, one parent upsert, one job insert and one coordinator event publish. Runs in one call never block each other; a job that is already running is skipped (null) unless Skip_Duplicate_Check__c is set. If any query fails to build, nothing is submitted. submit() and submitWithDelay() now share this path, and custom coordinators can call CursorBatchCoordinator.submitAll().",
+      "versionDescription": "Large bulk submissions and fanouts no longer fail on the 150 immediate platform-event publishes per transaction. A bulk CursorJob.run() / submitAll() call now writes one log entry per distinct Logger_Tag__c (listing every submitted job Id and any skip reasons) instead of two or more per job, and a coordinator's worker fanout writes one sharding summary with sampled worker ranges instead of one entry per worker. Publish failures in both places are reported as one error entry. Adapters that save each entry as an immediate Nebula event were hitting the cap at about 145 jobs or 150 workers when the running user logged at INFO. No configuration required.",
       "definitionFile": "config/project-scratch-def.json",
       "installBehaviors": {
         "newOnly": [
@@ -63,7 +63,8 @@
     "CursorBatchFramework@0.37.0-1": "04tfj000000cx0fAAA",
     "CursorBatchFramework@0.38.0-1": "04tfj000000gaWvAAI",
     "CursorBatchFramework@0.38.0-2": "04tfj000000gajpAAA",
-    "CursorBatchFramework@0.39.0-1": "04tfj000000mtDVAAY"
+    "CursorBatchFramework@0.39.0-1": "04tfj000000mtDVAAY",
+    "CursorBatchFramework@0.39.1-1": "04tfj000000muazAAA"
   },
   "protectedComponents": [
     "classes/CursorBatchFramework/CursorBatchCompletionHandler.cls",

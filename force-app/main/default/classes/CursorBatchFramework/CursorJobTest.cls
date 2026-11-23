@@ -1355,6 +1355,129 @@ private without sharing class CursorJobTest {
             'No run should be created when any run in the call fails to build');
     }
     
+    // ============================================
+    // Bulk Run Logging Tests
+    // ============================================
+    
+    @IsTest
+    static void testRunMetadataListLogsOneEntryForTwoHundredRuns() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkLogMany',
+            'CursorJobTest.TestMetadataQueryBuilder',
+            'getAccountsByIdQuery',
+            'CursorJobTest.TestCursorJobWorker',
+            null,
+            null,
+            'Bulk Log Tag'
+        );
+        List<Map<String, Object>> runs = new List<Map<String, Object>>();
+        for (Integer i = 0; i < 200; i++) {
+            runs.add(new Map<String, Object>{ 'run' => i });
+        }
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        
+        // Act
+        Test.startTest();
+        List<Id> jobIds = CursorJob.run('BulkLogMany', runs);
+        List<String> infoMessages = new List<String>(CursorBatchTestUtils.capturedInfoMessages);
+        List<Set<String>> tagSets = new List<Set<String>>(CursorBatchTestUtils.capturedTagSets);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(200, jobIds.size(), 'Every run should be submitted');
+        Assert.areEqual(1, infoMessages.size(), 'Two hundred runs should write one log entry, not one per run');
+        Assert.isTrue(infoMessages[0].contains('submitted 200 of 200 run(s) of "BulkLogMany"'),
+            'The entry should summarize the submission: ' + infoMessages[0]);
+        Assert.isTrue(infoMessages[0].contains(jobIds[199]), 'The entry should list the submitted job Ids');
+        Assert.isTrue(tagSets[0].contains('Bulk Log Tag'), 'The entry should carry the job\'s Logger_Tag__c');
+    }
+    
+    @IsTest
+    static void testRunListLogsOneEntryPerLoggerTag() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = null;
+        CursorBatchCoordinator.CONFIG_CACHE.put('BulkTagA', createCursorJobConfig(
+            'BulkTagA', 'CursorJobTest.TestQueryBuilder', 'getAccountsQuery', 'CursorJobTest.TestCursorJobWorker',
+            null, null, 'Tag A'
+        ));
+        CursorBatchCoordinator.CONFIG_CACHE.put('BulkTagB', createCursorJobConfig(
+            'BulkTagB', 'CursorJobTest.TestQueryBuilder', 'getAccountsQuery', 'CursorJobTest.TestCursorJobWorker',
+            null, null, 'Tag B'
+        ));
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        
+        // Act
+        Test.startTest();
+        Map<String, Id> jobIdsByName = CursorJob.run(new List<String>{ 'BulkTagA', 'BulkTagB' });
+        List<String> infoMessages = new List<String>(CursorBatchTestUtils.capturedInfoMessages);
+        List<Set<String>> tagSets = new List<Set<String>>(CursorBatchTestUtils.capturedTagSets);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(2, infoMessages.size(), 'Each Logger_Tag__c should get exactly one entry');
+        for (Integer i = 0; i < infoMessages.size(); i++) {
+            String ownName = tagSets[i].contains('Tag A') ? 'BulkTagA' : 'BulkTagB';
+            String otherName = ownName == 'BulkTagA' ? 'BulkTagB' : 'BulkTagA';
+            Assert.isTrue(infoMessages[i].contains('"' + ownName + '"'), 'Entry should describe its own job: ' + infoMessages[i]);
+            Assert.isTrue(infoMessages[i].contains(jobIdsByName.get(ownName)), 'Entry should list its own job Id');
+            Assert.isFalse(infoMessages[i].contains('"' + otherName + '"'), 'Entry should not describe the other tag\'s job');
+        }
+    }
+    
+    @IsTest
+    static void testRunLogsAlreadyRunningInItsOneEntry() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'BulkLogRunning',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        CursorBatchTestUtils.createTestJobRecord('BulkLogRunning', 1, 'CursorJob');
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        
+        // Act
+        Test.startTest();
+        List<Id> jobIds = CursorJob.run('BulkLogRunning', new List<Map<String, Object>>{
+            new Map<String, Object>{ 'run' => 1 },
+            new Map<String, Object>{ 'run' => 2 }
+        });
+        List<String> infoMessages = new List<String>(CursorBatchTestUtils.capturedInfoMessages);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(new List<Id>{ null, null }, jobIds, 'Both runs should be skipped');
+        Assert.areEqual(1, infoMessages.size(), 'A skipped call should still write its one entry');
+        Assert.isTrue(infoMessages[0].contains('Job "BulkLogRunning" is already running'),
+            'The entry should say why the job was skipped: ' + infoMessages[0]);
+        Assert.isFalse(infoMessages[0].contains('submitted'), 'Nothing was submitted, so nothing should be reported as submitted');
+        Assert.areEqual(1, CursorBatchSelector.getRunningJobsByName('BulkLogRunning').size(), 'No job record should be created');
+    }
+    
+    @IsTest
+    static void testSingleRunLogsOneEntry() {
+        // Arrange
+        CursorBatchCoordinator.testConfig = createCursorJobConfig(
+            'SingleLogRun',
+            'CursorJobTest.TestQueryBuilder',
+            'getAccountsQuery',
+            'CursorJobTest.TestCursorJobWorker'
+        );
+        CursorBatchTestUtils.useCallableLoggerAdapter();
+        
+        // Act
+        Test.startTest();
+        Id jobId = CursorJob.run('SingleLogRun');
+        List<String> infoMessages = new List<String>(CursorBatchTestUtils.capturedInfoMessages);
+        Test.stopTest();
+        
+        // Assert
+        Assert.areEqual(1, infoMessages.size(), 'A single submission should write one entry');
+        Assert.isTrue(infoMessages[0].contains('submitted 1 of 1 run(s) of "SingleLogRun": ' + jobId),
+            'The entry should name the job and its Id: ' + infoMessages[0]);
+    }
+    
     @IsTest
     static void testRunMetadataListEmptyOrNullDoesNothing() {
         // Act

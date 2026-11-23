@@ -19,6 +19,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     private static final Integer DEFAULT_PAGE_SIZE = 20;
     private static final Integer PE_BATCH_SIZE = 200;
     @TestVisible
+    private static final Integer WORKER_RANGE_SAMPLE_SIZE = 10;
+    @TestVisible
     private static final Integer METADATA_JSON_MAX_LENGTH = 131072;
     
     // Shared constants for retry logic
@@ -190,6 +192,11 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              buildQuery() are the ceiling here. After commit every job starts in its own
      *              coordinator transaction, one at a time, and spends a cursor and up to
      *              Parallel_Count__c worker queueables.
+     *
+     *              Logging is one INFO entry per distinct Logger_Tag__c in the call, plus one
+     *              ERROR entry per tag when an event failed to publish. Adapters commonly save
+     *              each entry as an immediate platform event, capped at 150 per transaction, so
+     *              an entry per job would make the call fail at that many jobs.
      * @param coordinators Coordinators to submit, each constructed with its job name
      * @param delayMinutes Delay before each coordinator executes (1-10); null for immediate
      * @return Job record Ids aligned with coordinators; null where the job was already running
@@ -200,7 +207,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             return submittedIds;
         }
         
-        Set<String> runningJobNames = findRunningJobNames(coordinators);
+        SubmitLog submitLog = new SubmitLog();
+        Set<String> runningJobNames = findRunningJobNames(coordinators, submitLog);
         
         List<CursorBatchCoordinator> admitted = new List<CursorBatchCoordinator>();
         List<CursorBatch_Job__c> jobs = new List<CursorBatch_Job__c>();
@@ -216,11 +224,12 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             insert jobs;
             for (Integer i = 0; i < admitted.size(); i++) {
                 admitted[i].jobRecordId = jobs[i].Id;
-                admitted[i].logger.logInfo('CursorBatchCoordinator created job record in submit: ' + jobs[i].Id);
+                submitLog.noteSubmitted(admitted[i]);
             }
-            publishCoordinatorEvents(admitted, delayMinutes);
+            publishCoordinatorEvents(admitted, delayMinutes, submitLog);
             CursorBatchLedgerCleanup.maybeSweep(admitted[0].logger);
         }
+        submitLog.flush(delayMinutes);
         CursorBatchStalledJobWatchdog.maybeRun(coordinators[0].logger);
         
         for (CursorBatchCoordinator coordinator : coordinators) {
@@ -230,15 +239,81 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
     }
     
     /**
+     * @description Collects submitAll()'s log lines per Logger_Tag__c and writes them as one
+     *              entry per tag, through the first logger seen for that tag (already tagged).
+     */
+    private class SubmitLog {
+        private final List<String> tagOrder = new List<String>();
+        private final Map<String, ICursorBatchLogger> loggerByTag = new Map<String, ICursorBatchLogger>();
+        private final Map<String, List<String>> notesByTag = new Map<String, List<String>>();
+        private final Map<String, List<String>> errorsByTag = new Map<String, List<String>>();
+        private final Map<String, List<String>> submittedNamesByTag = new Map<String, List<String>>();
+        private final Map<String, List<Id>> submittedIdsByName = new Map<String, List<Id>>();
+        
+        private String register(CursorBatchCoordinator coordinator) {
+            String tag = getConfig(coordinator.jobName)?.Logger_Tag__c;
+            String key = String.isBlank(tag) ? '' : tag;
+            if (!loggerByTag.containsKey(key)) {
+                tagOrder.add(key);
+                loggerByTag.put(key, coordinator.logger);
+                notesByTag.put(key, new List<String>());
+                errorsByTag.put(key, new List<String>());
+                submittedNamesByTag.put(key, new List<String>());
+            }
+            return key;
+        }
+        
+        public void note(CursorBatchCoordinator coordinator, String line) {
+            notesByTag.get(register(coordinator)).add(line);
+        }
+        
+        public void noteError(CursorBatchCoordinator coordinator, String line) {
+            errorsByTag.get(register(coordinator)).add(line);
+        }
+        
+        public void noteSubmitted(CursorBatchCoordinator coordinator) {
+            String key = register(coordinator);
+            String name = coordinator.jobName;
+            if (!submittedIdsByName.containsKey(name)) {
+                submittedIdsByName.put(name, new List<Id>());
+                submittedNamesByTag.get(key).add(name);
+            }
+            submittedIdsByName.get(name).add(coordinator.jobRecordId);
+        }
+        
+        public void flush(Integer delayMinutes) {
+            String delayMsg = delayMinutes != null ? ' with ' + delayMinutes + ' min delay' : '';
+            for (String key : tagOrder) {
+                List<String> lines = new List<String>(notesByTag.get(key));
+                for (String name : submittedNamesByTag.get(key)) {
+                    List<Id> ids = submittedIdsByName.get(name);
+                    lines.add('CursorBatchCoordinator submitted ' + ids.size() + ' of ' + ids.size() + ' run(s) of "' +
+                        name + '"' + delayMsg + ': ' + String.join(ids, ', '));
+                }
+                ICursorBatchLogger logger = loggerByTag.get(key);
+                if (!lines.isEmpty()) {
+                    logger.logInfo(String.join(lines, '\n'));
+                }
+                List<String> errors = errorsByTag.get(key);
+                if (!errors.isEmpty()) {
+                    logger.logError('CursorBatchCoordinator: Failed to publish ' + errors.size() +
+                        ' coordinator event(s): ' + String.join(errors, '; '));
+                }
+            }
+        }
+    }
+    
+    /**
      * @description Returns the job names among the coordinators that are already running, checking
      *              each distinct name once. CursorJob instances get a bulk version of
      *              isJobAlreadyRunning(): it cannot be overridden for them (CursorJob is not
      *              virtual), so two set-based queries replace two queries per name. Any other
      *              coordinator class keeps its own isJobAlreadyRunning(), overrides included.
      * @param coordinators Coordinators about to be submitted
+     * @param submitLog Collects the CursorJob branch's log lines for one entry per tag
      * @return Job names that must not be submitted
      */
-    private static Set<String> findRunningJobNames(List<CursorBatchCoordinator> coordinators) {
+    private static Set<String> findRunningJobNames(List<CursorBatchCoordinator> coordinators, SubmitLog submitLog) {
         Set<String> running = new Set<String>();
         Set<String> checkedNames = new Set<String>();
         Map<String, CursorBatchCoordinator> bulkCheckByName = new Map<String, CursorBatchCoordinator>();
@@ -259,7 +334,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             
             CursorBatch_Config__mdt config = getConfig(name);
             if (config != null && config.Skip_Duplicate_Check__c == true) {
-                coordinator.logger.logInfo('CursorBatchCoordinator: Skipping duplicate check for "' + name + '" (Skip_Duplicate_Check__c enabled)');
+                submitLog.note(coordinator, 'CursorBatchCoordinator: Skipping duplicate check for "' + name + '" (Skip_Duplicate_Check__c enabled)');
                 continue;
             }
             bulkCheckByName.put(name, coordinator);
@@ -281,7 +356,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             String name = requestedNameByLower.get(job.Job_Name__c?.toLowerCase());
             if (name != null && !running.contains(name)) {
                 running.add(name);
-                bulkCheckByName.get(name).logger.logInfo('CursorBatchCoordinator: Job "' + name + '" is already running (found CursorBatch_Job__c record)');
+                submitLog.note(bulkCheckByName.get(name), 'CursorBatchCoordinator: Job "' + name + '" is already running (found CursorBatch_Job__c record)');
             }
         }
         
@@ -313,7 +388,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             }
             for (String name : names) {
                 running.add(name);
-                bulkCheckByName.get(name).logger.logInfo('CursorBatchCoordinator: Job "' + name + '" is already running (found AsyncApexJob for worker ' + activeClass + ')');
+                submitLog.note(bulkCheckByName.get(name), 'CursorBatchCoordinator: Job "' + name + '" is already running (found AsyncApexJob for worker ' + activeClass + ')');
             }
         }
         return running;
@@ -325,8 +400,9 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      *              PlatformEventSubscriberConfig, ensuring the cursor is created by that user.
      * @param coordinators Coordinators whose job records were just inserted
      * @param delayMinutes Optional delay in minutes for deferred execution; null for immediate
+     * @param submitLog Collects publish failures for one error entry per tag
      */
-    private static void publishCoordinatorEvents(List<CursorBatchCoordinator> coordinators, Integer delayMinutes) {
+    private static void publishCoordinatorEvents(List<CursorBatchCoordinator> coordinators, Integer delayMinutes, SubmitLog submitLog) {
         List<CursorBatch_Coordinator__e> events = new List<CursorBatch_Coordinator__e>();
         for (CursorBatchCoordinator coordinator : coordinators) {
             events.add(new CursorBatch_Coordinator__e(
@@ -338,16 +414,16 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         }
         
         List<Database.SaveResult> results = EventBus.publish(events);
-        String delayMsg = delayMinutes != null ? ' with ' + delayMinutes + ' min delay' : '';
         for (Integer i = 0; i < results.size(); i++) {
-            CursorBatchCoordinator coordinator = coordinators[i];
-            if (!results[i].isSuccess()) {
-                for (Database.Error err : results[i].getErrors()) {
-                    coordinator.logger.logError('CursorBatchCoordinator: Failed to publish coordinator event: ' + err.getMessage());
-                }
-            } else {
-                coordinator.logger.logInfo('CursorBatchCoordinator: Published coordinator event for ' + coordinator.jobName + delayMsg);
+            if (results[i].isSuccess()) {
+                continue;
             }
+            List<String> messages = new List<String>();
+            for (Database.Error err : results[i].getErrors()) {
+                messages.add(err.getMessage());
+            }
+            CursorBatchCoordinator coordinator = coordinators[i];
+            submitLog.noteError(coordinator, coordinator.jobRecordId + ' (' + coordinator.jobName + ') ' + String.join(messages, ' | '));
         }
     }
     
@@ -725,9 +801,8 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
         List<CursorBatch_Worker__e> events = new List<CursorBatch_Worker__e>();
         Integer actualTotalBatches = 0;
         Integer actualWorkerCount = 0;
-        
-        // Diagnostic: Log sharding calculation
-        logger.logInfo('Sharding calc: totalRecords=' + totalRecords + ', workerCount=' + workerCount + ', recordsPerWorker=' + recordsPerWorker + ', pageSize=' + pageSize);
+        List<String> sampledRanges = new List<String>();
+        String lastRange;
         
         for (Integer i = 0; i < workerCount; i++) {
             Integer startPos = i * recordsPerWorker;
@@ -745,8 +820,10 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             Integer workerPages = (Integer) Math.ceil((Decimal) workerRecords / pageSize);
             actualTotalBatches += workerPages;
             
-            // Diagnostic: Log each worker's assigned range
-            logger.logInfo('PE Worker #' + workerNum + ': range [' + startPos + ', ' + endPos + '), pages=' + workerPages + ', pageSize=' + pageSize);
+            lastRange = '#' + workerNum + ' [' + startPos + ', ' + endPos + ') pages=' + workerPages;
+            if (sampledRanges.size() < WORKER_RANGE_SAMPLE_SIZE) {
+                sampledRanges.add(lastRange);
+            }
             
             events.add(new CursorBatch_Worker__e(
                 Job_Name__c = jobName,
@@ -762,23 +839,67 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             ));
         }
         
+        logger.logInfo(buildShardingSummary(totalRecords, workerCount, recordsPerWorker, pageSize,
+            actualWorkerCount, sampledRanges, lastRange));
+        
         if (!events.isEmpty()) {
             publishEventBatches(events);
-        }
-        
-        // Log if fewer workers were spawned than initially calculated
-        if (actualWorkerCount < workerCount) {
-            logger.logInfo('Spawned ' + actualWorkerCount + ' workers (reduced from ' + workerCount + ' due to recordsPerWorker rounding)');
         }
         
         return new List<Integer>{ actualWorkerCount, actualTotalBatches };
     }
     
     /**
-     * @description Publishes Platform Events in batches of 200 for worker fanout.
+     * @description Builds the single sharding entry for a fanout. One entry rather than one per
+     *              worker: adapters commonly save each entry as an immediate platform event,
+     *              capped at 150 per transaction, and Parallel_Count__c can be several hundred.
+     * @param totalRecords Total number of records in the cursor
+     * @param workerCount Requested worker count
+     * @param recordsPerWorker Records assigned to each worker
+     * @param pageSize Records per page
+     * @param actualWorkerCount Workers actually spawned
+     * @param sampledRanges The first WORKER_RANGE_SAMPLE_SIZE worker ranges
+     * @param lastRange The last worker's range
+     * @return Multi-line sharding summary
+     */
+    private static String buildShardingSummary(
+        Integer totalRecords,
+        Integer workerCount,
+        Integer recordsPerWorker,
+        Integer pageSize,
+        Integer actualWorkerCount,
+        List<String> sampledRanges,
+        String lastRange
+    ) {
+        List<String> lines = new List<String>{
+            'Sharding calc: totalRecords=' + totalRecords + ', workerCount=' + workerCount +
+                ', recordsPerWorker=' + recordsPerWorker + ', pageSize=' + pageSize
+        };
+        if (actualWorkerCount < workerCount) {
+            lines.add('Spawned ' + actualWorkerCount + ' workers (reduced from ' + workerCount + ' due to recordsPerWorker rounding)');
+        }
+        List<String> ranges = new List<String>(sampledRanges);
+        Integer unsampled = actualWorkerCount - sampledRanges.size();
+        if (unsampled > 1) {
+            ranges.add('...and ' + (unsampled - 1) + ' more');
+        }
+        if (unsampled > 0) {
+            ranges.add(lastRange);
+        }
+        if (!ranges.isEmpty()) {
+            lines.add('PE Worker ranges: ' + String.join(ranges, '; '));
+        }
+        return String.join(lines, '\n');
+    }
+    
+    /**
+     * @description Publishes Platform Events in batches of 200 for worker fanout. Failures are
+     *              logged as one entry for the whole fanout, not one per event.
      * @param events List of CursorBatch_Worker__e events to publish
      */
     private void publishEventBatches(List<CursorBatch_Worker__e> events) {
+        Integer failedEvents = 0;
+        Set<String> distinctErrors = new Set<String>();
         // EventBus.publish handles up to 2000 events, but we batch at 200 for safety
         for (Integer i = 0; i < events.size(); i += PE_BATCH_SIZE) {
             List<CursorBatch_Worker__e> batch = new List<CursorBatch_Worker__e>();
@@ -788,13 +909,18 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
             
             for (Database.SaveResult result : EventBus.publish(batch)) {
                 if (!result.isSuccess()) {
+                    failedEvents++;
                     for (Database.Error err : result.getErrors()) {
-                        logger.logError('CursorBatchCoordinator PE publish error: ' + err.getMessage());
+                        distinctErrors.add(err.getMessage());
                     }
                 }
             }
         }
         
+        if (failedEvents > 0) {
+            logger.logError('CursorBatchCoordinator PE publish error on ' + failedEvents + ' of ' + events.size() +
+                ' worker events for ' + jobName + ': ' + String.join(new List<String>(distinctErrors), ' | '));
+        }
         logger.logInfo('CursorBatchCoordinator published ' + events.size() + ' worker events for ' + jobName);
     }
     
@@ -808,6 +934,7 @@ public abstract without sharing class CursorBatchCoordinator implements Queueabl
      * @description Per-transaction cache. Custom metadata cannot change mid-transaction, and
      *              config is read repeatedly on the completion and logging paths.
      */
+    @TestVisible
     private static final Map<String, CursorBatch_Config__mdt> CONFIG_CACHE = new Map<String, CursorBatch_Config__mdt>();
     
     /**

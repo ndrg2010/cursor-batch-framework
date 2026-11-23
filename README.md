@@ -75,13 +75,13 @@ Click the appropriate link below:
 
 | Environment | Install Link |
 |-------------|--------------|
-| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000mtDVAAY) |
-| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000mtDVAAY) |
+| **Production** | [Install in Production](https://login.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000muazAAA) |
+| **Sandbox** | [Install in Sandbox](https://test.salesforce.com/packaging/installPackage.apexp?p0=04tfj000000muazAAA) |
 
 #### Option 2: Install via Salesforce CLI
 
 ```bash
-sf package install --package 04tfj000000mtDVAAY --target-org your-org --wait 10
+sf package install --package 04tfj000000muazAAA --target-org your-org --wait 10
 ```
 
 ### Post-Install Setup
@@ -1504,6 +1504,8 @@ List<Id> jobIds = CursorJob.run('Process Account Children', runs); // same order
 
 **Duplicate detection.** Each job name is checked once, against runs that already exist. Runs in the same call never block each other, so the metadata overload creates one run per map. If that job is already running, every entry in the call is skipped unless `Skip_Duplicate_Check__c` is enabled — set it on configs meant to run many instances side by side.
 
+**One log entry per tag.** A bulk call writes one INFO entry per distinct `Logger_Tag__c` among its jobs, listing every submitted job Id and any skip reasons, plus one ERROR entry per tag if a coordinator event failed to publish. It never writes an entry per job, so an adapter that saves each entry as an immediate platform event (150 per transaction) can't make a large call fail.
+
 **All-or-nothing.** Every query is built before anything is written. If one job's query builder throws or returns nothing, the call throws and no job is submitted.
 
 **No size cap.** The ceiling is the submitting transaction's governor limits: heap (each job record carries its query, metadata, and initial state), DML rows, CPU, and any SOQL your query builder runs inside `buildQuery()`. Plan for the downstream cost too: every job starts in its own coordinator transaction, one at a time (the coordinator subscriber's batch size is 1), creates one Apex cursor when its query matches records, and fans out up to `Parallel_Count__c` worker queueables against the org's daily async Apex limit.
@@ -2049,21 +2051,29 @@ Both integrations below are named `CursorBatchLoggerAdapter` because that is the
 ```apex
 public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
     
+    private static final Integer INFO_PUBLISH_RESERVE = 10;
+    
     private Set<String> tags = new Set<String>();
     
     public void logInfo(String message) {
         Logger.info(message).addTags(new List<String>(tags));
-        Logger.saveLog();
+        if (hasPublishBudget(INFO_PUBLISH_RESERVE)) {
+            Logger.saveLog();
+        }
     }
     
     public void logError(String message) {
         Logger.error(message).addTags(new List<String>(tags));
-        Logger.saveLog();
+        if (hasPublishBudget(0)) {
+            Logger.saveLog();
+        }
     }
     
     public void logException(String message, Exception e) {
         Logger.error(message, e).addTags(new List<String>(tags));
-        Logger.saveLog();
+        if (hasPublishBudget(0)) {
+            Logger.saveLog();
+        }
     }
     
     public Object call(String action, Map<String, Object> args) {
@@ -2074,8 +2084,14 @@ public class CursorBatchLoggerAdapter implements ICursorBatchLogger, Callable {
         }
         return this;
     }
+    
+    private static Boolean hasPublishBudget(Integer reserve) {
+        return Limits.getPublishImmediateDML() + 1 + reserve <= Limits.getLimitPublishImmediateDML();
+    }
 }
 ```
+
+**Guard each save on the publish-immediate budget.** Every `Logger.saveLog()` publishes an immediate platform event, and Apex allows 150 of those per transaction. An adapter that saves unconditionally makes any caller that logs in a loop fail at the cap with an uncatchable `LimitException`. Don't fix it by buffering and saving once at the end: framework transactions can die from uncatchable limits and timeouts, and an entry saved immediately is the only one that survives that rollback. The guard keeps per-entry saves, stops INFO saves 10 publishes short of the cap (the entries stay buffered and go out with the next save), and lets errors use what is left. The framework itself writes a fixed number of entries per bulk submission and per worker fanout, so it stays well under the cap either way.
 
 #### Pharos Integration
 
@@ -2257,8 +2273,9 @@ The framework logs key events at each stage:
 | Probe skipped | INFO | `CursorBatchCoordinator skipping empty-result probe: previous run a0B... query took 61347ms with 0 timeout retries` |
 | Query timing | INFO | `CursorBatchCoordinator cursor query took 150ms, totalRecords: 50000` |
 | Worker distribution | INFO | `Distributing 50000 records across 50 workers (200 batches) via Platform Events` |
+| Worker sharding | INFO | One entry per fanout: `Sharding calc: totalRecords=50000, workerCount=50, ...` then `PE Worker ranges: #1 [0, 1000) pages=10; ... ...and 39 more; #50 [49000, 50000) pages=10` |
 | Cursor queryId | INFO | `CursorBatchCoordinator extracted cursor queryId: 0r8xx50caotWO4i` |
-| Job record creation | INFO | `CursorBatchCoordinator created job record in submit: a0B...` |
+| Job submission | INFO | One entry per `Logger_Tag__c` per submit call: `CursorBatchCoordinator submitted 3 of 3 run(s) of "MyJob": a0B..., a0B..., a0B...` (plus any `already running` / `Skipping duplicate check` lines) |
 | Event publishing | INFO | `CursorBatchCoordinator published 50 worker events for MyJob` |
 | Worker processing | INFO | `CursorBatchWorker (MyJob #1) processing 100 records at position 0` |
 | Worker retry | INFO | `CursorBatchWorker (MyJob #1) processing 100 records at position 0 (retry 1)` |
